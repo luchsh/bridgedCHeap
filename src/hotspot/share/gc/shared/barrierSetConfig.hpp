@@ -29,6 +29,7 @@
 
 #if INCLUDE_ALL_GCS
 #define FOR_EACH_CONCRETE_INCLUDE_ALL_GC_BARRIER_SET_DO(f) \
+  f(BridgedModRef)                                         \
   f(CardTableExtension)                                    \
   f(G1SATBCTLogging)
 #else
@@ -43,6 +44,7 @@
 // Do something for each known barrier set.
 #define FOR_EACH_BARRIER_SET_DO(f)    \
   f(ModRef)                           \
+  f(BridgedModRef)                    \
   f(CardTableModRef)                  \
   f(CardTableForRS)                   \
   f(CardTableExtension)               \

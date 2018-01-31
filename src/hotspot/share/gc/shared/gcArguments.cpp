@@ -39,6 +39,7 @@
 #include "gc/parallel/parallelArguments.hpp"
 #include "gc/cms/cmsArguments.hpp"
 #include "gc/g1/g1Arguments.hpp"
+#include "gc/bridged/bridgedCHeap.hpp"
 #endif
 
 GCArguments* GCArguments::_instance = NULL;
@@ -54,7 +55,7 @@ bool GCArguments::is_initialized() {
 
 bool GCArguments::gc_selected() {
 #if INCLUDE_ALL_GCS
-  return UseSerialGC || UseParallelGC || UseParallelOldGC || UseConcMarkSweepGC || UseG1GC;
+  return UseSerialGC || UseParallelGC || UseParallelOldGC || UseConcMarkSweepGC || UseG1GC || UseBridgedCHeap;
 #else
   return UseSerialGC;
 #endif // INCLUDE_ALL_GCS
@@ -146,6 +147,8 @@ jint GCArguments::initialize() {
     _instance = new G1Arguments();
   } else if (UseConcMarkSweepGC) {
     _instance = new CMSArguments();
+  } else if (UseBridgedCHeap) {
+    _instance = new BridgedCHeapArguments();
 #endif
   } else if (UseSerialGC) {
     _instance = new SerialArguments();

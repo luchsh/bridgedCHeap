@@ -77,7 +77,7 @@ public:
 
   // Note: This is not presently the Name corresponding to the
   // concrete class of this object.
-  BarrierSet::Name kind() const { return _fake_rtti.concrete_tag(); }
+  virtual BarrierSet::Name kind() const { return _fake_rtti.concrete_tag(); }
 
   // Test whether this object is of the type corresponding to bsn.
   bool is_a(BarrierSet::Name bsn) const { return _fake_rtti.has_tag(bsn); }

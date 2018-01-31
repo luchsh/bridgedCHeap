@@ -34,6 +34,7 @@
 #if INCLUDE_ALL_GCS
 #include "gc/parallel/cardTableExtension.hpp"       // Parallel support
 #include "gc/g1/g1SATBCardTableModRefBS.inline.hpp" // G1 support
+#include "gc/bridged/bridgedModRefBS.hpp"  // bridged CHeap support
 #endif
 
 #endif // SHARE_VM_GC_SHARED_BARRIERSETCONFIG_INLINE_HPP

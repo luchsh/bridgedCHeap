@@ -4085,7 +4085,12 @@ public:
                                                                             \
   product(ccstr, AllocateHeapAt, NULL,                                      \
           "Path to the directoy where a temporary file will be created "    \
-          "to use as the backing store for Java Heap.")
+          "to use as the backing store for Java Heap.")                     \
+                                                                            \
+  product(bool, UseBridgedCHeap, false,                                     \
+          "Bridge Java allocation request to CHeap")                        \
+  diagnostic(bool, TraceBridgedAlloc, false,                                \
+          "Trace allocation request in BridgedCHeap")
 
 
 /*

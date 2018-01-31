@@ -2241,6 +2241,7 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
   declare_constant(AgeTable::table_size)                                  \
                                                                           \
   declare_constant(BarrierSet::ModRef)                                    \
+  declare_constant(BarrierSet::BridgedModRef)                             \
   declare_constant(BarrierSet::CardTableModRef)                           \
   declare_constant(BarrierSet::CardTableForRS)                            \
   declare_constant(BarrierSet::CardTableExtension)                        \
