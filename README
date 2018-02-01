@@ -1,10 +1,33 @@
-Welcome to OpenJDK!
+This repository is based on [the OpenJDK master Mercurial repository](http://hg.openjdk.java.net/jdk/jdk/)
+
+The idea here is to bridge Java memory allocation operation onto
+memory allocation interfaces from standard C library, `malloc()` to be specific.
+
+IT IS NOT A JOKE!
 ===================
 
-For information about building OpenJDK, including how to fully retrieve all
-source code, please see either of these:
+Java's automatic memory management feature is GREAT, which relieves programmers
+from the burden of malloc/free. But everything comes with a price, the price of Java
+automatic memory management is
 
-  * doc/building.html   (html version)
-  * doc/building.md     (markdown version)
+* GC pause
+* 'wasted' CPU time on marking, copying
 
-See http://openjdk.java.net/ for more information about OpenJDK.
+And those price 'sometimes' leads to
+
+* Drop in application throughput
+* Long response time (RT)
+
+
+The Bridged CHeap
+===================
+For special scenarios, just stop automatic memory management, and delegate some work
+to standard C library.
+
+Special scenarios includes:
+
+* Short-lived or non-memory-intensive batch jobs
+* Move off-heap memory to in-heap to mitigate serialization cost
+
+It was inspired by OpenJDK's [Epsilon GC](http://openjdk.java.net/jeps/318), which does not do GC either.
+This projects further tries to leverage existing C library to allocate and deallocate memory.
