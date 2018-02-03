@@ -6,11 +6,25 @@
 #include "gc/shared/gcArguments.hpp"
 #include "gc/bridged/bridgedModRefBS.hpp"
 
+//
 // The Bridged CHeap
 // Delegating all allocation requests to the standard C-Heap
+//
+// The 'C-Heap' used by this class is not the same one used by
+// Java launcher and libjvm.so, but another separate copy of
+// jemalloc, loaded dynamically during heap initialization.
+//
 class BridgedCHeap : public CollectedHeap {
+public:
+  typedef void* (*malloc_prototype)(size_t size);
+  typedef void (*free_prototype)(void* ptr);
+
 private:
   size_t _used_bytes;  // how many bytes have been allocated
+
+  // function pointers to malloc/free implementation
+  malloc_prototype _malloc_impl;
+  free_prototype _free_impl;
 
 public:
   BridgedCHeap();
@@ -18,10 +32,12 @@ public:
   // The primary allocation method we want to implement
   virtual HeapWord* mem_allocate(size_t word_size, bool* gc_overhead_limit_was_exceeded);
 
+  // do initialization
+  virtual jint initialize();
+
   // requirements of HotSpot GC framework, actually we do not care at all
   virtual Name kind() const                     { return CollectedHeap::BridgedCHeap;   }
   virtual const char* name() const              { return "Bridged C-Heap";              }
-  virtual jint initialize()                     { return JNI_OK;                        }
   virtual size_t capacity() const               { return MaxHeapSize;                   }
   virtual size_t used() const                   { return _used_bytes;                   }
   virtual bool is_maximal_no_gc() const         { return false;                         }

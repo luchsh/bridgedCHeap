@@ -4089,8 +4089,12 @@ public:
                                                                             \
   product(bool, UseBridgedCHeap, false,                                     \
           "Bridge Java allocation request to CHeap")                        \
+  diagnostic(bool, TraceBridgedCHeap, false,                                \
+          "Trace critical operations of BridgedCHeap")                      \
   diagnostic(bool, TraceBridgedAlloc, false,                                \
-          "Trace allocation request in BridgedCHeap")
+          "Trace allocation request in BridgedCHeap")                       \
+  product(ccstr, BridgedLibcPath, NULL,                                     \
+          "Path to the bridged libc dynamic file")
 
 
 /*

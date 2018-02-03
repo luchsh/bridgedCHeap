@@ -70,3 +70,29 @@ if [ -z "$(echo ${OUTPUT}) | grep HelloWorld" ]; then
   echo "Expected message not found"
   exit 1
 fi
+
+# test -XX:+TraceBridgedCHeap
+OUTPUT=$(${JAVA} -XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:+UseBridgedCHeap -Xlog:gc -XX:-UseCompressedOops Hello)
+if [ $? != 0 ]; then
+  echo "Non zero return value, failed"
+  exit 1
+fi
+if [ -z "$(echo ${OUTPUT}) | grep 'BridgedLibcPath not specified, Java heap will be mixed with'" ]; then
+  echo "Expected message not found"
+  exit 1
+fi
+
+# test -XX:+BridgedLibcPath, the failed case
+OUTPUT=$(${JAVA} -XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:BridgedLibcPath=/non/existing/path/libjemalloc.so -XX:+UseBridgedCHeap -Xlog:gc -XX:-UseCompressedOops Hello 2>&1)
+if [ $? == 0 ]; then
+  echo "Zero return value, should failed"
+  exit 1
+fi
+if [ -z "$(echo ${OUTPUT}) | grep 'BridgedLibcPath=/non/existing/path/libjemalloc.so specified, trying to load it'" ]; then
+  echo "Expected message not found"
+  exit 1
+fi
+if [ -z "$(echo ${OUTPUT}) | grep 'Cannot load jemalloc library from'" ]; then
+  echo "Expected message not found"
+  exit 1
+fi
