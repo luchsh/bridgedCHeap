@@ -6,6 +6,14 @@
 #include "gc/shared/gcArguments.hpp"
 #include "gc/bridged/bridgedModRefBS.hpp"
 
+// Abstract interface to delegate memory requests
+// we have several back-ends
+class CHeapAllocator {
+public:
+  virtual void* malloc(size_t size) = 0;
+  virtual void free(void* buf) = 0;
+};
+
 //
 // The Bridged CHeap
 // Delegating all allocation requests to the standard C-Heap
@@ -15,16 +23,13 @@
 // jemalloc, loaded dynamically during heap initialization.
 //
 class BridgedCHeap : public CollectedHeap {
-public:
-  typedef void* (*malloc_prototype)(size_t size);
-  typedef void (*free_prototype)(void* ptr);
-
 private:
   size_t _used_bytes;  // how many bytes have been allocated
+  CHeapAllocator* _allocator;   // c-heap delegation
 
-  // function pointers to malloc/free implementation
-  malloc_prototype _malloc_impl;
-  free_prototype _free_impl;
+protected:
+  // select the right allocator for delegation
+  CHeapAllocator* create_allocator();
 
 public:
   BridgedCHeap();

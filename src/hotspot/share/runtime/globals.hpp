@@ -4094,7 +4094,9 @@ public:
   diagnostic(bool, TraceBridgedAlloc, false,                                \
           "Trace allocation request in BridgedCHeap")                       \
   product(ccstr, BridgedLibcPath, NULL,                                     \
-          "Path to the bridged libc dynamic file")
+          "Path to the bridged libc dynamic file")                          \
+  product(bool, AutoDetectJemalloc, true,                                   \
+          "Automatic detect and load libjemalloc library")
 
 
 /*
