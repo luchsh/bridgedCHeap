@@ -50,6 +50,7 @@ DynLibCHeapAllocator::~DynLibCHeapAllocator() {
   if (_libc_handle != NULL) {
     dlclose(_libc_handle);
   }
+  os::free(_libc_path);
 }
 
 void DynLibCHeapAllocator::initialize() {
