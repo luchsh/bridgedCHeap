@@ -37,6 +37,8 @@ public:
   // The primary allocation method we want to implement
   virtual HeapWord* mem_allocate(size_t word_size, bool* gc_overhead_limit_was_exceeded);
 
+  virtual void mem_deallocate(void *ptr);
+
   // do initialization
   virtual jint initialize();
 

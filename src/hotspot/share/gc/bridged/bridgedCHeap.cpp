@@ -20,7 +20,7 @@ public:
 // Delegate to dynamically loaded libc implementation library
 class DynLibCHeapAllocator : public CHeapAllocator {
 private:
-  const char* _libc_path;   // path of dynamic libc
+  char* _libc_path;   // path of dynamic libc
   void* _libc_handle;       // dlopen() handle
   // function pointers to malloc/free implementation
   malloc_prototype _malloc_impl;
@@ -108,6 +108,16 @@ HeapWord* BridgedCHeap::mem_allocate(size_t word_size, bool* gc_overhead_limit_w
       tty->print_cr("[Birdged alloc: addr=" PTR_FORMAT ", size=" SIZE_FORMAT, raw_addr, byte_size);
     }
     return align_up(raw_addr, MinObjAlignmentInBytes);
+  }
+}
+
+void BridgedCHeap::mem_deallocate(void* ptr) {
+  assert(UseBridgedCHeap, "Sanity");
+  if (ptr != NULL) {
+    _allocator->free(ptr);
+    if (TraceBridgedAlloc) {
+      tty->print_cr("[Birdged free: addr=" PTR_FORMAT, ptr);
+    }
   }
 }
 

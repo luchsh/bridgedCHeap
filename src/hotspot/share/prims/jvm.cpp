@@ -3663,3 +3663,16 @@ JVM_END
 JVM_ENTRY_NO_ENV(jint, JVM_FindSignal(const char *name))
   return os::get_signal_number(name);
 JVM_END
+
+#include "gc/bridged/bridgedCHeap.hpp"
+
+JVM_ENTRY(void, JVM_DeleteObject(JNIEnv* env, jobject o))
+  JVMWrapper("JVM_DeleteObject");
+  guarantee(UseBridgedCHeap, "-XX:+UseBridgedCHeap not enabled");
+  guarantee(!UseTLAB, "-XX:+UseTLAB is not supported for now");
+  oop obj = JNIHandles::resolve_non_null(o);
+  if (obj != NULL) {
+    BridgedCHeap* bch = (BridgedCHeap *)Universe::heap();
+    bch->mem_deallocate(o);
+  }
+JVM_END

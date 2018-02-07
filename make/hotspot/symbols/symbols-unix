@@ -187,3 +187,6 @@ JVM_AddModuleExportsToAllUnnamed
 JVM_AddReadsModule
 JVM_DefineModule
 JVM_SetBootLoaderUnnamedModule
+
+# Bridged C-Heap
+JVM_DeleteObject

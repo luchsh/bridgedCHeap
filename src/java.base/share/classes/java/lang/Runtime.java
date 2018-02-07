@@ -1541,4 +1541,15 @@ public class Runtime {
         static final String BUILD_GROUP = "BUILD";
         static final String OPT_GROUP   = "OPT";
     }
+
+    /**
+     * Delete a Java object forcefully.
+     * After this operation, the reference will be a dangling pointer!
+     * @param      o The object to be deleted.
+     */
+    public void delete(Object o) {
+        delete0(o);
+    }
+
+    private native void delete0(Object o);
 }

@@ -83,3 +83,9 @@ Java_java_lang_Runtime_availableProcessors(JNIEnv *env, jobject this)
 {
     return JVM_ActiveProcessorCount();
 }
+
+JNIEXPORT void JNICALL
+Java_java_lang_Runtime_delete0(JNIEnv *env, jobject this, jobject target)
+{
+    return JVM_DeleteObject(env, target);
+}
