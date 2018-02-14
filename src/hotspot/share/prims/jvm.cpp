@@ -3672,7 +3672,8 @@ JVM_ENTRY(void, JVM_DeleteObject(JNIEnv* env, jobject o))
   guarantee(!UseTLAB, "-XX:+UseTLAB is not supported for now");
   oop obj = JNIHandles::resolve_non_null(o);
   if (obj != NULL) {
+    memset(obj, badAddressVal, (obj->size() << LogHeapWordSize));
     BridgedCHeap* bch = (BridgedCHeap *)Universe::heap();
-    bch->mem_deallocate(o);
+    bch->mem_deallocate(obj);
   }
 JVM_END
