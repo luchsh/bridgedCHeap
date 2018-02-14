@@ -56,8 +56,8 @@ public:
   virtual bool can_elide_tlab_store_barriers() const  { return false;                   }
   virtual bool can_elide_initializing_store_barrier(oop new_obj) { return false;        }
   virtual bool card_mark_must_follow_store() const    { return false;                   }
-  virtual void collect(GCCause::Cause cause)    { Unimplemented();                      }
-  virtual void do_full_collection(bool clear_all_soft_refs) { Unimplemented();          }
+  virtual void collect(GCCause::Cause cause)    { DEBUG_ONLY(Unimplemented());          }
+  virtual void do_full_collection(bool clear_all_soft_refs) { DEBUG_ONLY(Unimplemented()); }
   virtual CollectorPolicy* collector_policy() const   { return NULL;                    }
   virtual GrowableArray<GCMemoryManager*> memory_managers() {
     return GrowableArray<GCMemoryManager*>();
