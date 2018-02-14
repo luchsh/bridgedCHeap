@@ -1686,6 +1686,11 @@ size_t Arguments::max_heap_for_compressed_oops() {
 void Arguments::set_use_compressed_oops() {
 #ifndef ZERO
 #ifdef _LP64
+  // for now, UseBridgedCHeap does not support compressed oops
+  if (UseBridgedCHeap) {
+    FLAG_SET_ERGO(bool, UseCompressedOops, false);
+    return;
+  }
   // MaxHeapSize is not set up properly at this point, but
   // the only value that can override MaxHeapSize if we are
   // to use UseCompressedOops is InitialHeapSize.

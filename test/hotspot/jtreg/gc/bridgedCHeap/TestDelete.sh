@@ -43,7 +43,7 @@ APP_NAME=Delete
 
 set -x
 
-SHARED_JVM_OPTS="-XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:+TraceBridgedAlloc -XX:-UseTLAB -XX:+UseBridgedCHeap -Xlog:gc -XX:-UseCompressedOops"
+SHARED_JVM_OPTS="-XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:+TraceBridgedAlloc -XX:-UseTLAB -XX:+UseBridgedCHeap -Xlog:gc"
 EXTRA_JVM_OPTS=""
 JVM_OPTS="${SHARED_JVM_OPTS} ${EXTRA_JVM_OPTS}"
 
@@ -52,6 +52,7 @@ cat > ${APP_NAME}.java <<EOF
 public class ${APP_NAME} {
   public static void main(String[] args) {
       Object o = new Object();
+      System.out.println(o);
       Runtime.getRuntime().delete(o);
   }
 }

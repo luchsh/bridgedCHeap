@@ -41,7 +41,7 @@ JAVA=${TESTJAVA}${FS}bin${FS}java
 JAVAC=${TESTJAVA}${FS}bin${FS}javac
 
 # Test with `java -version`
-OUTPUT=$(${JAVA} -XX:+UseBridgedCHeap -Xlog:gc -XX:-UseCompressedOops -version)
+OUTPUT=$(${JAVA} -XX:+UseBridgedCHeap -Xlog:gc -version)
 if [ $? != 0 ]; then
   echo "Non zero return value, failed"
   exit 1
@@ -61,7 +61,7 @@ public class Hello {
 }
 EOF
 ${JAVAC} Hello.java
-OUTPUT=$(${JAVA} -XX:+UseBridgedCHeap -Xlog:gc -XX:-UseCompressedOops Hello)
+OUTPUT=$(${JAVA} -XX:+UseBridgedCHeap -Xlog:gc Hello)
 if [ $? != 0 ]; then
   echo "Non zero return value, failed"
   exit 1
@@ -72,7 +72,7 @@ if [ -z "$(echo ${OUTPUT}) | grep HelloWorld" ]; then
 fi
 
 # test -XX:+TraceBridgedCHeap
-OUTPUT=$(${JAVA} -XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:+UseBridgedCHeap -Xlog:gc -XX:-UseCompressedOops Hello)
+OUTPUT=$(${JAVA} -XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:+UseBridgedCHeap -Xlog:gc Hello)
 if [ $? != 0 ]; then
   echo "Non zero return value, failed"
   exit 1
@@ -83,7 +83,7 @@ if [ -z "$(echo ${OUTPUT}) | grep 'BridgedLibcPath not specified, Java heap will
 fi
 
 # test -XX:+BridgedLibcPath, the failed case
-OUTPUT=$(${JAVA} -XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:BridgedLibcPath=/non/existing/path/libjemalloc.so -XX:+UseBridgedCHeap -Xlog:gc -XX:-UseCompressedOops Hello 2>&1)
+OUTPUT=$(${JAVA} -XX:+UnlockDiagnosticVMOptions -XX:+TraceBridgedCHeap -XX:BridgedLibcPath=/non/existing/path/libjemalloc.so -XX:+UseBridgedCHeap -Xlog:gc Hello 2>&1)
 if [ $? == 0 ]; then
   echo "Zero return value, should failed"
   exit 1
