@@ -1,33 +1,31 @@
-This repository is based on [the OpenJDK master Mercurial repository](http://hg.openjdk.java.net/jdk/jdk/)
+Based on [the master OpenJDK Mercurial repository](http://hg.openjdk.java.net/jdk/jdk/)
 
-The idea here is to bridge Java memory allocation operation onto
-memory allocation interfaces from standard C library, `malloc()` to be specific.
-
-IT IS NOT A JOKE!
+Price of automatic memory management
 ===================
 
-Java's automatic memory management feature is GREAT, which relieves programmers
-from the burden of malloc/free. But everything comes with a price, the price of Java
-automatic memory management is
+Java's automatic memory management is mostly GREAT, which significantly relieves Java
+developers from the headache of object lifecycle, dangling pointers, etc.
+But "everything you want in life has a price connected to it", the label
+tagged on Java includes:
 
-* GC pause
-* 'wasted' CPU time on marking, copying
-
-And those price 'sometimes' leads to
-
-* Drop in application throughput
-* Long response time (RT)
+* Application pauses for GC scan (even in some 'pauseless' implementation)
+* CPU time consumed by memory barriers, marking/sweeping/copying
+* Extra memory to hold GC meta data
 
 
-The Bridged CHeap
+Retreat to manual style
 ===================
-For special scenarios, just stop automatic memory management, and delegate some work
-to standard C library.
+Most of Java's memory prices are about time, and for some special scenarios,
+it is totally acceptable to trade space for time!
+such as:
 
-Special scenarios includes:
-
-* Short-lived or non-memory-intensive batch jobs
+* Short-lived and non-memory-intensive batch jobs
 * Move off-heap memory to in-heap to mitigate serialization cost
 
-It was inspired by OpenJDK's [Epsilon GC](http://openjdk.java.net/jeps/318), which does not do GC either.
-This projects further tries to leverage existing C library to allocate and deallocate memory.
+So how about stop automatic memory management, and delegate some even all the work
+to native library (glibc, jemalloc, etc.) ?
+just like what we did in the dark age before Saint James Gosling's enlightenment :P
+
+The idea was inspired by OpenJDK's [Epsilon GC proposal](http://openjdk.java.net/jeps/318), which does not do GC either.
+This project steps forward by trying to leverage native memory management
+mechanisms to allocate and deallocate memory.
