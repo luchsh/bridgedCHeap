@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,7 +28,6 @@
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "compiler/compileLog.hpp"
-#include "gc/shared/gcLocker.hpp"
 #include "libadt/dict.hpp"
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
@@ -245,25 +244,20 @@ const Type* Type::make_from_constant(ciConstant constant, bool require_constant,
     case T_DOUBLE:   return TypeD::make(constant.as_double());
     case T_ARRAY:
     case T_OBJECT: {
-        // cases:
-        //   can_be_constant    = (oop not scavengable || ScavengeRootsInCode != 0)
-        //   should_be_constant = (oop not scavengable || ScavengeRootsInCode >= 2)
-        // An oop is not scavengable if it is in the perm gen.
         const Type* con_type = NULL;
         ciObject* oop_constant = constant.as_object();
         if (oop_constant->is_null_object()) {
           con_type = Type::get_zero_type(T_OBJECT);
-        } else if (require_constant || oop_constant->should_be_constant()) {
+        } else {
+          guarantee(require_constant || oop_constant->should_be_constant(), "con_type must get computed");
           con_type = TypeOopPtr::make_from_constant(oop_constant, require_constant);
-          if (con_type != NULL) {
-            if (Compile::current()->eliminate_boxing() && is_autobox_cache) {
-              con_type = con_type->is_aryptr()->cast_to_autobox_cache(true);
-            }
-            if (stable_dimension > 0) {
-              assert(FoldStableValues, "sanity");
-              assert(!con_type->is_zero_type(), "default value for stable field");
-              con_type = con_type->is_aryptr()->cast_to_stable(true, stable_dimension);
-            }
+          if (Compile::current()->eliminate_boxing() && is_autobox_cache) {
+            con_type = con_type->is_aryptr()->cast_to_autobox_cache(true);
+          }
+          if (stable_dimension > 0) {
+            assert(FoldStableValues, "sanity");
+            assert(!con_type->is_zero_type(), "default value for stable field");
+            con_type = con_type->is_aryptr()->cast_to_stable(true, stable_dimension);
           }
         }
         if (is_narrow_oop) {
@@ -417,6 +411,8 @@ int Type::uhash( const Type *const t ) {
 }
 
 #define SMALLINT ((juint)3)  // a value too insignificant to consider widening
+#define POSITIVE_INFINITE_F 0x7f800000 // hex representation for IEEE 754 single precision positive infinite
+#define POSITIVE_INFINITE_D 0x7ff0000000000000 // hex representation for IEEE 754 double precision positive infinite
 
 //--------------------------Initialize_shared----------------------------------
 void Type::Initialize_shared(Compile* current) {
@@ -447,9 +443,13 @@ void Type::Initialize_shared(Compile* current) {
 
   TypeF::ZERO = TypeF::make(0.0); // Float 0 (positive zero)
   TypeF::ONE  = TypeF::make(1.0); // Float 1
+  TypeF::POS_INF = TypeF::make(jfloat_cast(POSITIVE_INFINITE_F));
+  TypeF::NEG_INF = TypeF::make(-jfloat_cast(POSITIVE_INFINITE_F));
 
   TypeD::ZERO = TypeD::make(0.0); // Double 0 (positive zero)
   TypeD::ONE  = TypeD::make(1.0); // Double 1
+  TypeD::POS_INF = TypeD::make(jdouble_cast(POSITIVE_INFINITE_D));
+  TypeD::NEG_INF = TypeD::make(-jdouble_cast(POSITIVE_INFINITE_D));
 
   TypeInt::MINUS_1 = TypeInt::make(-1);  // -1
   TypeInt::ZERO    = TypeInt::make( 0);  //  0
@@ -1089,6 +1089,8 @@ void Type::typerr( const Type *t ) const {
 // Convenience common pre-built types.
 const TypeF *TypeF::ZERO;       // Floating point zero
 const TypeF *TypeF::ONE;        // Floating point one
+const TypeF *TypeF::POS_INF;    // Floating point positive infinity
+const TypeF *TypeF::NEG_INF;    // Floating point negative infinity
 
 //------------------------------make-------------------------------------------
 // Create a float constant
@@ -1197,6 +1199,8 @@ bool TypeF::empty(void) const {
 // Convenience common pre-built types.
 const TypeD *TypeD::ZERO;       // Floating point zero
 const TypeD *TypeD::ONE;        // Floating point one
+const TypeD *TypeD::POS_INF;    // Floating point positive infinity
+const TypeD *TypeD::NEG_INF;    // Floating point negative infinity
 
 //------------------------------make-------------------------------------------
 const TypeD *TypeD::make(double d) {
@@ -2962,7 +2966,7 @@ TypeOopPtr::TypeOopPtr(TYPES t, PTR ptr, ciKlass* k, bool xk, ciObject* o, int o
     _is_ptr_to_boxed_value = k->as_instance_klass()->is_boxed_value_offset(offset);
   }
 #ifdef _LP64
-  if (_offset != 0) {
+  if (_offset > 0 || _offset == Type::OffsetTop || _offset == Type::OffsetBot) {
     if (_offset == oopDesc::klass_offset_in_bytes()) {
       _is_ptr_to_narrowklass = UseCompressedClassPointers;
     } else if (klass() == NULL) {
@@ -3043,6 +3047,10 @@ const Type *TypeOopPtr::cast_to_ptr_type(PTR ptr) const {
 const TypeOopPtr *TypeOopPtr::cast_to_instance_id(int instance_id) const {
   // There are no instances of a general oop.
   // Return self unchanged.
+  return this;
+}
+
+const TypeOopPtr *TypeOopPtr::cast_to_nonconst() const {
   return this;
 }
 
@@ -3206,15 +3214,17 @@ const TypeOopPtr* TypeOopPtr::make_from_klass_common(ciKlass *klass, bool klass_
 // Make a java pointer from an oop constant
 const TypeOopPtr* TypeOopPtr::make_from_constant(ciObject* o, bool require_constant) {
   assert(!o->is_null_object(), "null object not yet handled here.");
+
+  const bool make_constant = require_constant || o->should_be_constant();
+
   ciKlass* klass = o->klass();
   if (klass->is_instance_klass()) {
     // Element is an instance
-    if (require_constant) {
-      if (!o->can_be_constant())  return NULL;
-    } else if (!o->should_be_constant()) {
+    if (make_constant) {
+      return TypeInstPtr::make(o);
+    } else {
       return TypeInstPtr::make(TypePtr::NotNull, klass, true, NULL, 0);
     }
-    return TypeInstPtr::make(o);
   } else if (klass->is_obj_array_klass()) {
     // Element is an object array. Recursively call ourself.
     const TypeOopPtr *etype =
@@ -3223,13 +3233,11 @@ const TypeOopPtr* TypeOopPtr::make_from_constant(ciObject* o, bool require_const
     // We used to pass NotNull in here, asserting that the sub-arrays
     // are all not-null.  This is not true in generally, as code can
     // slam NULLs down in the subarrays.
-    if (require_constant) {
-      if (!o->can_be_constant())  return NULL;
-    } else if (!o->should_be_constant()) {
+    if (make_constant) {
+      return TypeAryPtr::make(TypePtr::Constant, o, arr0, klass, true, 0);
+    } else {
       return TypeAryPtr::make(TypePtr::NotNull, arr0, klass, true, 0);
     }
-    const TypeAryPtr* arr = TypeAryPtr::make(TypePtr::Constant, o, arr0, klass, true, 0);
-    return arr;
   } else if (klass->is_type_array_klass()) {
     // Element is an typeArray
     const Type* etype =
@@ -3237,13 +3245,11 @@ const TypeOopPtr* TypeOopPtr::make_from_constant(ciObject* o, bool require_const
     const TypeAry* arr0 = TypeAry::make(etype, TypeInt::make(o->as_array()->length()));
     // We used to pass NotNull in here, asserting that the array pointer
     // is not-null. That was not true in general.
-    if (require_constant) {
-      if (!o->can_be_constant())  return NULL;
-    } else if (!o->should_be_constant()) {
+    if (make_constant) {
+      return TypeAryPtr::make(TypePtr::Constant, o, arr0, klass, true, 0);
+    } else {
       return TypeAryPtr::make(TypePtr::NotNull, arr0, klass, true, 0);
     }
-    const TypeAryPtr* arr = TypeAryPtr::make(TypePtr::Constant, o, arr0, klass, true, 0);
-    return arr;
   }
 
   fatal("unhandled object type");
@@ -3414,6 +3420,12 @@ const TypePtr* TypeOopPtr::with_inline_depth(int depth) const {
   return make(_ptr, _offset, _instance_id, _speculative, depth);
 }
 
+//------------------------------with_instance_id--------------------------------
+const TypePtr* TypeOopPtr::with_instance_id(int instance_id) const {
+  assert(_instance_id != -1, "should be known");
+  return make(_ptr, _offset, instance_id, _speculative, _inline_depth);
+}
+
 //------------------------------meet_instance_id--------------------------------
 int TypeOopPtr::meet_instance_id( int instance_id ) const {
   // Either is 'TOP' instance?  Return the other instance!
@@ -3546,6 +3558,11 @@ const Type *TypeInstPtr::cast_to_exactness(bool klass_is_exact) const {
 const TypeOopPtr *TypeInstPtr::cast_to_instance_id(int instance_id) const {
   if( instance_id == _instance_id ) return this;
   return make(_ptr, klass(), _klass_is_exact, const_oop(), _offset, instance_id, _speculative, _inline_depth);
+}
+
+const TypeOopPtr *TypeInstPtr::cast_to_nonconst() const {
+  if (const_oop() == NULL) return this;
+  return make(NotNull, klass(), _klass_is_exact, NULL, _offset, _instance_id, _speculative, _inline_depth);
 }
 
 //------------------------------xmeet_unloaded---------------------------------
@@ -4017,6 +4034,11 @@ const TypePtr *TypeInstPtr::with_inline_depth(int depth) const {
   return make(_ptr, klass(), klass_is_exact(), const_oop(), _offset, _instance_id, _speculative, depth);
 }
 
+const TypePtr *TypeInstPtr::with_instance_id(int instance_id) const {
+  assert(is_known_instance(), "should be known");
+  return make(_ptr, klass(), klass_is_exact(), const_oop(), _offset, instance_id, _speculative, _inline_depth);
+}
+
 //=============================================================================
 // Convenience common pre-built types.
 const TypeAryPtr *TypeAryPtr::RANGE;
@@ -4074,6 +4096,12 @@ const TypeOopPtr *TypeAryPtr::cast_to_instance_id(int instance_id) const {
   if( instance_id == _instance_id ) return this;
   return make(_ptr, const_oop(), _ary, klass(), _klass_is_exact, _offset, instance_id, _speculative, _inline_depth);
 }
+
+const TypeOopPtr *TypeAryPtr::cast_to_nonconst() const {
+  if (const_oop() == NULL) return this;
+  return make(NotNull, NULL, _ary, klass(), _klass_is_exact, _offset, _instance_id, _speculative, _inline_depth);
+}
+
 
 //-----------------------------narrow_size_type-------------------------------
 // Local cache for arrayOopDesc::max_array_length(etype),
@@ -4495,6 +4523,11 @@ const TypePtr *TypeAryPtr::with_inline_depth(int depth) const {
     return this;
   }
   return make(_ptr, _const_oop, _ary->remove_speculative()->is_ary(), _klass, _klass_is_exact, _offset, _instance_id, _speculative, depth);
+}
+
+const TypePtr *TypeAryPtr::with_instance_id(int instance_id) const {
+  assert(is_known_instance(), "should be known");
+  return make(_ptr, _const_oop, _ary->remove_speculative()->is_ary(), _klass, _klass_is_exact, _offset, instance_id, _speculative, _inline_depth);
 }
 
 //=============================================================================

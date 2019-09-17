@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.printer;
 
 import static org.graalvm.compiler.debug.DebugConfig.asJavaMethod;
@@ -41,13 +43,16 @@ import org.graalvm.compiler.debug.DebugDumpScope;
 import org.graalvm.compiler.debug.DebugOptions;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.debug.TTY;
+import org.graalvm.compiler.debug.DebugOptions.PrintGraphTarget;
 import org.graalvm.compiler.graph.Graph;
 import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.contract.NodeCostUtil;
+import org.graalvm.compiler.serviceprovider.GraalServices;
 
 import jdk.vm.ci.meta.JavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import jdk.vm.ci.services.Services;
 
 //JaCoCo Exclude
 
@@ -82,15 +87,15 @@ public class GraphPrinterDumpHandler implements DebugDumpHandler {
         this.printerSupplier = printerSupplier;
         /* Add the JVM and Java arguments to the graph properties to help identify it. */
         this.jvmArguments = jvmArguments();
-        this.sunJavaCommand = System.getProperty("sun.java.command");
+        this.sunJavaCommand = Services.getSavedProperties().get("sun.java.command");
     }
 
     private static String jvmArguments() {
-        try {
-            return String.join(" ", java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments());
-        } catch (LinkageError err) {
-            return "unknown";
+        List<String> inputArguments = GraalServices.getInputArguments();
+        if (inputArguments != null) {
+            return String.join(" ", inputArguments);
         }
+        return "unknown";
     }
 
     private void ensureInitialized(DebugContext ctx, Graph graph) {
@@ -121,7 +126,7 @@ public class GraphPrinterDumpHandler implements DebugDumpHandler {
     @SuppressWarnings("try")
     public void dump(DebugContext debug, Object object, final String format, Object... arguments) {
         OptionValues options = debug.getOptions();
-        if (object instanceof Graph && DebugOptions.PrintGraph.getValue(options)) {
+        if (object instanceof Graph && DebugOptions.PrintGraph.getValue(options) != PrintGraphTarget.Disable) {
             final Graph graph = (Graph) object;
             ensureInitialized(debug, graph);
             if (printer == null) {
@@ -244,7 +249,10 @@ public class GraphPrinterDumpHandler implements DebugDumpHandler {
                     lastMethodOrGraph = o;
                 }
             }
-
+            if (result.size() == 2 && result.get(1).startsWith("TruffleGraal")) {
+                result.clear();
+                result.add("Graal Graphs");
+            }
             if (result.isEmpty()) {
                 result.add(graph.toString());
                 graphSeen = true;

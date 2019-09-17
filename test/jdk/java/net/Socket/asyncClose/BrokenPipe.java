@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,13 +22,17 @@
  */
 
 /*
- * @test 1.1 01/09/19
+ * @test
  * @bug 4511404
+ * @library /test/lib
  * @summary Check that a broken pipe error doesn't throw an exception
  *          indicating the socket is closed.
+ * @run main BrokenPipe
+ * @run main/othervm -Djava.net.preferIPv4Stack=true BrokenPipe
  */
 import java.io.*;
 import java.net.*;
+import jdk.test.lib.net.IPSupport;
 
 public class BrokenPipe {
 
@@ -51,6 +55,8 @@ public class BrokenPipe {
     }
 
     public static void main(String[] args) throws Exception {
+        IPSupport.throwSkippedExceptionIfNonOperational();
+
         ServerSocket ss = new ServerSocket(0);
         Socket client = new Socket(InetAddress.getLocalHost(),
                                    ss.getLocalPort());

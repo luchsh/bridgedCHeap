@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,7 @@
 #include "precompiled.hpp"
 #include "compiler/compileLog.hpp"
 #include "interpreter/linkResolver.hpp"
-#include "memory/universe.inline.hpp"
+#include "memory/universe.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "opto/addnode.hpp"
 #include "opto/castnode.hpp"
@@ -40,43 +40,6 @@
 //=============================================================================
 // Helper methods for _get* and _put* bytecodes
 //=============================================================================
-bool Parse::static_field_ok_in_clinit(ciField *field, ciMethod *method) {
-  // Could be the field_holder's <clinit> method, or <clinit> for a subklass.
-  // Better to check now than to Deoptimize as soon as we execute
-  assert( field->is_static(), "Only check if field is static");
-  // is_being_initialized() is too generous.  It allows access to statics
-  // by threads that are not running the <clinit> before the <clinit> finishes.
-  // return field->holder()->is_being_initialized();
-
-  // The following restriction is correct but conservative.
-  // It is also desirable to allow compilation of methods called from <clinit>
-  // but this generated code will need to be made safe for execution by
-  // other threads, or the transition from interpreted to compiled code would
-  // need to be guarded.
-  ciInstanceKlass *field_holder = field->holder();
-
-  bool access_OK = false;
-  if (method->holder()->is_subclass_of(field_holder)) {
-    if (method->is_static()) {
-      if (method->name() == ciSymbol::class_initializer_name()) {
-        // OK to access static fields inside initializer
-        access_OK = true;
-      }
-    } else {
-      if (method->name() == ciSymbol::object_initializer_name()) {
-        // It's also OK to access static fields inside a constructor,
-        // because any thread calling the constructor must first have
-        // synchronized on the class by executing a '_new' bytecode.
-        access_OK = true;
-      }
-    }
-  }
-
-  return access_OK;
-
-}
-
-
 void Parse::do_field_access(bool is_get, bool is_field) {
   bool will_link;
   ciField* field = iter().get_field(will_link);
@@ -92,21 +55,17 @@ void Parse::do_field_access(bool is_get, bool is_field) {
     return;
   }
 
-  if (!is_field && !field_holder->is_initialized()) {
-    if (!static_field_ok_in_clinit(field, method())) {
-      uncommon_trap(Deoptimization::Reason_uninitialized,
-                    Deoptimization::Action_reinterpret,
-                    NULL, "!static_field_ok_in_clinit");
-      return;
-    }
-  }
-
   // Deoptimize on putfield writes to call site target field.
   if (!is_get && field->is_call_site_target()) {
     uncommon_trap(Deoptimization::Reason_unhandled,
                   Deoptimization::Action_reinterpret,
                   NULL, "put to call site target field");
     return;
+  }
+
+  if (C->needs_clinit_barrier(field, method())) {
+    clinit_barrier(field_holder, method());
+    if (stopped())  return;
   }
 
   assert(field->will_link(method(), bc()), "getfield: typeflow responsibility");
@@ -177,7 +136,12 @@ void Parse::do_get_xxx(Node* obj, ciField* field, bool is_field) {
 
   bool must_assert_null = false;
 
-  if( bt == T_OBJECT ) {
+  DecoratorSet decorators = IN_HEAP;
+  decorators |= is_vol ? MO_SEQ_CST : MO_UNORDERED;
+
+  bool is_obj = bt == T_OBJECT || bt == T_ARRAY;
+
+  if (is_obj) {
     if (!field->type()->is_loaded()) {
       type = TypeInstPtr::BOTTOM;
       must_assert_null = true;
@@ -198,14 +162,8 @@ void Parse::do_get_xxx(Node* obj, ciField* field, bool is_field) {
   } else {
     type = Type::get_const_basic_type(bt);
   }
-  if (support_IRIW_for_not_multiple_copy_atomic_cpu && field->is_volatile()) {
-    insert_mem_bar(Op_MemBarVolatile);   // StoreLoad barrier
-  }
-  // Build the load.
-  //
-  MemNode::MemOrd mo = is_vol ? MemNode::acquire : MemNode::unordered;
-  bool needs_atomic_access = is_vol || AlwaysAtomicAccesses;
-  Node* ld = make_load(NULL, adr, type, bt, adr_type, mo, LoadNode::DependsOnlyOnTest, needs_atomic_access);
+
+  Node* ld = access_load_at(obj, adr, adr_type, type, bt, decorators);
 
   // Adjust Java stack
   if (type2size[bt] == 1)
@@ -236,22 +194,10 @@ void Parse::do_get_xxx(Node* obj, ciField* field, bool is_field) {
     null_assert(peek());
     set_bci(iter().cur_bci()); // put it back
   }
-
-  // If reference is volatile, prevent following memory ops from
-  // floating up past the volatile read.  Also prevents commoning
-  // another volatile read.
-  if (field->is_volatile()) {
-    // Memory barrier includes bogus read of value to force load BEFORE membar
-    insert_mem_bar(Op_MemBarAcquire, ld);
-  }
 }
 
 void Parse::do_put_xxx(Node* obj, ciField* field, bool is_field) {
   bool is_vol = field->is_volatile();
-  // If reference is volatile, prevent following memory ops from
-  // floating down past the volatile write.  Also prevents commoning
-  // another volatile read.
-  if (is_vol)  insert_mem_bar(Op_MemBarRelease);
 
   // Compute address and memory type.
   int offset = field->offset_in_bytes();
@@ -260,71 +206,50 @@ void Parse::do_put_xxx(Node* obj, ciField* field, bool is_field) {
   BasicType bt = field->layout_type();
   // Value to be stored
   Node* val = type2size[bt] == 1 ? pop() : pop_pair();
-  // Round doubles before storing
-  if (bt == T_DOUBLE)  val = dstore_rounding(val);
 
-  // Conservatively release stores of object references.
-  const MemNode::MemOrd mo =
-    is_vol ?
-    // Volatile fields need releasing stores.
-    MemNode::release :
-    // Non-volatile fields also need releasing stores if they hold an
-    // object reference, because the object reference might point to
-    // a freshly created object.
-    StoreNode::release_if_reference(bt);
+  DecoratorSet decorators = IN_HEAP;
+  decorators |= is_vol ? MO_SEQ_CST : MO_UNORDERED;
+
+  bool is_obj = bt == T_OBJECT || bt == T_ARRAY;
 
   // Store the value.
-  Node* store;
-  if (bt == T_OBJECT) {
-    const TypeOopPtr* field_type;
-    if (!field->type()->is_loaded()) {
-      field_type = TypeInstPtr::BOTTOM;
-    } else {
-      field_type = TypeOopPtr::make_from_klass(field->type()->as_klass());
-    }
-    store = store_oop_to_object(control(), obj, adr, adr_type, val, field_type, bt, mo);
+  const Type* field_type;
+  if (!field->type()->is_loaded()) {
+    field_type = TypeInstPtr::BOTTOM;
   } else {
-    bool needs_atomic_access = is_vol || AlwaysAtomicAccesses;
-    store = store_to_memory(control(), adr, val, bt, adr_type, mo, needs_atomic_access);
-  }
-
-  // If reference is volatile, prevent following volatiles ops from
-  // floating up before the volatile write.
-  if (is_vol) {
-    // If not multiple copy atomic, we do the MemBarVolatile before the load.
-    if (!support_IRIW_for_not_multiple_copy_atomic_cpu) {
-      insert_mem_bar(Op_MemBarVolatile); // Use fat membar
+    if (is_obj) {
+      field_type = TypeOopPtr::make_from_klass(field->type()->as_klass());
+    } else {
+      field_type = Type::BOTTOM;
     }
+  }
+  access_store_at(obj, adr, adr_type, val, field_type, bt, decorators);
+
+  if (is_field) {
     // Remember we wrote a volatile field.
     // For not multiple copy atomic cpu (ppc64) a barrier should be issued
     // in constructors which have such stores. See do_exits() in parse1.cpp.
-    if (is_field) {
+    if (is_vol) {
       set_wrote_volatile(true);
     }
-  }
-
-  if (is_field) {
     set_wrote_fields(true);
-  }
 
-  // If the field is final, the rules of Java say we are in <init> or <clinit>.
-  // Note the presence of writes to final non-static fields, so that we
-  // can insert a memory barrier later on to keep the writes from floating
-  // out of the constructor.
-  // Any method can write a @Stable field; insert memory barriers after those also.
-  if (is_field && (field->is_final() || field->is_stable())) {
+    // If the field is final, the rules of Java say we are in <init> or <clinit>.
+    // Note the presence of writes to final non-static fields, so that we
+    // can insert a memory barrier later on to keep the writes from floating
+    // out of the constructor.
+    // Any method can write a @Stable field; insert memory barriers after those also.
     if (field->is_final()) {
-        set_wrote_final(true);
+      set_wrote_final(true);
+      if (AllocateNode::Ideal_allocation(obj, &_gvn) != NULL) {
+        // Preserve allocation ptr to create precedent edge to it in membar
+        // generated on exit from constructor.
+        // Can't bind stable with its allocation, only record allocation for final field.
+        set_alloc_with_final(obj);
+      }
     }
     if (field->is_stable()) {
-        set_wrote_stable(true);
-    }
-
-    // Preserve allocation ptr to create precedent edge to it in membar
-    // generated on exit from constructor.
-    // Can't bind stable with its allocation, only record allocation for final field.
-    if (field->is_final() && AllocateNode::Ideal_allocation(obj, &_gvn) != NULL) {
-      set_alloc_with_final(obj);
+      set_wrote_stable(true);
     }
   }
 }
@@ -385,7 +310,7 @@ Node* Parse::expand_multianewarray(ciArrayKlass* array_klass, Node* *lengths, in
       Node*    elem   = expand_multianewarray(array_klass_1, &lengths[1], ndimensions-1, nargs);
       intptr_t offset = header + ((intptr_t)i << LogBytesPerHeapOop);
       Node*    eaddr  = basic_plus_adr(array, offset);
-      store_oop_to_array(control(), array, eaddr, adr_type, elem, elemtype, T_OBJECT, MemNode::unordered);
+      access_store_at(array, eaddr, adr_type, elem, elemtype, T_OBJECT, IN_HEAP | IS_ARRAY);
     }
   }
   return array;

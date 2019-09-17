@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,7 @@
 
 package java.lang.reflect;
 
-import jdk.internal.misc.SharedSecrets;
+import jdk.internal.access.SharedSecrets;
 import jdk.internal.reflect.CallerSensitive;
 import jdk.internal.reflect.FieldAccessor;
 import jdk.internal.reflect.Reflection;
@@ -243,9 +243,9 @@ class Field extends AccessibleObject implements Member {
      * Returns a {@code Type} object that represents the declared type for
      * the field represented by this {@code Field} object.
      *
-     * <p>If the {@code Type} is a parameterized type, the
-     * {@code Type} object returned must accurately reflect the
-     * actual type parameters used in the source code.
+     * <p>If the declared type of the field is a parameterized type,
+     * the {@code Type} object returned must accurately reflect the
+     * actual type arguments used in the source code.
      *
      * <p>If the type of the underlying field is a type variable or a
      * parameterized type, it is created. Otherwise, it is resolved.
@@ -1126,6 +1126,11 @@ class Field extends AccessibleObject implements Member {
         if (root != null) {
             root.setFieldAccessor(accessor, overrideFinalCheck);
         }
+    }
+
+    @Override
+    Field getRoot() {
+        return root;
     }
 
     /**

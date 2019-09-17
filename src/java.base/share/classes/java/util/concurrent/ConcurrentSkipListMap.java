@@ -101,7 +101,7 @@ import java.util.concurrent.atomic.LongAdder;
  * elements.
  *
  * <p>This class is a member of the
- * <a href="{@docRoot}/java/util/package-summary.html#CollectionsFramework">
+ * <a href="{@docRoot}/java.base/java/util/package-summary.html#CollectionsFramework">
  * Java Collections Framework</a>.
  *
  * @author Doug Lea
@@ -1129,6 +1129,7 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
             clone.entrySet = null;
             clone.values = null;
             clone.descendingMap = null;
+            clone.adder = null;
             clone.buildFromSorted(this);
             return clone;
         } catch (CloneNotSupportedException e) {
@@ -1711,9 +1712,8 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
         Map<?,?> m = (Map<?,?>) o;
         try {
             Comparator<? super K> cmp = comparator;
-            @SuppressWarnings("unchecked")
-            Iterator<Map.Entry<?,?>> it =
-                (Iterator<Map.Entry<?,?>>)m.entrySet().iterator();
+            // See JDK-8223553 for Iterator type wildcard rationale
+            Iterator<? extends Map.Entry<?,?>> it = m.entrySet().iterator();
             if (m instanceof SortedMap &&
                 ((SortedMap<?,?>)m).comparator() == cmp) {
                 Node<K,V> b, n;
@@ -1764,9 +1764,7 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
                 }
                 return true;
             }
-        } catch (ClassCastException unused) {
-            return false;
-        } catch (NullPointerException unused) {
+        } catch (ClassCastException | NullPointerException unused) {
             return false;
         }
     }
@@ -3412,7 +3410,7 @@ public class ConcurrentSkipListMap<K,V> extends AbstractMap<K,V>
             VAL = l.findVarHandle(Node.class, "val", Object.class);
             RIGHT = l.findVarHandle(Index.class, "right", Index.class);
         } catch (ReflectiveOperationException e) {
-            throw new Error(e);
+            throw new ExceptionInInitializerError(e);
         }
     }
 }

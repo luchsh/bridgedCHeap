@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2014, 2015, Red Hat Inc. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,6 +34,7 @@
 #include "logging/log.hpp"
 #include "memory/resourceArea.hpp"
 #include "oops/compiledICHolder.hpp"
+#include "runtime/safepointMechanism.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/vframeArray.hpp"
 #include "utilities/align.hpp"
@@ -134,8 +135,7 @@ OopMap* RegisterSaver::save_live_registers(MacroAssembler* masm, int additional_
   int frame_size_in_words = frame_size_in_bytes / wordSize;
   *total_frame_words = frame_size_in_words;
 
-  // Save registers, fpu state, and flags.
-
+  // Save Integer and Float registers.
   __ enter();
   __ push_CPU_state(save_vectors);
 
@@ -559,7 +559,7 @@ void SharedRuntime::gen_i2c_adapter(MacroAssembler *masm,
   __ ldr(rscratch1, Address(rmethod, in_bytes(Method::from_compiled_offset())));
 
 #if INCLUDE_JVMCI
-  if (EnableJVMCI) {
+  if (EnableJVMCI || UseAOT) {
     // check if this call should be routed towards a specific entry point
     __ ldr(rscratch2, Address(rthread, in_bytes(JavaThread::jvmci_alternate_call_target_offset())));
     Label no_alternative_target;
@@ -1106,7 +1106,7 @@ static void restore_args(MacroAssembler *masm, int arg_count, int first_arg, VMR
     }
   }
   __ pop(x, sp);
-  for ( int i = first_arg ; i < arg_count ; i++ ) {
+  for ( int i = arg_count - 1 ; i >= first_arg ; i-- ) {
     if (args[i].first()->is_Register()) {
       ;
     } else if (args[i].first()->is_FloatRegister()) {
@@ -1151,12 +1151,12 @@ class ComputeMoveOrder: public StackObj {
    public:
     MoveOperation(int src_index, VMRegPair src, int dst_index, VMRegPair dst):
       _src(src)
-    , _src_index(src_index)
     , _dst(dst)
+    , _src_index(src_index)
     , _dst_index(dst_index)
+    , _processed(false)
     , _next(NULL)
-    , _prev(NULL)
-    , _processed(false) { Unimplemented(); }
+    , _prev(NULL) { Unimplemented(); }
 
     VMRegPair src() const              { Unimplemented(); return _src; }
     int src_id() const                 { Unimplemented(); return 0; }
@@ -1412,7 +1412,6 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
       out_sig_bt[argc++] = in_sig_bt[i];
     }
   } else {
-    Thread* THREAD = Thread::current();
     in_elem_bt = NEW_RESOURCE_ARRAY(BasicType, total_in_args);
     SignatureStream ss(method->signature());
     for (int i = 0; i < total_in_args ; i++ ) {
@@ -1420,7 +1419,7 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
         // Arrays are passed as int, elem* pair
         out_sig_bt[argc++] = T_INT;
         out_sig_bt[argc++] = T_ADDRESS;
-        Symbol* atype = ss.as_symbol(CHECK_NULL);
+        Symbol* atype = ss.as_symbol();
         const char* at = atype->as_C_string();
         if (strlen(at) == 2) {
           assert(at[0] == '[', "must be");
@@ -1781,14 +1780,11 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
   }
 
   // Change state to native (we save the return address in the thread, since it might not
-  // be pushed on the stack when we do a a stack traversal). It is enough that the pc()
-  // points into the right code segment. It does not have to be the correct return pc.
+  // be pushed on the stack when we do a stack traversal).
   // We use the same pc/oopMap repeatedly when we call out
 
-  intptr_t the_pc = (intptr_t) __ pc();
-  oop_maps->add_gc_map(the_pc - start, map);
-
-  __ set_last_Java_frame(sp, noreg, (address)the_pc, rscratch1);
+  Label native_return;
+  __ set_last_Java_frame(sp, noreg, native_return, rscratch1);
 
   Label dtrace_method_entry, dtrace_method_entry_done;
   {
@@ -1837,6 +1833,8 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
 
     // Load the oop from the handle
     __ ldr(obj_reg, Address(oop_handle_reg, 0));
+
+    __ resolve(IS_NOT_NULL, obj_reg);
 
     if (UseBiasedLocking) {
       __ biased_locking_enter(lock_reg, obj_reg, swap_reg, tmp, false, lock_done, &slow_path_lock);
@@ -1919,9 +1917,14 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
             return_type);
   }
 
+  __ bind(native_return);
+
+  intptr_t return_pc = (intptr_t) __ pc();
+  oop_maps->add_gc_map(return_pc - start, map);
+
   // Unpack native results.
   switch (ret_type) {
-  case T_BOOLEAN: __ ubfx(r0, r0, 0, 8);             break;
+  case T_BOOLEAN: __ c2bool(r0);                     break;
   case T_CHAR   : __ ubfx(r0, r0, 0, 16);            break;
   case T_BYTE   : __ sbfx(r0, r0, 0, 8);             break;
   case T_SHORT  : __ sbfx(r0, r0, 0, 16);            break;
@@ -1947,25 +1950,10 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
   //     didn't see any synchronization is progress, and escapes.
   __ mov(rscratch1, _thread_in_native_trans);
 
-  if(os::is_MP()) {
-    if (UseMembar) {
-      __ strw(rscratch1, Address(rthread, JavaThread::thread_state_offset()));
+  __ strw(rscratch1, Address(rthread, JavaThread::thread_state_offset()));
 
-      // Force this write out before the read below
-      __ dmb(Assembler::ISH);
-    } else {
-      __ lea(rscratch2, Address(rthread, JavaThread::thread_state_offset()));
-      __ stlrw(rscratch1, rscratch2);
-
-      // Write serialization page so VM thread can do a pseudo remote membar.
-      // We use the current thread pointer to calculate a thread specific
-      // offset to write to within the page. This minimizes bus traffic
-      // due to cache line collision.
-      __ serialize_memory(rthread, r2);
-    }
-  } else {
-    __ strw(rscratch1, Address(rthread, JavaThread::thread_state_offset()));
-  }
+  // Force this write out before the read below
+  __ dmb(Assembler::ISH);
 
   // check for safepoint operation in progress and/or pending suspend requests
   Label safepoint_in_progress, safepoint_in_progress_done;
@@ -1999,6 +1987,8 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
 
     // Get locked oop from the handle we passed to jni
     __ ldr(obj_reg, Address(oop_handle_reg, 0));
+
+    __ resolve(IS_NOT_NULL, obj_reg);
 
     Label done;
 
@@ -2049,29 +2039,7 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
 
   // Unbox oop result, e.g. JNIHandles::resolve result.
   if (ret_type == T_OBJECT || ret_type == T_ARRAY) {
-    Label done, not_weak;
-    __ cbz(r0, done);           // Use NULL as-is.
-    STATIC_ASSERT(JNIHandles::weak_tag_mask == 1u);
-    __ tbz(r0, 0, not_weak);    // Test for jweak tag.
-    // Resolve jweak.
-    __ ldr(r0, Address(r0, -JNIHandles::weak_tag_value));
-    __ verify_oop(r0);
-#if INCLUDE_ALL_GCS
-    if (UseG1GC) {
-      __ g1_write_barrier_pre(noreg /* obj */,
-                              r0 /* pre_val */,
-                              rthread /* thread */,
-                              rscratch2 /* tmp */,
-                              true /* tosca_live */,
-                              true /* expand_call */);
-    }
-#endif // INCLUDE_ALL_GCS
-    __ b(done);
-    __ bind(not_weak);
-    // Resolve (untagged) jobject.
-    __ ldr(r0, Address(r0, 0));
-    __ verify_oop(r0);
-    __ bind(done);
+    __ resolve_jobject(r0, rthread, rscratch2);
   }
 
   if (CheckJNICalls) {
@@ -2299,7 +2267,7 @@ void SharedRuntime::generate_deopt_blob() {
   // Setup code generation tools
   int pad = 0;
 #if INCLUDE_JVMCI
-  if (EnableJVMCI) {
+  if (EnableJVMCI || UseAOT) {
     pad += 512; // Increase the buffer size when compiling for JVMCI
   }
 #endif
@@ -2360,7 +2328,7 @@ void SharedRuntime::generate_deopt_blob() {
   __ b(cont);
 
   int reexecute_offset = __ pc() - start;
-#if defined(INCLUDE_JVMCI) && !defined(COMPILER1)
+#if INCLUDE_JVMCI && !defined(COMPILER1)
   if (EnableJVMCI && UseJVMCICompiler) {
     // JVMCI does not use this kind of deoptimization
     __ should_not_reach_here();
@@ -2381,7 +2349,7 @@ void SharedRuntime::generate_deopt_blob() {
   int implicit_exception_uncommon_trap_offset = 0;
   int uncommon_trap_offset = 0;
 
-  if (EnableJVMCI) {
+  if (EnableJVMCI || UseAOT) {
     implicit_exception_uncommon_trap_offset = __ pc() - start;
 
     __ ldr(lr, Address(rthread, in_bytes(JavaThread::jvmci_implicit_exception_pc_offset())));
@@ -2507,7 +2475,7 @@ void SharedRuntime::generate_deopt_blob() {
   __ reset_last_Java_frame(false);
 
 #if INCLUDE_JVMCI
-  if (EnableJVMCI) {
+  if (EnableJVMCI || UseAOT) {
     __ bind(after_fetch_unroll_info_call);
   }
 #endif
@@ -2665,7 +2633,7 @@ void SharedRuntime::generate_deopt_blob() {
   _deopt_blob = DeoptimizationBlob::create(&buffer, oop_maps, 0, exception_offset, reexecute_offset, frame_size_in_words);
   _deopt_blob->set_unpack_with_exception_in_tls_offset(exception_in_tls_offset);
 #if INCLUDE_JVMCI
-  if (EnableJVMCI) {
+  if (EnableJVMCI || UseAOT) {
     _deopt_blob->set_uncommon_trap_offset(uncommon_trap_offset);
     _deopt_blob->set_implicit_exception_uncommon_trap_offset(implicit_exception_uncommon_trap_offset);
   }
@@ -2911,7 +2879,7 @@ SafepointBlob* SharedRuntime::generate_handler_blob(address call_ptr, int poll_t
   bool cause_return = (poll_type == POLL_AT_RETURN);
   bool save_vectors = (poll_type == POLL_AT_VECTOR_LOOP);
 
-  // Save registers, fpu state, and flags
+  // Save Integer and Float registers.
   map = RegisterSaver::save_live_registers(masm, 0, &frame_size_in_words, save_vectors);
 
   // The following is basically a call_VM.  However, we need the precise
@@ -2958,7 +2926,7 @@ SafepointBlob* SharedRuntime::generate_handler_blob(address call_ptr, int poll_t
 
   // Exception pending
 
-  RegisterSaver::restore_live_registers(masm);
+  RegisterSaver::restore_live_registers(masm, save_vectors);
 
   __ far_jump(RuntimeAddress(StubRoutines::forward_exception_entry()));
 

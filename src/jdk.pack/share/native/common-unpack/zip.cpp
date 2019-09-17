@@ -416,9 +416,11 @@ uLong jar::dostime(int y, int n, int d, int h, int m, int s) {
     ((uLong)h << 11) | ((uLong)m << 5) | ((uLong)s >> 1);
 }
 
-#ifdef _REENTRANT // solaris
-extern "C" struct tm *gmtime_r(const time_t *, struct tm *);
-#else
+/*
+ * For thread-safe reasons, non-Windows platforms need gmtime_r
+ * while Windows can directly use gmtime that is already thread-safe.
+ */
+#ifdef _MSC_VER
 #define gmtime_r(t, s) gmtime(t)
 #endif
 /*
@@ -579,8 +581,14 @@ static jlong read_input_via_gzip(unpacker* u,
         fseek(u->infileptr, -TRAILER_LEN, SEEK_END);
         uint filecrc;
         uint filelen;
-        fread(&filecrc, sizeof(filecrc), 1, u->infileptr);
-        fread(&filelen, sizeof(filelen), 1, u->infileptr);
+        if (fread(&filecrc, sizeof(filecrc), 1, u->infileptr) != 1) {
+            fprintf(u->errstrm, "Error:reading CRC information on input file failed err=%d\n",errno);
+            exit(1);
+        }
+        if (fread(&filelen, sizeof(filelen), 1, u->infileptr) != 1) {
+            fprintf(u->errstrm, "Error:reading file length on input file failed err=%d\n",errno);
+            exit(1);
+        }
         filecrc = SWAP_INT(filecrc);
         filelen = SWAP_INT(filelen);
         if (u->gzin->gzcrc != filecrc ||

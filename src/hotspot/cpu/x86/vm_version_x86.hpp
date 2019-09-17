@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef CPU_X86_VM_VM_VERSION_X86_HPP
-#define CPU_X86_VM_VM_VERSION_X86_HPP
+#ifndef CPU_X86_VM_VERSION_X86_HPP
+#define CPU_X86_VM_VERSION_X86_HPP
 
 #include "runtime/globals_extension.hpp"
 #include "runtime/vm_version.hpp"
@@ -228,6 +228,38 @@ class VM_Version : public Abstract_VM_Version {
     } bits;
   };
 
+  union SefCpuid7Ecx {
+    uint32_t value;
+    struct {
+      uint32_t prefetchwt1 : 1,
+               avx512_vbmi : 1,
+                      umip : 1,
+                       pku : 1,
+                     ospke : 1,
+                           : 1,
+              avx512_vbmi2 : 1,
+                           : 1,
+                      gfni : 1,
+                      vaes : 1,
+                vpclmulqdq : 1,
+               avx512_vnni : 1,
+             avx512_bitalg : 1,
+                           : 1,
+          avx512_vpopcntdq : 1,
+                           : 17;
+    } bits;
+  };
+
+  union SefCpuid7Edx {
+    uint32_t value;
+    struct {
+      uint32_t             : 2,
+             avx512_4vnniw : 1,
+             avx512_4fmaps : 1,
+                           : 28;
+    } bits;
+  };
+
   union ExtCpuid1EEbx {
     uint32_t value;
     struct {
@@ -300,7 +332,11 @@ protected:
 #define CPU_AVX512VL ((uint64_t)UCONST64(0x200000000)) // EVEX instructions with smaller vector length
 #define CPU_SHA ((uint64_t)UCONST64(0x400000000))      // SHA instructions
 #define CPU_FMA ((uint64_t)UCONST64(0x800000000))      // FMA instructions
-#define CPU_VZEROUPPER ((uint64_t)UCONST64(0x1000000000))      // Vzeroupper instruction
+#define CPU_VZEROUPPER ((uint64_t)UCONST64(0x1000000000))       // Vzeroupper instruction
+#define CPU_AVX512_VPOPCNTDQ ((uint64_t)UCONST64(0x2000000000)) // Vector popcount
+#define CPU_VPCLMULQDQ ((uint64_t)UCONST64(0x4000000000)) //Vector carryless multiplication
+#define CPU_VAES ((uint64_t)UCONST64(0x8000000000))    // Vector AES instructions
+#define CPU_VNNI ((uint64_t)UCONST64(0x10000000000))   // Vector Neural Network Instructions
 
   enum Extended_Family {
     // AMD
@@ -353,8 +389,8 @@ protected:
     // cpuid function 7 (structured extended features)
     SefCpuid7Eax sef_cpuid7_eax;
     SefCpuid7Ebx sef_cpuid7_ebx;
-    uint32_t     sef_cpuid7_ecx; // unused currently
-    uint32_t     sef_cpuid7_edx; // unused currently
+    SefCpuid7Ecx sef_cpuid7_ecx;
+    SefCpuid7Edx sef_cpuid7_edx;
 
     // cpuid function 0xB (processor topology)
     // ecx = 0
@@ -459,13 +495,13 @@ protected:
       result |= CPU_CX8;
     if (_cpuid_info.std_cpuid1_edx.bits.cmov != 0)
       result |= CPU_CMOV;
-    if (_cpuid_info.std_cpuid1_edx.bits.fxsr != 0 || (is_amd() &&
+    if (_cpuid_info.std_cpuid1_edx.bits.fxsr != 0 || (is_amd_family() &&
         _cpuid_info.ext_cpuid1_edx.bits.fxsr != 0))
       result |= CPU_FXSR;
     // HT flag is set for multi-core processors also.
     if (threads_per_core() > 1)
       result |= CPU_HT;
-    if (_cpuid_info.std_cpuid1_edx.bits.mmx != 0 || (is_amd() &&
+    if (_cpuid_info.std_cpuid1_edx.bits.mmx != 0 || (is_amd_family() &&
         _cpuid_info.ext_cpuid1_edx.bits.mmx != 0))
       result |= CPU_MMX;
     if (_cpuid_info.std_cpuid1_edx.bits.sse != 0)
@@ -507,9 +543,17 @@ protected:
           result |= CPU_AVX512BW;
         if (_cpuid_info.sef_cpuid7_ebx.bits.avx512vl != 0)
           result |= CPU_AVX512VL;
+        if (_cpuid_info.sef_cpuid7_ecx.bits.avx512_vpopcntdq != 0)
+          result |= CPU_AVX512_VPOPCNTDQ;
+        if (_cpuid_info.sef_cpuid7_ecx.bits.vpclmulqdq != 0)
+          result |= CPU_VPCLMULQDQ;
+        if (_cpuid_info.sef_cpuid7_ecx.bits.vaes != 0)
+          result |= CPU_VAES;
+        if (_cpuid_info.sef_cpuid7_ecx.bits.avx512_vnni != 0)
+          result |= CPU_VNNI;
       }
     }
-    if(_cpuid_info.sef_cpuid7_ebx.bits.bmi1 != 0)
+    if (_cpuid_info.sef_cpuid7_ebx.bits.bmi1 != 0)
       result |= CPU_BMI1;
     if (_cpuid_info.std_cpuid1_edx.bits.tsc != 0)
       result |= CPU_TSC;
@@ -523,17 +567,17 @@ protected:
       result |= CPU_CLMUL;
     if (_cpuid_info.sef_cpuid7_ebx.bits.rtm != 0)
       result |= CPU_RTM;
-    if(_cpuid_info.sef_cpuid7_ebx.bits.adx != 0)
+    if (_cpuid_info.sef_cpuid7_ebx.bits.adx != 0)
        result |= CPU_ADX;
-    if(_cpuid_info.sef_cpuid7_ebx.bits.bmi2 != 0)
+    if (_cpuid_info.sef_cpuid7_ebx.bits.bmi2 != 0)
       result |= CPU_BMI2;
     if (_cpuid_info.sef_cpuid7_ebx.bits.sha != 0)
       result |= CPU_SHA;
     if (_cpuid_info.std_cpuid1_ecx.bits.fma != 0)
       result |= CPU_FMA;
 
-    // AMD features.
-    if (is_amd()) {
+    // AMD|Hygon features.
+    if (is_amd_family()) {
       if ((_cpuid_info.ext_cpuid1_edx.bits.tdnow != 0) ||
           (_cpuid_info.ext_cpuid1_ecx.bits.prefetchw != 0))
         result |= CPU_3DNOW_PREFETCH;
@@ -543,8 +587,8 @@ protected:
         result |= CPU_SSE4A;
     }
     // Intel features.
-    if(is_intel()) {
-      if(_cpuid_info.ext_cpuid1_ecx.bits.lzcnt_intel != 0)
+    if (is_intel()) {
+      if (_cpuid_info.ext_cpuid1_ecx.bits.lzcnt_intel != 0)
         result |= CPU_LZCNT;
       // for Intel, ecx.bits.misalignsse bit (bit 8) indicates support for prefetchw
       if (_cpuid_info.ext_cpuid1_ecx.bits.misalignsse != 0) {
@@ -567,10 +611,10 @@ protected:
 
   static bool os_supports_avx_vectors() {
     bool retVal = false;
+    int nreg = 2 LP64_ONLY(+2);
     if (supports_evex()) {
       // Verify that OS save/restore all bits of EVEX registers
       // during signal processing.
-      int nreg = 2 LP64_ONLY(+2);
       retVal = true;
       for (int i = 0; i < 16 * nreg; i++) { // 64 bytes per zmm register
         if (_cpuid_info.zmm_save[i] != ymm_test_value()) {
@@ -581,7 +625,6 @@ protected:
     } else if (supports_avx()) {
       // Verify that OS save/restore all bits of AVX registers
       // during signal processing.
-      int nreg = 2 LP64_ONLY(+2);
       retVal = true;
       for (int i = 0; i < 8 * nreg; i++) { // 32 bytes per ymm register
         if (_cpuid_info.ymm_save[i] != ymm_test_value()) {
@@ -593,7 +636,6 @@ protected:
       if (retVal == false) {
         // Verify that OS save/restore all bits of EVEX registers
         // during signal processing.
-        int nreg = 2 LP64_ONLY(+2);
         retVal = true;
         for (int i = 0; i < 16 * nreg; i++) { // 64 bytes per zmm register
           if (_cpuid_info.zmm_save[i] != ymm_test_value()) {
@@ -644,6 +686,9 @@ public:
   static void initialize();
 
   // Override Abstract_VM_Version implementation
+  static void print_platform_virtualization_info(outputStream*);
+
+  // Override Abstract_VM_Version implementation
   static bool use_biased_locking();
 
   // Asserts
@@ -669,6 +714,8 @@ public:
   static int  cpu_family()        { return _cpu;}
   static bool is_P6()             { return cpu_family() >= 6; }
   static bool is_amd()            { assert_is_initialized(); return _cpuid_info.std_vendor_name_0 == 0x68747541; } // 'htuA'
+  static bool is_hygon()          { assert_is_initialized(); return _cpuid_info.std_vendor_name_0 == 0x6F677948; } // 'ogyH'
+  static bool is_amd_family()     { return is_amd() || is_hygon(); }
   static bool is_intel()          { assert_is_initialized(); return _cpuid_info.std_vendor_name_0 == 0x756e6547; } // 'uneG'
   static bool is_zx()             { assert_is_initialized(); return (_cpuid_info.std_vendor_name_0 == 0x746e6543) || (_cpuid_info.std_vendor_name_0 == 0x68532020); } // 'tneC'||'hS  '
   static bool is_atom_family()    { return ((cpu_family() == 0x06) && ((extended_cpu_model() == 0x36) || (extended_cpu_model() == 0x37) || (extended_cpu_model() == 0x4D))); } //Silvermont and Centerton
@@ -692,7 +739,7 @@ public:
       if (!supports_topology || result == 0) {
         result = (_cpuid_info.dcp_cpuid4_eax.bits.cores_per_cpu + 1);
       }
-    } else if (is_amd()) {
+    } else if (is_amd_family()) {
       result = (_cpuid_info.ext_cpuid8_ecx.bits.cores_per_cpu + 1);
     } else if (is_zx()) {
       bool supports_topology = supports_processor_topology();
@@ -728,7 +775,7 @@ public:
     intx result = 0;
     if (is_intel()) {
       result = (_cpuid_info.dcp_cpuid4_ebx.bits.L1_line_size + 1);
-    } else if (is_amd()) {
+    } else if (is_amd_family()) {
       result = _cpuid_info.ext_cpuid5_ecx.bits.L1_line_size;
     } else if (is_zx()) {
       result = (_cpuid_info.dcp_cpuid4_ebx.bits.L1_line_size + 1);
@@ -775,7 +822,10 @@ public:
   static bool supports_avx512cd() { return (_features & CPU_AVX512CD) != 0; }
   static bool supports_avx512bw() { return (_features & CPU_AVX512BW) != 0; }
   static bool supports_avx512vl() { return (_features & CPU_AVX512VL) != 0; }
-  static bool supports_avx512vlbw() { return (supports_avx512bw() && supports_avx512vl()); }
+  static bool supports_avx512vlbw() { return (supports_evex() && supports_avx512bw() && supports_avx512vl()); }
+  static bool supports_avx512vldq() { return (supports_evex() && supports_avx512dq() && supports_avx512vl()); }
+  static bool supports_avx512vlbwdq() { return (supports_evex() && supports_avx512vl() &&
+                                                supports_avx512bw() && supports_avx512dq()); }
   static bool supports_avx512novl() { return (supports_evex() && !supports_avx512vl()); }
   static bool supports_avx512nobw() { return (supports_evex() && !supports_avx512bw()); }
   static bool supports_avx256only() { return (supports_avx2() && !supports_evex()); }
@@ -783,6 +833,10 @@ public:
   static bool supports_sha()        { return (_features & CPU_SHA) != 0; }
   static bool supports_fma()        { return (_features & CPU_FMA) != 0 && supports_avx(); }
   static bool supports_vzeroupper() { return (_features & CPU_VZEROUPPER) != 0; }
+  static bool supports_vpopcntdq()  { return (_features & CPU_AVX512_VPOPCNTDQ) != 0; }
+  static bool supports_vpclmulqdq() { return (_features & CPU_VPCLMULQDQ) != 0; }
+  static bool supports_vaes()       { return (_features & CPU_VAES) != 0; }
+  static bool supports_vnni()       { return (_features & CPU_VNNI) != 0; }
 
   // Intel features
   static bool is_intel_family_core() { return is_intel() &&
@@ -808,7 +862,7 @@ public:
 
   // AMD features
   static bool supports_3dnow_prefetch()    { return (_features & CPU_3DNOW_PREFETCH) != 0; }
-  static bool supports_mmx_ext()  { return is_amd() && _cpuid_info.ext_cpuid1_edx.bits.mmx_amd != 0; }
+  static bool supports_mmx_ext()  { return is_amd_family() && _cpuid_info.ext_cpuid1_edx.bits.mmx_amd != 0; }
   static bool supports_lzcnt()    { return (_features & CPU_LZCNT) != 0; }
   static bool supports_sse4a()    { return (_features & CPU_SSE4A) != 0; }
 
@@ -821,8 +875,8 @@ public:
   }
   static bool supports_tscinv() {
     return supports_tscinv_bit() &&
-           ( (is_amd() && !is_amd_Barcelona()) ||
-             is_intel_tsc_synched_at_init() );
+      ((is_amd_family() && !is_amd_Barcelona()) ||
+        is_intel_tsc_synched_at_init());
   }
 
   // Intel Core and newer cpus have fast IDIV instruction (excluding Atom).
@@ -847,7 +901,7 @@ public:
     // Core      - 256 / prefetchnta
     // It will be used only when AllocatePrefetchStyle > 0
 
-    if (is_amd()) { // AMD
+    if (is_amd_family()) { // AMD | Hygon
       if (supports_sse2()) {
         return 256; // Opteron
       } else {
@@ -881,6 +935,16 @@ public:
   // that can be used for efficient implementation of
   // the intrinsic for java.lang.Thread.onSpinWait()
   static bool supports_on_spin_wait() { return supports_sse2(); }
+
+  // x86_64 supports fast class initialization checks for static methods.
+  static bool supports_fast_class_init_checks() {
+    return LP64_ONLY(true) NOT_LP64(false); // not implemented on x86_32
+  }
+
+  // support functions for virtualization detection
+ private:
+  static void check_virt_cpuid(uint32_t idx, uint32_t *regs);
+  static void check_virtualizations();
 };
 
-#endif // CPU_X86_VM_VM_VERSION_X86_HPP
+#endif // CPU_X86_VM_VERSION_X86_HPP

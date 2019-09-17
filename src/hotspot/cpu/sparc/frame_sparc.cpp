@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,7 @@
 #include "code/codeCache.hpp"
 #include "interpreter/interpreter.hpp"
 #include "memory/resourceArea.hpp"
+#include "memory/universe.hpp"
 #include "oops/markOop.hpp"
 #include "oops/method.hpp"
 #include "oops/oop.inline.hpp"
@@ -648,7 +649,7 @@ bool frame::is_interpreted_frame_valid(JavaThread* thread) const {
   Method* m = *interpreter_frame_method_addr();
 
   // validate the method we'd find in this potential sender
-  if (!m->is_valid_method()) return false;
+  if (!Method::is_valid_method(m)) return false;
 
   // stack frames shouldn't be much larger than max_stack elements
 
@@ -665,7 +666,7 @@ bool frame::is_interpreted_frame_valid(JavaThread* thread) const {
 
   // validate ConstantPoolCache*
   ConstantPoolCache* cp = *interpreter_frame_cache_addr();
-  if (cp == NULL || !cp->is_metaspace_object()) return false;
+  if (MetaspaceObj::is_valid(cp) == false) return false;
 
   // validate locals
 

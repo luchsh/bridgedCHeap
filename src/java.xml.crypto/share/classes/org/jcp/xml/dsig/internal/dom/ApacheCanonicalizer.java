@@ -21,10 +21,10 @@
  * under the License.
  */
 /*
- * Copyright (c) 2005, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * $Id: ApacheCanonicalizer.java 1333869 2012-05-04 10:42:44Z coheigea $
+ * $Id: ApacheCanonicalizer.java 1854026 2019-02-21 09:30:01Z coheigea $
  */
 package org.jcp.xml.dsig.internal.dom;
 
@@ -34,6 +34,7 @@ import java.io.OutputStream;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.InvalidAlgorithmParameterException;
 import java.util.Set;
+
 import javax.xml.crypto.*;
 import javax.xml.crypto.dom.DOMCryptoContext;
 import javax.xml.crypto.dsig.TransformException;
@@ -54,8 +55,8 @@ public abstract class ApacheCanonicalizer extends TransformService {
         com.sun.org.apache.xml.internal.security.Init.init();
     }
 
-    private static java.util.logging.Logger log =
-        java.util.logging.Logger.getLogger("org.jcp.xml.dsig.internal.dom");
+    private static final com.sun.org.slf4j.internal.Logger LOG =
+        com.sun.org.slf4j.internal.LoggerFactory.getLogger(ApacheCanonicalizer.class);
     protected Canonicalizer apacheCanonicalizer;
     private Transform apacheTransform;
     protected String inclusiveNamespaces;
@@ -116,9 +117,9 @@ public abstract class ApacheCanonicalizer extends TransformService {
         if (apacheCanonicalizer == null) {
             try {
                 apacheCanonicalizer = Canonicalizer.getInstance(getAlgorithm());
-                if (log.isLoggable(java.util.logging.Level.FINE)) {
-                    log.log(java.util.logging.Level.FINE, "Created canonicalizer for algorithm: " + getAlgorithm());
-                }
+                boolean secVal = Utils.secureValidation(xc);
+                apacheCanonicalizer.setSecureValidation(secVal);
+                LOG.debug("Created canonicalizer for algorithm: {}", getAlgorithm());
             } catch (InvalidCanonicalizerException ice) {
                 throw new TransformException
                     ("Couldn't find Canonicalizer for: " + getAlgorithm() +
@@ -167,11 +168,9 @@ public abstract class ApacheCanonicalizer extends TransformService {
                 }
             } else if (data instanceof NodeSetData) {
                 NodeSetData<?> nsd = (NodeSetData<?>)data;
-                // convert Iterator to Set<Node>
+                // convert Iterator to Set
                 nodeSet = Utils.toNodeSet(nsd.iterator());
-                if (log.isLoggable(java.util.logging.Level.FINE)) {
-                    log.log(java.util.logging.Level.FINE, "Canonicalizing " + nodeSet.size() + " nodes");
-                }
+                LOG.debug("Canonicalizing {} nodes", nodeSet.size());
             } else {
                 return new OctetStreamData(new ByteArrayInputStream(
                     apacheCanonicalizer.canonicalize(
@@ -210,9 +209,9 @@ public abstract class ApacheCanonicalizer extends TransformService {
                 apacheTransform =
                     new Transform(ownerDoc, getAlgorithm(), transformElem.getChildNodes());
                 apacheTransform.setElement(transformElem, xc.getBaseURI());
-                if (log.isLoggable(java.util.logging.Level.FINE)) {
-                    log.log(java.util.logging.Level.FINE, "Created transform for algorithm: " + getAlgorithm());
-                }
+                boolean secVal = Utils.secureValidation(xc);
+                apacheTransform.setSecureValidation(secVal);
+                LOG.debug("Created transform for algorithm: {}", getAlgorithm());
             } catch (Exception ex) {
                 throw new TransformException
                     ("Couldn't find Transform for: " + getAlgorithm(), ex);
@@ -221,27 +220,22 @@ public abstract class ApacheCanonicalizer extends TransformService {
 
         XMLSignatureInput in;
         if (data instanceof ApacheData) {
-            if (log.isLoggable(java.util.logging.Level.FINE)) {
-                log.log(java.util.logging.Level.FINE, "ApacheData = true");
-            }
+            LOG.debug("ApacheData = true");
             in = ((ApacheData)data).getXMLSignatureInput();
         } else if (data instanceof NodeSetData) {
-            if (log.isLoggable(java.util.logging.Level.FINE)) {
-                log.log(java.util.logging.Level.FINE, "isNodeSet() = true");
-            }
+            LOG.debug("isNodeSet() = true");
             if (data instanceof DOMSubTreeData) {
                 DOMSubTreeData subTree = (DOMSubTreeData)data;
                 in = new XMLSignatureInput(subTree.getRoot());
                 in.setExcludeComments(subTree.excludeComments());
             } else {
+                @SuppressWarnings("unchecked")
                 Set<Node> nodeSet =
                     Utils.toNodeSet(((NodeSetData)data).iterator());
                 in = new XMLSignatureInput(nodeSet);
             }
         } else {
-            if (log.isLoggable(java.util.logging.Level.FINE)) {
-                log.log(java.util.logging.Level.FINE, "isNodeSet() = false");
-            }
+            LOG.debug("isNodeSet() = false");
             try {
                 in = new XMLSignatureInput
                     (((OctetStreamData)data).getOctetStream());
@@ -249,6 +243,9 @@ public abstract class ApacheCanonicalizer extends TransformService {
                 throw new TransformException(ex);
             }
         }
+
+        boolean secVal = Utils.secureValidation(xc);
+        in.setSecureValidation(secVal);
 
         try {
             in = apacheTransform.performTransform(in, os);

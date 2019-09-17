@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,15 +23,17 @@
 
 /*
  * @test
- * @bug 4634891 8025633 8026567
+ * @bug 4634891 8025633 8026567 8182765
  * @summary Determine if overridden methods are properly documented when
  * -protected (default) visibility flag is used.
  * @author jamieh
- * @library ../lib
+ * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
- * @build JavadocTester
+ * @build javadoc.tester.*
  * @run main TestOverriddenPrivateMethodsWithPackageFlag
  */
+
+import javadoc.tester.JavadocTester;
 
 public class TestOverriddenPrivateMethodsWithPackageFlag extends JavadocTester {
 
@@ -41,7 +43,7 @@ public class TestOverriddenPrivateMethodsWithPackageFlag extends JavadocTester {
     }
 
     @Test
-    void test() {
+    public void test() {
         javadoc("-d", "out",
                 "-sourcepath", testSrc,
                 "-package",
@@ -51,14 +53,14 @@ public class TestOverriddenPrivateMethodsWithPackageFlag extends JavadocTester {
         // The public method should be overridden
         checkOutput("pkg1/SubClass.html", true,
                 "<dt><span class=\"overrideSpecifyLabel\">Overrides:</span></dt>\n"
-                + "<dd><code><a href=\"BaseClass.html#publicMethod--\">"
+                + "<dd><code><a href=\"BaseClass.html#publicMethod()\">"
                 + "publicMethod</a></code>&nbsp;in class&nbsp;<code>"
                 + "<a href=\"BaseClass.html\" title=\"class in pkg1\">BaseClass</a></code></dd>");
 
         // The public method in different package should be overridden
         checkOutput("pkg2/SubClass.html", true,
                 "<dt><span class=\"overrideSpecifyLabel\">Overrides:</span></dt>\n"
-                + "<dd><code><a href=\"../pkg1/BaseClass.html#publicMethod--\">"
+                + "<dd><code><a href=\"../pkg1/BaseClass.html#publicMethod()\">"
                 + "publicMethod</a></code>&nbsp;in class&nbsp;<code>"
                 + "<a href=\"../pkg1/BaseClass.html\" title=\"class in pkg1\">BaseClass</a></code></dd>");
 
@@ -66,24 +68,24 @@ public class TestOverriddenPrivateMethodsWithPackageFlag extends JavadocTester {
         // package.
         checkOutput("pkg1/SubClass.html", true,
                 "<dt><span class=\"overrideSpecifyLabel\">Overrides:</span></dt>\n"
-                + "<dd><code><a href=\"BaseClass.html#packagePrivateMethod--\">"
+                + "<dd><code><a href=\"BaseClass.html#packagePrivateMethod()\">"
                 + "packagePrivateMethod</a></code>&nbsp;in class&nbsp;<code>"
                 + "<a href=\"BaseClass.html\" title=\"class in pkg1\">BaseClass</a></code></dd>");
 
         // The private method in should not be overridden
         checkOutput("pkg1/SubClass.html", false,
                 "<dt><span class=\"overrideSpecifyLabel\">Overrides:</span></dt>\n"
-                + "<dd><code><a href=\"BaseClass.html#privateMethod()\">");
+                + "<dd><code><a href=\"BaseClass.html#privateMethod--\">");
 
         // The private method in different package should not be overridden
         checkOutput("pkg2/SubClass.html", false,
                 "<dt><span class=\"overrideSpecifyLabel\">Overrides:</span></dt>\n"
-                + "<dd><code><a href=\"../pkg1/BaseClass.html#privateMethod()\">");
+                + "<dd><code><a href=\"../pkg1/BaseClass.html#privateMethod--\">");
 
         // The package private method should not be overridden since the base and sub class are in
         // different packages.
         checkOutput("pkg2/SubClass.html", false,
                 "<dt><span class=\"overrideSpecifyLabel\">Overrides:</span></dt>\n"
-                + "<dd><code><a href=\"../pkg1/BaseClass.html#packagePrivateMethod()\">");
+                + "<dd><code><a href=\"../pkg1/BaseClass.html#packagePrivateMethod--\">");
     }
 }

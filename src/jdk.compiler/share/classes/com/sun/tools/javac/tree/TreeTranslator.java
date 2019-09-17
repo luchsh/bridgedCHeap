@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -207,8 +207,14 @@ public class TreeTranslator extends JCTree.Visitor {
     }
 
     public void visitCase(JCCase tree) {
-        tree.pat = translate(tree.pat);
+        tree.pats = translate(tree.pats);
         tree.stats = translate(tree.stats);
+        result = tree;
+    }
+
+    public void visitSwitchExpression(JCSwitchExpression tree) {
+        tree.selector = translate(tree.selector);
+        tree.cases = translateCases(tree.cases);
         result = tree;
     }
 
@@ -252,6 +258,11 @@ public class TreeTranslator extends JCTree.Visitor {
     }
 
     public void visitBreak(JCBreak tree) {
+        result = tree;
+    }
+
+    public void visitYield(JCYield tree) {
+        tree.value = translate(tree.value);
         result = tree;
     }
 
@@ -419,7 +430,7 @@ public class TreeTranslator extends JCTree.Visitor {
     }
 
     public void visitLetExpr(LetExpr tree) {
-        tree.defs = translateVarDefs(tree.defs);
+        tree.defs = translate(tree.defs);
         tree.expr = translate(tree.expr);
         result = tree;
     }

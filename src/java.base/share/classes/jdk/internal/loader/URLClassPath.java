@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,6 +34,7 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.JarURLConnection;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
@@ -43,8 +44,10 @@ import java.security.AccessControlException;
 import java.security.AccessController;
 import java.security.CodeSigner;
 import java.security.Permission;
+import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.security.cert.Certificate;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -56,7 +59,6 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Properties;
 import java.util.Set;
-import java.util.Stack;
 import java.util.StringTokenizer;
 import java.util.jar.JarFile;
 import java.util.zip.ZipEntry;
@@ -66,9 +68,9 @@ import java.util.jar.Attributes;
 import java.util.jar.Attributes.Name;
 import java.util.zip.ZipFile;
 
-import jdk.internal.misc.JavaNetURLAccess;
-import jdk.internal.misc.JavaUtilZipFileAccess;
-import jdk.internal.misc.SharedSecrets;
+import jdk.internal.access.JavaNetURLAccess;
+import jdk.internal.access.JavaUtilZipFileAccess;
+import jdk.internal.access.SharedSecrets;
 import jdk.internal.util.jar.InvalidJarIndexError;
 import jdk.internal.util.jar.JarIndex;
 import sun.net.util.URLUtil;
@@ -87,23 +89,34 @@ public class URLClassPath {
     private static final boolean DEBUG;
     private static final boolean DISABLE_JAR_CHECKING;
     private static final boolean DISABLE_ACC_CHECKING;
+    private static final boolean DISABLE_CP_URL_CHECK;
+    private static final boolean DEBUG_CP_URL_CHECK;
 
     static {
         Properties props = GetPropertyAction.privilegedGetProperties();
         JAVA_VERSION = props.getProperty("java.version");
         DEBUG = (props.getProperty("sun.misc.URLClassPath.debug") != null);
         String p = props.getProperty("sun.misc.URLClassPath.disableJarChecking");
-        DISABLE_JAR_CHECKING = p != null ? p.equals("true") || p.equals("") : false;
+        DISABLE_JAR_CHECKING = p != null ? p.equals("true") || p.isEmpty() : false;
 
         p = props.getProperty("jdk.net.URLClassPath.disableRestrictedPermissions");
-        DISABLE_ACC_CHECKING = p != null ? p.equals("true") || p.equals("") : false;
+        DISABLE_ACC_CHECKING = p != null ? p.equals("true") || p.isEmpty() : false;
+
+        // This property will be removed in a later release
+        p = props.getProperty("jdk.net.URLClassPath.disableClassPathURLCheck");
+        DISABLE_CP_URL_CHECK = p != null ? p.equals("true") || p.isEmpty() : false;
+
+        // Print a message for each Class-Path entry that is ignored (assuming
+        // the check is not disabled).
+        p = props.getProperty("jdk.net.URLClassPath.showIgnoredClassPathEntries");
+        DEBUG_CP_URL_CHECK = p != null ? p.equals("true") || p.isEmpty() : false;
     }
 
     /* The original search path of URLs. */
-    private final List<URL> path;
+    private final ArrayList<URL> path;
 
-    /* The stack of unopened URLs */
-    private final Stack<URL> urls = new Stack<>();
+    /* The deque of unopened URLs */
+    private final ArrayDeque<URL> unopenedUrls;
 
     /* The resulting search path of Loaders */
     private final ArrayList<Loader> loaders = new ArrayList<>();
@@ -137,12 +150,15 @@ public class URLClassPath {
     public URLClassPath(URL[] urls,
                         URLStreamHandlerFactory factory,
                         AccessControlContext acc) {
-        List<URL> path = new ArrayList<>(urls.length);
+        ArrayList<URL> path = new ArrayList<>(urls.length);
+        ArrayDeque<URL> unopenedUrls = new ArrayDeque<>(urls.length);
         for (URL url : urls) {
             path.add(url);
+            unopenedUrls.add(url);
         }
         this.path = path;
-        push(urls);
+        this.unopenedUrls = unopenedUrls;
+
         if (factory != null) {
             jarHandler = factory.createURLStreamHandler("jar");
         } else {
@@ -168,33 +184,31 @@ public class URLClassPath {
      * @apiNote Used to create the application class path.
      */
     URLClassPath(String cp, boolean skipEmptyElements) {
-        List<URL> path = new ArrayList<>();
+        ArrayList<URL> path = new ArrayList<>();
         if (cp != null) {
             // map each element of class path to a file URL
-            int off = 0;
-            int next;
-            while ((next = cp.indexOf(File.pathSeparator, off)) != -1) {
-                String element = cp.substring(off, next);
-                if (element.length() > 0 || !skipEmptyElements) {
+            int off = 0, next;
+            do {
+                next = cp.indexOf(File.pathSeparator, off);
+                String element = (next == -1)
+                    ? cp.substring(off)
+                    : cp.substring(off, next);
+                if (!element.isEmpty() || !skipEmptyElements) {
                     URL url = toFileURL(element);
                     if (url != null) path.add(url);
                 }
                 off = next + 1;
-            }
-
-            // remaining element
-            String element = cp.substring(off);
-            if (element.length() > 0 || !skipEmptyElements) {
-                URL url = toFileURL(element);
-                if (url != null) path.add(url);
-            }
-
-            // push the URLs
-            for (int i = path.size() - 1; i >= 0; --i) {
-                urls.push(path.get(i));
-            }
+            } while (next != -1);
         }
 
+        // can't use ArrayDeque#addAll or new ArrayDeque(Collection);
+        // it's too early in the bootstrap to trigger use of lambdas
+        int size = path.size();
+        ArrayDeque<URL> unopenedUrls = new ArrayDeque<>(size);
+        for (int i = 0; i < size; i++)
+            unopenedUrls.add(path.get(i));
+
+        this.unopenedUrls = unopenedUrls;
         this.path = path;
         this.jarHandler = null;
         this.acc = null;
@@ -209,7 +223,7 @@ public class URLClassPath {
             try {
                 loader.close();
             } catch (IOException e) {
-                result.add (e);
+                result.add(e);
             }
         }
         closed = true;
@@ -224,14 +238,13 @@ public class URLClassPath {
      * URLs, then invoking this method has no effect.
      */
     public synchronized void addURL(URL url) {
-        if (closed)
+        if (closed || url == null)
             return;
-        synchronized (urls) {
-            if (url == null || path.contains(url))
-                return;
-
-            urls.add(0, url);
-            path.add(url);
+        synchronized (unopenedUrls) {
+            if (! path.contains(url)) {
+                unopenedUrls.addLast(url);
+                path.add(url);
+            }
         }
     }
 
@@ -261,8 +274,8 @@ public class URLClassPath {
      * Returns the original search path of URLs.
      */
     public URL[] getURLs() {
-        synchronized (urls) {
-            return path.toArray(new URL[path.size()]);
+        synchronized (unopenedUrls) {
+            return path.toArray(new URL[0]);
         }
     }
 
@@ -272,7 +285,7 @@ public class URLClassPath {
      *
      * @param name      the name of the resource
      * @param check     whether to perform a security check
-     * @return a <code>URL</code> for the resource, or <code>null</code>
+     * @return a {@code URL} for the resource, or {@code null}
      * if the resource could not be found.
      */
     public URL findResource(String name, boolean check) {
@@ -412,17 +425,14 @@ public class URLClassPath {
         if (closed) {
             return null;
         }
-         // Expand URL search path until the request can be satisfied
-         // or the URL stack is empty.
+        // Expand URL search path until the request can be satisfied
+        // or unopenedUrls is exhausted.
         while (loaders.size() < index + 1) {
-            // Pop the next URL from the URL stack
-            URL url;
-            synchronized (urls) {
-                if (urls.empty()) {
+            final URL url;
+            synchronized (unopenedUrls) {
+                url = unopenedUrls.pollFirst();
+                if (url == null)
                     return null;
-                } else {
-                    url = urls.pop();
-                }
             }
             // Skip this URL if it already has a Loader. (Loader
             // may be null in the case where URL has not been opened
@@ -436,7 +446,7 @@ public class URLClassPath {
             try {
                 loader = getLoader(url);
                 // If the loader defines a local class path then add the
-                // URLs to the list of URLs to be opened.
+                // URLs as the next URLs to be opened.
                 URL[] urls = loader.getClassPath();
                 if (urls != null) {
                     push(urls);
@@ -465,8 +475,8 @@ public class URLClassPath {
      */
     private Loader getLoader(final URL url) throws IOException {
         try {
-            return java.security.AccessController.doPrivileged(
-                    new java.security.PrivilegedExceptionAction<>() {
+            return AccessController.doPrivileged(
+                    new PrivilegedExceptionAction<>() {
                         public Loader run() throws IOException {
                             String protocol = url.getProtocol();  // lower cased in URL
                             String file = url.getFile();
@@ -487,7 +497,7 @@ public class URLClassPath {
                             }
                         }
                     }, acc);
-        } catch (java.security.PrivilegedActionException pae) {
+        } catch (PrivilegedActionException pae) {
             throw (IOException)pae.getException();
         }
     }
@@ -501,19 +511,19 @@ public class URLClassPath {
     }
 
     /*
-     * Pushes the specified URLs onto the list of unopened URLs.
+     * Pushes the specified URLs onto the head of unopened URLs.
      */
-    private void push(URL[] us) {
-        synchronized (urls) {
-            for (int i = us.length - 1; i >= 0; --i) {
-                urls.push(us[i]);
+    private void push(URL[] urls) {
+        synchronized (unopenedUrls) {
+            for (int i = urls.length - 1; i >= 0; --i) {
+                unopenedUrls.addFirst(urls[i]);
             }
         }
     }
 
     /*
-     * Check whether the resource URL should be returned.
-     * Return null on security check failure.
+     * Checks whether the resource URL should be returned.
+     * Returns null on security check failure.
      * Called by java.net.URLClassLoader.
      */
     public static URL checkURL(URL url) {
@@ -528,8 +538,8 @@ public class URLClassPath {
     }
 
     /*
-     * Check whether the resource URL should be returned.
-     * Throw exception on failure.
+     * Checks whether the resource URL should be returned.
+     * Throws exception on failure.
      * Called internally within this file.
      */
     public static void check(URL url) throws IOException {
@@ -668,8 +678,8 @@ public class URLClassPath {
         }
 
         /*
-         * close this loader and release all resources
-         * method overridden in sub-classes
+         * Closes this loader and release all resources.
+         * Method overridden in sub-classes.
          */
         @Override
         public void close() throws IOException {
@@ -740,8 +750,8 @@ public class URLClassPath {
         private void ensureOpen() throws IOException {
             if (jar == null) {
                 try {
-                    java.security.AccessController.doPrivileged(
-                        new java.security.PrivilegedExceptionAction<>() {
+                    AccessController.doPrivileged(
+                        new PrivilegedExceptionAction<>() {
                             public Void run() throws IOException {
                                 if (DEBUG) {
                                     System.err.println("Opening " + csu);
@@ -757,7 +767,7 @@ public class URLClassPath {
                                 // if the same URL occurs later on the main class path.  We set
                                 // Loader to null here to avoid creating a Loader for each
                                 // URL until we actually need to try to load something from them.
-                                    for(int i = 0; i < jarfiles.length; i++) {
+                                    for (int i = 0; i < jarfiles.length; i++) {
                                         try {
                                             URL jarURL = new URL(csu, jarfiles[i]);
                                             // If a non-null loader already exists, leave it alone.
@@ -773,7 +783,7 @@ public class URLClassPath {
                                 return null;
                             }
                         }, acc);
-                } catch (java.security.PrivilegedActionException pae) {
+                } catch (PrivilegedActionException pae) {
                     throw (IOException)pae.getException();
                 }
             }
@@ -798,7 +808,7 @@ public class URLClassPath {
         private JarFile getJarFile(URL url) throws IOException {
             // Optimize case where url refers to a local jar file
             if (isOptimizable(url)) {
-                FileURLMapper p = new FileURLMapper (url);
+                FileURLMapper p = new FileURLMapper(url);
                 if (!p.exists()) {
                     throw new FileNotFoundException(p.getPath());
                 }
@@ -859,8 +869,10 @@ public class URLClassPath {
                     { return jar.getInputStream(entry); }
                 public int getContentLength()
                     { return (int)entry.getSize(); }
-                public Manifest getManifest() throws IOException
-                    { return jar.getManifest(); };
+                public Manifest getManifest() throws IOException {
+                    SharedSecrets.javaUtilJarAccess().ensureInitialization(jar);
+                    return jar.getManifest();
+                }
                 public Certificate[] getCertificates()
                     { return entry.getCertificates(); };
                 public CodeSigner[] getCodeSigners()
@@ -876,7 +888,7 @@ public class URLClassPath {
         boolean validIndex(final String name) {
             String packageName = name;
             int pos;
-            if((pos = name.lastIndexOf('/')) != -1) {
+            if ((pos = name.lastIndexOf('/')) != -1) {
                 packageName = name.substring(0, pos);
             }
 
@@ -886,7 +898,7 @@ public class URLClassPath {
             while (enum_.hasMoreElements()) {
                 entry = enum_.nextElement();
                 entryName = entry.getName();
-                if((pos = entryName.lastIndexOf('/')) != -1)
+                if ((pos = entryName.lastIndexOf('/')) != -1)
                     entryName = entryName.substring(0, pos);
                 if (entryName.equals(packageName)) {
                     return true;
@@ -933,7 +945,7 @@ public class URLClassPath {
          * visited by linking through the index files. This helper method uses
          * a HashSet to store the URLs of jar files that have been searched and
          * uses it to avoid going into an infinite loop, looking for a
-         * non-existent resource
+         * non-existent resource.
          */
         Resource getResource(final String name, boolean check,
                              Set<String> visited) {
@@ -945,14 +957,14 @@ public class URLClassPath {
             /* If there no jar files in the index that can potential contain
              * this resource then return immediately.
              */
-            if((jarFilesList = index.get(name)) == null)
+            if ((jarFilesList = index.get(name)) == null)
                 return null;
 
             do {
                 int size = jarFilesList.size();
                 jarFiles = jarFilesList.toArray(new String[size]);
                 /* loop through the mapped jar file list */
-                while(count < size) {
+                while (count < size) {
                     String jarName = jarFiles[count++];
                     JarLoader newLoader;
                     final URL url;
@@ -977,7 +989,7 @@ public class URLClassPath {
                              * account the relative path.
                              */
                             JarIndex newIndex = newLoader.getIndex();
-                            if(newIndex != null) {
+                            if (newIndex != null) {
                                 int pos = jarName.lastIndexOf('/');
                                 newIndex.merge(this.index, (pos == -1 ?
                                     null : jarName.substring(0, pos + 1)));
@@ -986,7 +998,7 @@ public class URLClassPath {
                             /* put it in the global hashtable */
                             lmap.put(urlNoFragString, newLoader);
                         }
-                    } catch (java.security.PrivilegedActionException pae) {
+                    } catch (PrivilegedActionException pae) {
                         continue;
                     } catch (MalformedURLException e) {
                         continue;
@@ -1029,7 +1041,7 @@ public class URLClassPath {
 
                     /* Process the index of the new loader
                      */
-                    if((res = newLoader.getResource(name, check, visited))
+                    if ((res = newLoader.getResource(name, check, visited))
                             != null) {
                         return res;
                     }
@@ -1039,7 +1051,7 @@ public class URLClassPath {
                 jarFilesList = index.get(name);
 
             // If the count is unchanged, we are done.
-            } while(count < jarFilesList.size());
+            } while (count < jarFilesList.size());
             return null;
         }
 
@@ -1083,10 +1095,93 @@ public class URLClassPath {
             int i = 0;
             while (st.hasMoreTokens()) {
                 String path = st.nextToken();
-                urls[i] = new URL(base, path);
-                i++;
+                URL url = DISABLE_CP_URL_CHECK ? new URL(base, path) : tryResolve(base, path);
+                if (url != null) {
+                    urls[i] = url;
+                    i++;
+                } else {
+                    if (DEBUG_CP_URL_CHECK) {
+                        System.err.println("Class-Path entry: \"" + path
+                                           + "\" ignored in JAR file " + base);
+                    }
+                }
+            }
+            if (i == 0) {
+                urls = null;
+            } else if (i != urls.length) {
+                // Truncate nulls from end of array
+                urls = Arrays.copyOf(urls, i);
             }
             return urls;
+        }
+
+        static URL tryResolve(URL base, String input) throws MalformedURLException {
+            if ("file".equalsIgnoreCase(base.getProtocol())) {
+                return tryResolveFile(base, input);
+            } else {
+                return tryResolveNonFile(base, input);
+            }
+        }
+
+        /**
+         * Attempt to return a file URL by resolving input against a base file
+         * URL. The input is an absolute or relative file URL that encodes a
+         * file path.
+         *
+         * @apiNote Nonsensical input such as a Windows file path with a drive
+         * letter cannot be disambiguated from an absolute URL so will be rejected
+         * (by returning null) by this method.
+         *
+         * @return the resolved URL or null if the input is an absolute URL with
+         *         a scheme other than file (ignoring case)
+         * @throws MalformedURLException
+         */
+        static URL tryResolveFile(URL base, String input) throws MalformedURLException {
+            int index = input.indexOf(':');
+            boolean isFile;
+            if (index >= 0) {
+                String scheme = input.substring(0, index);
+                isFile = "file".equalsIgnoreCase(scheme);
+            } else {
+                isFile = true;
+            }
+            return (isFile) ? new URL(base, input) : null;
+        }
+
+        /**
+         * Attempt to return a URL by resolving input against a base URL. Returns
+         * null if the resolved URL is not contained by the base URL.
+         *
+         * @return the resolved URL or null
+         * @throws MalformedURLException
+         */
+        static URL tryResolveNonFile(URL base, String input) throws MalformedURLException {
+            String child = input.replace(File.separatorChar, '/');
+            if (isRelative(child)) {
+                URL url = new URL(base, child);
+                String bp = base.getPath();
+                String urlp = url.getPath();
+                int pos = bp.lastIndexOf('/');
+                if (pos == -1) {
+                    pos = bp.length() - 1;
+                }
+                if (urlp.regionMatches(0, bp, 0, pos + 1)
+                        && urlp.indexOf("..", pos) == -1) {
+                    return url;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Returns true if the given input is a relative URI.
+         */
+        static boolean isRelative(String child) {
+            try {
+                return !URI.create(child).isAbsolute();
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
         }
     }
 

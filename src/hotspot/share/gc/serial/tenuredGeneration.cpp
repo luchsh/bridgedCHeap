@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,6 +30,7 @@
 #include "gc/shared/collectorCounters.hpp"
 #include "gc/shared/gcTimer.hpp"
 #include "gc/shared/gcTrace.hpp"
+#include "gc/shared/genCollectedHeap.hpp"
 #include "gc/shared/genOopClosures.inline.hpp"
 #include "gc/shared/generationSpec.hpp"
 #include "gc/shared/space.hpp"
@@ -38,12 +39,14 @@
 #include "oops/oop.inline.hpp"
 #include "runtime/java.hpp"
 #include "utilities/macros.hpp"
-#if INCLUDE_ALL_GCS
+#if INCLUDE_CMSGC
 #include "gc/cms/parOopClosures.hpp"
 #endif
 
 TenuredGeneration::TenuredGeneration(ReservedSpace rs,
                                      size_t initial_byte_size,
+                                     size_t min_byte_size,
+                                     size_t max_byte_size,
                                      CardTableRS* remset) :
   CardGeneration(rs, initial_byte_size, remset)
 {
@@ -59,12 +62,11 @@ TenuredGeneration::TenuredGeneration(ReservedSpace rs,
   // initialize performance counters
 
   const char* gen_name = "old";
-  GenCollectorPolicy* gcp = GenCollectedHeap::heap()->gen_policy();
   // Generation Counters -- generation 1, 1 subspace
   _gen_counters = new GenerationCounters(gen_name, 1, 1,
-      gcp->min_old_size(), gcp->max_old_size(), &_virtual_space);
+      min_byte_size, max_byte_size, &_virtual_space);
 
-  _gc_counters = new CollectorCounters("MSC", 1);
+  _gc_counters = new CollectorCounters("Serial full collection pauses", 1);
 
   _space_counters = new CSpaceCounters(gen_name, 0,
                                        _virtual_space.reserved_size(),
@@ -254,20 +256,6 @@ void TenuredGeneration::reset_saved_marks() {
 bool TenuredGeneration::no_allocs_since_save_marks() {
   return _the_space->saved_mark_at_top();
 }
-
-#define TenuredGen_SINCE_SAVE_MARKS_ITERATE_DEFN(OopClosureType, nv_suffix)     \
-                                                                                \
-void TenuredGeneration::                                                        \
-oop_since_save_marks_iterate##nv_suffix(OopClosureType* blk) {                  \
-  blk->set_generation(this);                                                    \
-  _the_space->oop_since_save_marks_iterate##nv_suffix(blk);                     \
-  blk->reset_generation();                                                      \
-  save_marks();                                                                 \
-}
-
-ALL_SINCE_SAVE_MARKS_CLOSURES(TenuredGen_SINCE_SAVE_MARKS_ITERATE_DEFN)
-
-#undef TenuredGen_SINCE_SAVE_MARKS_ITERATE_DEFN
 
 void TenuredGeneration::gc_epilogue(bool full) {
   // update the generation and space performance counters

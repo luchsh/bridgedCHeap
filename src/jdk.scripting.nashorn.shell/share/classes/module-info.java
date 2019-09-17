@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,14 +29,12 @@
  * <p>This module includes the command line tool <em>{@index jjs jjs tool}</em>
  * to invoke the Nashorn engine.
  *
- * <dl style="font-family:'DejaVu Sans', Arial, Helvetica, sans serif">
- * <dt class="simpleTagLabel">Tool Guides:
- * <dd>{@extLink jjs_tool_reference jjs}
- * </dl>
+ * @toolGuide jjs
  *
  * @moduleGraph
  * @since 9
  */
+@Deprecated(since="11", forRemoval=true)
 module jdk.scripting.nashorn.shell {
     requires static java.compiler;
     requires jdk.internal.le;

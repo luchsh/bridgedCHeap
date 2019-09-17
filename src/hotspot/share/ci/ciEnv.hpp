@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_CI_CIENV_HPP
-#define SHARE_VM_CI_CIENV_HPP
+#ifndef SHARE_CI_CIENV_HPP
+#define SHARE_CI_CIENV_HPP
 
 #include "ci/ciClassList.hpp"
 #include "ci/ciObjectFactory.hpp"
@@ -32,6 +32,7 @@
 #include "code/dependencies.hpp"
 #include "code/exceptionHandlerTable.hpp"
 #include "compiler/oopMap.hpp"
+#include "oops/methodData.hpp"
 #include "runtime/thread.hpp"
 
 class CompileTask;
@@ -45,6 +46,7 @@ class ciEnv : StackObj {
 
   friend class CompileBroker;
   friend class Dependencies;  // for get_object, during logging
+  friend class PrepareExtraDataClosure;
 
 private:
   Arena*           _arena;       // Alias for _ciEnv_arena except in init_shared_objects()
@@ -81,7 +83,7 @@ private:
   // Distinguished instances of certain ciObjects..
   static ciObject*              _null_object_instance;
 
-#define WK_KLASS_DECL(name, ignore_s, ignore_o) static ciInstanceKlass* _##name;
+#define WK_KLASS_DECL(name, ignore_s) static ciInstanceKlass* _##name;
   WK_KLASSES_DO(WK_KLASS_DECL)
 #undef WK_KLASS_DECL
 
@@ -187,6 +189,10 @@ private:
     }
   }
 
+  ciMetadata* cached_metadata(Metadata* o) {
+    return _factory->cached_metadata(o);
+  }
+
   ciInstance* get_instance(oop o) {
     if (o == NULL) return NULL;
     return get_object(o)->as_instance();
@@ -286,6 +292,8 @@ private:
   // respect to method dependencies (e.g. concurrent class loading).
   void validate_compile_task_dependencies(ciMethod* target);
 
+  // Call internally when Compile_lock is already held.
+  bool system_dictionary_modification_counter_changed_locked();
 public:
   enum {
     MethodCompilable,
@@ -337,7 +345,9 @@ public:
   // Cache Jvmti state
   void  cache_jvmti_state();
   bool  jvmti_state_changed() const;
-  bool  should_retain_local_variables() const;
+  bool  should_retain_local_variables() const {
+    return _jvmti_can_access_local_variables || _jvmti_can_pop_frame;
+  }
   bool  jvmti_can_hotswap_or_post_breakpoint() const { return _jvmti_can_hotswap_or_post_breakpoint; }
   bool  jvmti_can_post_on_exceptions()         const { return _jvmti_can_post_on_exceptions; }
 
@@ -373,7 +383,7 @@ public:
 
 
   // Access to certain well known ciObjects.
-#define WK_KLASS_FUNC(name, ignore_s, ignore_o) \
+#define WK_KLASS_FUNC(name, ignore_s) \
   ciInstanceKlass* name() { \
     return _##name;\
   }
@@ -455,7 +465,7 @@ public:
   void record_out_of_memory_failure();
 
   // RedefineClasses support
-  void metadata_do(void f(Metadata*)) { _factory->metadata_do(f); }
+  void metadata_do(MetadataClosure* f) { _factory->metadata_do(f); }
 
   // Dump the compilation replay data for the ciEnv to the stream.
   void dump_replay_data(int compile_id);
@@ -465,4 +475,4 @@ public:
   void dump_compile_data(outputStream* out);
 };
 
-#endif // SHARE_VM_CI_CIENV_HPP
+#endif // SHARE_CI_CIENV_HPP

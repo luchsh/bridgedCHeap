@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -51,10 +51,8 @@ public final class SunNativeProvider extends Provider {
     private static final String INFO = "Sun Native GSS provider";
     private static final String MF_CLASS =
         "sun.security.jgss.wrapper.NativeGSSFactory";
-    private static final String LIB_PROP = "sun.security.jgss.lib";
-    private static final String DEBUG_PROP = "sun.security.nativegss.debug";
-    private static HashMap<String, String> MECH_MAP;
-    static final Provider INSTANCE = new SunNativeProvider();
+    private static final HashMap<String, String> MECH_MAP;
+    static final Provider INSTANCE;
     static boolean DEBUG;
     static void debug(String message) {
         if (DEBUG) {
@@ -68,10 +66,10 @@ public final class SunNativeProvider extends Provider {
     static {
         MECH_MAP =
             AccessController.doPrivileged(
-                new PrivilegedAction<HashMap<String, String>>() {
+                new PrivilegedAction<>() {
                     public HashMap<String, String> run() {
-                        DEBUG = Boolean.parseBoolean
-                            (System.getProperty(DEBUG_PROP));
+                        DEBUG = Boolean.parseBoolean(
+                            System.getProperty("sun.security.nativegss.debug"));
                         try {
                             System.loadLibrary("j2gss");
                         } catch (Error err) {
@@ -79,8 +77,9 @@ public final class SunNativeProvider extends Provider {
                             if (DEBUG) err.printStackTrace();
                             return null;
                         }
-                        String[] gssLibs = new String[0];
-                        String defaultLib = System.getProperty(LIB_PROP);
+                        String[] gssLibs;
+                        String defaultLib
+                                = System.getProperty("sun.security.jgss.lib");
                         if (defaultLib == null || defaultLib.trim().equals("")) {
                             String osname = System.getProperty("os.name");
                             if (osname.startsWith("SunOS")) {
@@ -96,6 +95,12 @@ public final class SunNativeProvider extends Provider {
                                     "libgssapi_krb5.dylib",
                                     "/usr/lib/sasl2/libgssapiv2.2.so",
                                };
+                            } else if (osname.contains("Windows")) {
+                                // Full path needed, DLL is in jre/bin
+                                gssLibs = new String[]{ System.getProperty("java.home")
+                                        + "\\bin\\sspi_bridge.dll" };
+                            } else {
+                                gssLibs = new String[0];
                             }
                         } else {
                             gssLibs = new String[]{ defaultLib };
@@ -104,8 +109,7 @@ public final class SunNativeProvider extends Provider {
                             if (GSSLibStub.init(libName, DEBUG)) {
                                 debug("Loaded GSS library: " + libName);
                                 Oid[] mechs = GSSLibStub.indicateMechs();
-                                HashMap<String, String> map =
-                                            new HashMap<String, String>();
+                                HashMap<String,String> map = new HashMap<>();
                                 for (int i = 0; i < mechs.length; i++) {
                                     debug("Native MF for " + mechs[i]);
                                     map.put("GssApiMechanism." + mechs[i],
@@ -117,6 +121,8 @@ public final class SunNativeProvider extends Provider {
                         return null;
                     }
                 });
+        // initialize INSTANCE after MECH_MAP is constructed
+        INSTANCE = new SunNativeProvider();
     }
 
     public SunNativeProvider() {

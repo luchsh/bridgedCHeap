@@ -26,16 +26,16 @@
 #define SHARE_GC_CMS_CMSARGUMENTS_HPP
 
 #include "gc/shared/gcArguments.hpp"
+#include "gc/shared/genArguments.hpp"
 
 class CollectedHeap;
 
-class CMSArguments : public GCArguments {
+class CMSArguments : public GenArguments {
 private:
   void disable_adaptive_size_policy(const char* collector_name);
   void set_parnew_gc_flags();
-public:
-  virtual void initialize_flags();
-  virtual size_t conservative_max_heap_alignment();
+
+  virtual void initialize();
   virtual CollectedHeap* create_heap();
 };
 

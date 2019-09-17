@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,10 +29,10 @@ import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BaseMultiResolutionImage;
-import java.awt.image.MultiResolutionImage;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.awt.image.DirectColorModel;
+import java.awt.image.MultiResolutionImage;
 import java.awt.image.Raster;
 import java.awt.image.WritableRaster;
 import java.awt.peer.RobotPeer;
@@ -41,7 +41,7 @@ import sun.awt.AWTPermissions;
 import sun.awt.ComponentFactory;
 import sun.awt.SunToolkit;
 import sun.awt.image.SunWritableRaster;
-import sun.swing.SwingUtilities2;
+import sun.java2d.SunGraphicsEnvironment;
 
 /**
  * This class is used to generate native system input events
@@ -134,8 +134,6 @@ public class Robot {
         Toolkit toolkit = Toolkit.getDefaultToolkit();
         if (toolkit instanceof ComponentFactory) {
             peer = ((ComponentFactory)toolkit).createRobot(this, screen);
-            disposer = new RobotDisposer(peer);
-            sun.java2d.Disposer.addRecord(anchor, disposer);
         }
         initLegalButtonMask();
     }
@@ -176,22 +174,6 @@ public class Robot {
             throw new IllegalArgumentException("not a valid screen device");
         }
     }
-
-    private transient Object anchor = new Object();
-
-    static class RobotDisposer implements sun.java2d.DisposerRecord {
-        private final RobotPeer peer;
-        public RobotDisposer(RobotPeer peer) {
-            this.peer = peer;
-        }
-        public void dispose() {
-            if (peer != null) {
-                peer.dispose();
-            }
-        }
-    }
-
-    private transient RobotDisposer disposer;
 
     /**
      * Moves mouse pointer to given screen coordinates.
@@ -394,6 +376,7 @@ public class Robot {
      * @return  Color of the pixel
      */
     public synchronized Color getPixelColor(int x, int y) {
+        checkScreenCaptureAllowed();
         AffineTransform tx = GraphicsEnvironment.
                 getLocalGraphicsEnvironment().getDefaultScreenDevice().
                 getDefaultConfiguration().getDefaultTransform();
@@ -505,13 +488,13 @@ public class Robot {
                 .getLocalGraphicsEnvironment()
                 .getDefaultScreenDevice().
                 getDefaultConfiguration();
-        gc = SwingUtilities2.getGraphicsConfigurationAtPoint(
+        gc = SunGraphicsEnvironment.getGraphicsConfigurationAtPoint(
                 gc, screenRect.getCenterX(), screenRect.getCenterY());
 
         AffineTransform tx = gc.getDefaultTransform();
         double uiScaleX = tx.getScaleX();
         double uiScaleY = tx.getScaleY();
-        int pixels[];
+        int[] pixels;
 
         if (uiScaleX == 1 && uiScaleY == 1) {
 
@@ -537,7 +520,7 @@ public class Robot {
             int sY = (int) Math.floor(screenRect.y * uiScaleY);
             int sWidth = (int) Math.ceil(screenRect.width * uiScaleX);
             int sHeight = (int) Math.ceil(screenRect.height * uiScaleY);
-            int temppixels[];
+            int[] temppixels;
             Rectangle scaledRect = new Rectangle(sX, sY, sWidth, sHeight);
             temppixels = peer.getRGBPixels(scaledRect);
 

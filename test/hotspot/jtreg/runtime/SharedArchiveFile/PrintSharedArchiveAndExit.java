@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,6 @@
 
 /**
  * @test
- * @requires vm.cds
  * @bug 8066670
  * @summary Testing -XX:+PrintSharedArchiveAndExit option
  * @requires vm.cds
@@ -34,9 +33,7 @@
 
 import jdk.test.lib.cds.CDSOptions;
 import jdk.test.lib.cds.CDSTestUtils;
-import jdk.test.lib.process.ProcessTools;
 import jdk.test.lib.process.OutputAnalyzer;
-
 
 public class PrintSharedArchiveAndExit {
     public static void main(String[] args) throws Exception {
@@ -46,24 +43,24 @@ public class PrintSharedArchiveAndExit {
         CDSTestUtils.checkDump(out);
 
         // (1) With a valid archive
-        ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(
-                "-XX:+UnlockDiagnosticVMOptions", "-XX:SharedArchiveFile=./" + archiveName,
+        opts = (new CDSOptions())
+            .setUseVersion(false)
+            .addSuffix( "-XX:+UnlockDiagnosticVMOptions", "-XX:SharedArchiveFile=./" + archiveName,
                 "-XX:+PrintSharedArchiveAndExit", "-version");
-        out = CDSTestUtils.executeAndLog(pb, "print-shared-archive-and-version");
-        if (!CDSTestUtils.isUnableToMap(out)) {
-            out.shouldContain("archive is valid")
-                .shouldNotContain("java version")     // Should not print JVM version
-                .shouldHaveExitValue(0);              // Should report success in error code.
-        }
+        CDSTestUtils.run(opts)
+            .assertNormalExit(output -> {
+                output.shouldContain("archive is valid");
+                output.shouldNotContain("java version"); // Should not print JVM version
+            });
 
-        pb = ProcessTools.createJavaProcessBuilder(
-                "-XX:+UnlockDiagnosticVMOptions", "-XX:SharedArchiveFile=./" + archiveName,
+        opts = (new CDSOptions())
+            .setUseVersion(false)
+            .addSuffix( "-XX:+UnlockDiagnosticVMOptions", "-XX:SharedArchiveFile=./" + archiveName,
                 "-XX:+PrintSharedArchiveAndExit");
-        out = CDSTestUtils.executeAndLog(pb, "print-shared-archive");
-        if (!CDSTestUtils.isUnableToMap(out)) {
-            out.shouldContain("archive is valid")
-                .shouldNotContain("Usage:")           // Should not print JVM help message
-                .shouldHaveExitValue(0);               // Should report success in error code.
-        }
+        CDSTestUtils.run(opts)
+            .assertNormalExit(output -> {
+                output.shouldContain("archive is valid");
+                output.shouldNotContain("Usage:"); // Should not print JVM help message
+            });
     }
 }

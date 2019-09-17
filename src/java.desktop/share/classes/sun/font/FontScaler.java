@@ -29,7 +29,6 @@ import java.awt.geom.GeneralPath;
 import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
 import java.lang.ref.WeakReference;
-import java.lang.reflect.Constructor;
 
 import sun.java2d.Disposer;
 import sun.java2d.DisposerRecord;
@@ -82,40 +81,16 @@ import sun.java2d.DisposerRecord;
 public abstract class FontScaler implements DisposerRecord {
 
     private static FontScaler nullScaler = null;
-    private static Constructor<? extends FontScaler> scalerConstructor = null;
 
     //Find preferred font scaler
     //
     //NB: we can allow property based preferences
     //   (theoretically logic can be font type specific)
-    static {
-        Class<? extends FontScaler> scalerClass = null;
-        Class<?>[] arglst = new Class<?>[] {Font2D.class, int.class,
-        boolean.class, int.class};
-
-        try {
-            @SuppressWarnings("unchecked")
-            Class<? extends FontScaler> tmp = (Class<? extends FontScaler>)
-                (FontUtilities.isOpenJDK ?
-                 Class.forName("sun.font.FreetypeFontScaler") :
-                 Class.forName("sun.font.T2KFontScaler"));
-            scalerClass = tmp;
-        } catch (ClassNotFoundException e) {
-                scalerClass = NullFontScaler.class;
-        }
-
-        //NB: rewrite using factory? constructor is ugly way
-        try {
-            scalerConstructor = scalerClass.getConstructor(arglst);
-        } catch (NoSuchMethodException e) {
-            //should not happen
-        }
-    }
 
     /* This is the only place to instantiate new FontScaler.
      * Therefore this is very convinient place to register
-     * scaler with Disposer as well as trigger deregistring bad font
-     * in case when scaler reports this.
+     * scaler with Disposer as well as trigger deregistering a bad font
+     * when the scaler reports this.
      */
     public static FontScaler getScaler(Font2D font,
                                 int indexInCollection,
@@ -124,14 +99,13 @@ public abstract class FontScaler implements DisposerRecord {
         FontScaler scaler = null;
 
         try {
-            Object args[] = new Object[] {font, indexInCollection,
-                                          supportsCJK, filesize};
-            scaler = scalerConstructor.newInstance(args);
+            scaler = new FreetypeFontScaler(font, indexInCollection,
+                                            supportsCJK, filesize);
             Disposer.addObjectRecord(font, scaler);
         } catch (Throwable e) {
-            scaler = nullScaler;
+            scaler = getNullScaler();
 
-            //if we can not instantiate scaler assume bad font
+            //if we can not instantiate scaler assume a bad font
             //NB: technically it could be also because of internal scaler
             //    error but here we are assuming scaler is ok.
             FontManager fm = FontManagerFactory.getInstance();
@@ -206,25 +180,6 @@ public abstract class FontScaler implements DisposerRecord {
     abstract int getNumGlyphs() throws FontScalerException;
     abstract int getMissingGlyphCode() throws FontScalerException;
     abstract int getGlyphCode(char charCode) throws FontScalerException;
-
-    /* This method returns table cache used by native layout engine.
-     * This cache is essentially just small collection of
-     * pointers to various truetype tables. See definition of TTLayoutTableCache
-     * in the fontscalerdefs.h for more details.
-     *
-     * Note that tables themselves have same format as defined in the truetype
-     * specification, i.e. font scaler do not need to perform any preprocessing.
-     *
-     * Probably it is better to have API to request pointers to each table
-     * separately instead of requesting pointer to some native structure.
-     * (then there is not need to share its definition by different
-     * implementations of scaler).
-     * However, this means multiple JNI calls and potential impact on performance.
-     *
-     * Note: return value 0 is legal.
-     *   This means tables are not available (e.g. type1 font).
-     */
-    abstract long getLayoutTableCache() throws FontScalerException;
 
     /* Used by the OpenType engine for mark positioning. */
     abstract Point2D.Float getGlyphPoint(long pScalerContext,

@@ -28,10 +28,10 @@
  * ===========================================================================
  */
 /*
- * Copyright (c) 2005, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Portions copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * $Id: XMLDSigRI.java 1400021 2012-10-19 10:16:04Z coheigea $
+ * $Id: XMLDSigRI.java 1833618 2018-06-15 17:36:20Z mullan $
  */
 package org.jcp.xml.dsig.internal.dom;
 
@@ -43,7 +43,6 @@ import javax.xml.crypto.dsig.*;
 /**
  * The XMLDSig RI Provider.
  *
- * @author Joyce Leung
  */
 
 /**
@@ -124,7 +123,7 @@ public final class XMLDSigRI extends Provider {
                     } else if (algo.equals(Transform.XSLT)) {
                         return new DOMXSLTTransform();
                     }
-                 }
+                }
             } catch (Exception ex) {
                 throw new NoSuchAlgorithmException("Error constructing " +
                     type + " for " + algo + " using XMLDSig", ex);

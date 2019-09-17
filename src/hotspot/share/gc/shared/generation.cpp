@@ -23,17 +23,17 @@
  */
 
 #include "precompiled.hpp"
-#include "gc/serial/genMarkSweep.hpp"
 #include "gc/shared/blockOffsetTable.inline.hpp"
 #include "gc/shared/cardTableRS.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
-#include "gc/shared/gcLocker.inline.hpp"
+#include "gc/shared/gcLocker.hpp"
 #include "gc/shared/gcTimer.hpp"
 #include "gc/shared/gcTrace.hpp"
 #include "gc/shared/genCollectedHeap.hpp"
 #include "gc/shared/genOopClosures.hpp"
 #include "gc/shared/genOopClosures.inline.hpp"
 #include "gc/shared/generation.hpp"
+#include "gc/shared/generationSpec.hpp"
 #include "gc/shared/space.inline.hpp"
 #include "gc/shared/spaceDecorator.hpp"
 #include "logging/log.hpp"
@@ -44,8 +44,8 @@
 #include "utilities/events.hpp"
 
 Generation::Generation(ReservedSpace rs, size_t initial_size) :
-  _ref_processor(NULL),
-  _gc_manager(NULL) {
+  _gc_manager(NULL),
+  _ref_processor(NULL) {
   if (!_virtual_space.initialize(rs, initial_size)) {
     vm_exit_during_initialization("Could not reserve enough space for "
                     "object heap");
@@ -63,9 +63,9 @@ Generation::Generation(ReservedSpace rs, size_t initial_size) :
 size_t Generation::initial_size() {
   GenCollectedHeap* gch = GenCollectedHeap::heap();
   if (gch->is_young_gen(this)) {
-    return gch->gen_policy()->young_gen_spec()->init_size();
+    return gch->young_gen_spec()->init_size();
   }
-  return gch->gen_policy()->old_gen_spec()->init_size();
+  return gch->old_gen_spec()->init_size();
 }
 
 size_t Generation::max_capacity() const {
@@ -77,7 +77,8 @@ size_t Generation::max_capacity() const {
 void Generation::ref_processor_init() {
   assert(_ref_processor == NULL, "a reference processor already exists");
   assert(!_reserved.is_empty(), "empty generation?");
-  _ref_processor = new ReferenceProcessor(_reserved);    // a vanilla reference processor
+  _span_based_discoverer.set_span(_reserved);
+  _ref_processor = new ReferenceProcessor(&_span_based_discoverer);    // a vanilla reference processor
   if (_ref_processor == NULL) {
     vm_exit_during_initialization("Could not allocate ReferenceProcessor object");
   }
@@ -253,15 +254,15 @@ bool Generation::block_is_obj(const HeapWord* p) const {
 
 class GenerationOopIterateClosure : public SpaceClosure {
  public:
-  ExtendedOopClosure* _cl;
+  OopIterateClosure* _cl;
   virtual void do_space(Space* s) {
     s->oop_iterate(_cl);
   }
-  GenerationOopIterateClosure(ExtendedOopClosure* cl) :
+  GenerationOopIterateClosure(OopIterateClosure* cl) :
     _cl(cl) {}
 };
 
-void Generation::oop_iterate(ExtendedOopClosure* cl) {
+void Generation::oop_iterate(OopIterateClosure* cl) {
   GenerationOopIterateClosure blk(cl);
   space_iterate(&blk);
 }
@@ -303,6 +304,8 @@ void Generation::safe_object_iterate(ObjectClosure* cl) {
   space_iterate(&blk);
 }
 
+#if INCLUDE_SERIALGC
+
 void Generation::prepare_for_compaction(CompactPoint* cp) {
   // Generic implementation, can be specialized
   CompactibleSpace* space = first_compaction_space();
@@ -333,3 +336,5 @@ void Generation::compact() {
     sp = sp->next_compaction_space();
   }
 }
+
+#endif // INCLUDE_SERIALGC

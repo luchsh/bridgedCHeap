@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -42,11 +42,11 @@ import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.Utils;
 import jdk.test.lib.Asserts;
 
-/*
+/**
  * @test
  * @library /test/lib
  * @bug 8171084
- * @requires (vm.bits == "64" & os.maxMemory > 8g)
+ * @requires vm.hasSAandCanAttach & (vm.bits == "64" & os.maxMemory > 8g)
  * @modules java.base/jdk.internal.misc
  *          jdk.hotspot.agent/sun.jvm.hotspot
  *          jdk.hotspot.agent/sun.jvm.hotspot.utilities
@@ -89,22 +89,19 @@ public class TestHeapDumpForLargeArray {
 
         String heapDumpFileName = "LargeArrayHeapDump.bin";
 
-        if (!Platform.shouldSAAttach()) {
-            System.out.println(
-               "SA attach not expected to work - test skipped.");
-            return;
-        }
-
         File heapDumpFile = new File(heapDumpFileName);
         if (heapDumpFile.exists()) {
             heapDumpFile.delete();
         }
 
         try {
+            // Need to add the default arguments first to have explicit
+            // -Xmx8g last, otherwise test will fail if default
+            // arguments contain a smaller -Xmx.
             List<String> vmArgs = new ArrayList<String>();
+            vmArgs.addAll(Utils.getVmOptions());
             vmArgs.add("-XX:+UsePerfData");
             vmArgs.add("-Xmx8g");
-            vmArgs.addAll(Utils.getVmOptions());
 
             theApp = new LingeredAppWithLargeArray();
             LingeredApp.startApp(vmArgs, theApp);

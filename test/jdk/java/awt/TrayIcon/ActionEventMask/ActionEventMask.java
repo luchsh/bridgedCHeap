@@ -27,6 +27,7 @@ import java.awt.image.BufferedImage;
 
 /*
  * @test
+ * @key headful
  * @summary Check if ActionEvent triggered when a TrayIcon is double
  *          (single, on Mac) clicked is visible by an AWTEventListener
  *          added to the Toolkit. It also checks if all listeners are
@@ -35,7 +36,7 @@ import java.awt.image.BufferedImage;
  * @author Dmitriy Ermashov (dmitriy.ermashov@oracle.com)
  * @modules java.desktop/java.awt:open
  * @library /java/awt/patchlib
- * @library ../../../../lib/testlibrary ../
+ * @library /lib/client ../
  * @build java.desktop/java.awt.Helper
  * @build ExtendedRobot SystemTrayIconHelper
  * @run main ActionEventMask

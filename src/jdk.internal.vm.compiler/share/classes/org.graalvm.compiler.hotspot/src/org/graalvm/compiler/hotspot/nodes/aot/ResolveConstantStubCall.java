@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.nodes.aot;
 
 import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_UNKNOWN;
@@ -41,7 +43,9 @@ import org.graalvm.compiler.nodes.ValueNode;
 import org.graalvm.compiler.nodes.spi.LIRLowerable;
 import org.graalvm.compiler.nodes.spi.NodeLIRBuilderTool;
 import org.graalvm.compiler.nodes.util.GraphUtil;
+import org.graalvm.compiler.word.Word;
 
+import jdk.vm.ci.hotspot.HotSpotConstantPoolObject;
 import jdk.vm.ci.hotspot.HotSpotMetaspaceConstant;
 import jdk.vm.ci.hotspot.HotSpotObjectConstant;
 import jdk.vm.ci.meta.Constant;
@@ -77,10 +81,10 @@ public class ResolveConstantStubCall extends DeoptimizingStubCall implements Can
     public static native Object resolveObject(Object value, Object symbol);
 
     @NodeIntrinsic
-    public static native KlassPointer resolveKlass(KlassPointer value, Object symbol);
+    public static native KlassPointer resolveKlass(KlassPointer value, Word symbol);
 
     @NodeIntrinsic
-    public static native KlassPointer resolveKlass(KlassPointer value, Object symbol, @ConstantNodeParameter HotSpotConstantLoadAction action);
+    public static native KlassPointer resolveKlass(KlassPointer value, Word symbol, @ConstantNodeParameter HotSpotConstantLoadAction action);
 
     @Override
     public Node canonical(CanonicalizerTool tool) {
@@ -97,7 +101,7 @@ public class ResolveConstantStubCall extends DeoptimizingStubCall implements Can
         Value result;
         LIRFrameState fs = gen.state(this);
         assert fs != null : "The stateAfter is null";
-        if (constant instanceof HotSpotObjectConstant) {
+        if (constant instanceof HotSpotObjectConstant || constant instanceof HotSpotConstantPoolObject) {
             result = ((HotSpotLIRGenerator) gen.getLIRGeneratorTool()).emitObjectConstantRetrieval(constant, stringValue, fs);
         } else if (constant instanceof HotSpotMetaspaceConstant) {
             if (action == HotSpotConstantLoadAction.RESOLVE) {

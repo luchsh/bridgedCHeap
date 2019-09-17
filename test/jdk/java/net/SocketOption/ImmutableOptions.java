@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,14 +24,18 @@
  /*
  * @test
  * @bug 8148609
- * @run testng/othervm ImmutableOptions
+ * @library /test/lib
  * @summary Assert that the set of socket options are immutable
+ * @run testng/othervm ImmutableOptions
+ * @run testng/othervm -Djava.net.preferIPv4Stack=true ImmutableOptions
  */
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.*;
 import java.util.Set;
+
+import jdk.test.lib.net.IPSupport;
 
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.Test;
@@ -40,6 +44,7 @@ public class ImmutableOptions {
 
     @BeforeTest
     void setupServerSocketFactory() throws IOException {
+        IPSupport.throwSkippedExceptionIfNonOperational();
         ServerSocket.setSocketFactory(new ServerSocketImplFactory());
     }
 

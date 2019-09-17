@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,7 @@
 
 /*
  * @test
- * @bug 8080357 8167643 8187359
+ * @bug 8080357 8167643 8187359 8199762 8080353
  * @summary Tests for EvaluationState.methods
  * @build KullaTesting TestingInputStream ExpectedDiagnostic
  * @run testng MethodsTest
@@ -199,6 +199,23 @@ public class MethodsTest extends KullaTesting {
         assertActiveKeys();
     }
 
+    // 8199762
+    public void methodsRedeclaration5() {
+        Snippet m1 = methodKey(assertEval("int m(Object o) { return 10; }"));
+        assertMethods(method("(Object)int", "m"));
+
+        Snippet m2 = methodKey(assertEval("int m(Object o) { return 30; }",
+                ste(MAIN_SNIPPET, VALID, VALID, false, null),
+                ste(m1, VALID, OVERWRITTEN, false, MAIN_SNIPPET)));
+
+        assertEval("<T> int m(T o) { return 30; }",
+                ste(MAIN_SNIPPET, VALID, VALID, true, null),
+                ste(m2, VALID, OVERWRITTEN, false, MAIN_SNIPPET));
+        assertMethods(method("(T)int", "m"));
+        assertEval("m(null)", "30");
+        assertActiveKeys();
+    }
+
     public void methodsErrors() {
         assertDeclareFail("String f();",
                 new ExpectedDiagnostic("compiler.err.missing.meth.body.or.decl.abstract", 0, 11, 7, -1, -1, Diagnostic.Kind.ERROR));
@@ -217,6 +234,11 @@ public class MethodsTest extends KullaTesting {
 
         assertDeclareFail("synchronized String f() {return null;}",
                 new ExpectedDiagnostic("jdk.eval.error.illegal.modifiers", 0, 12, 0, -1, -1, Diagnostic.Kind.ERROR));
+        assertNumberOfActiveMethods(0);
+        assertActiveKeys();
+
+        assertDeclareFail("default void f() { }",
+                new ExpectedDiagnostic("jdk.eval.error.illegal.modifiers", 0, 7, 0, -1, -1, Diagnostic.Kind.ERROR));
         assertNumberOfActiveMethods(0);
         assertActiveKeys();
 

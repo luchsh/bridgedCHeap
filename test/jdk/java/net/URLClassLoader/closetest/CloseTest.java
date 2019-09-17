@@ -28,12 +28,12 @@
  *          jdk.httpserver
  *          jdk.compiler
  * @library ../../../../com/sun/net/httpserver
- *          /lib/testlibrary
  *          /test/lib
  * @build jdk.test.lib.compiler.CompilerUtils
  *        jdk.test.lib.util.FileUtils
+ *        jdk.test.lib.util.JarUtils
  *        jdk.test.lib.Platform
- *        FileServerHandler JarUtils
+ *        FileServerHandler
  * @run main/othervm CloseTest
  * @summary URL-downloaded jar files can consume all available file descriptors
  */
@@ -42,6 +42,7 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.URLClassLoader;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URL;
 import java.nio.file.Files;
@@ -49,6 +50,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 import jdk.test.lib.compiler.CompilerUtils;
+import jdk.test.lib.net.URIBuilder;
+import jdk.test.lib.util.JarUtils;
 
 import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpServer;
@@ -156,8 +159,12 @@ public class CloseTest extends Common {
 
     static URL getServerURL() throws Exception {
         int port = httpServer.getAddress().getPort();
-        String s = "http://127.0.0.1:" + port + "/";
-        return new URL(s);
+        return URIBuilder.newBuilder()
+            .scheme("http")
+            .loopback()
+            .port(port)
+            .path("/")
+            .toURL();
     }
 
     static void startHttpServer(String docroot) throws Exception {

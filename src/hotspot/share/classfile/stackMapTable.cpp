@@ -26,6 +26,7 @@
 #include "classfile/stackMapTable.hpp"
 #include "classfile/verifier.hpp"
 #include "memory/resourceArea.hpp"
+#include "oops/constantPool.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/fieldType.hpp"
 #include "runtime/handles.inline.hpp"
@@ -142,6 +143,20 @@ void StackMapTable::print_on(outputStream* str) const {
     }
   }
   str->print_cr(" }");
+}
+
+StackMapReader::StackMapReader(ClassVerifier* v, StackMapStream* stream, char* code_data,
+                               int32_t code_len, TRAPS) :
+                               _verifier(v), _stream(stream),
+                               _code_data(code_data), _code_length(code_len) {
+  methodHandle m = v->method();
+  if (m->has_stackmap_table()) {
+    _cp = constantPoolHandle(THREAD, m->constants());
+    _frame_count = _stream->get_u2(CHECK);
+  } else {
+    // There's no stackmap table present. Frame count and size are 0.
+    _frame_count = 0;
+  }
 }
 
 int32_t StackMapReader::chop(

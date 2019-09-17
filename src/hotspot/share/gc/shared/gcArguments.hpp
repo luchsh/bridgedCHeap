@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2017, Red Hat, Inc. and/or its affiliates.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -29,36 +30,29 @@
 
 class CollectedHeap;
 
-class GCArguments : public CHeapObj<mtGC> {
-private:
-  static GCArguments* _instance;
+extern size_t HeapAlignment;
+extern size_t SpaceAlignment;
 
-  static void select_gc();
-  static void select_gc_ergonomically();
-  static bool gc_selected();
-
+class GCArguments {
 protected:
-  template <class Heap, class Policy>
-  CollectedHeap* create_heap_with_policy();
+  // Initialize HeapAlignment, SpaceAlignment, and extra alignments (E.g. GenAlignment)
+  virtual void initialize_alignments() = 0;
+  virtual void initialize_heap_flags_and_sizes();
+  virtual void initialize_size_info();
+
+  DEBUG_ONLY(void assert_flags();)
+  DEBUG_ONLY(void assert_size_info();)
 
 public:
-  static jint initialize();
-  static bool is_initialized();
-  static GCArguments* arguments();
-
-  void post_heap_initialize();
-
-  virtual void initialize_flags();
-
-  // Collector specific function to allow finer grained verification
-  // through VerifyGCType. If not overridden the default version will
-  // warn that the flag is not supported for the given collector.
-  // Returns true if parsing should continue, false otherwise.
-  virtual bool parse_verification_type(const char* type);
-
+  virtual void initialize();
   virtual size_t conservative_max_heap_alignment() = 0;
-
   virtual CollectedHeap* create_heap() = 0;
+
+  void initialize_heap_sizes();
+
+  static size_t compute_heap_alignment();
+
+  static bool check_args_consistency();
 };
 
 #endif // SHARE_GC_SHARED_GCARGUMENTS_HPP

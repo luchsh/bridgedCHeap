@@ -42,7 +42,7 @@
 #include "runtime/arguments.hpp"
 #include "runtime/extendedPC.hpp"
 #include "runtime/frame.inline.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/mutexLocker.hpp"
@@ -84,11 +84,6 @@ char* os::non_memory_address_word() {
 
   return (char*) -1;
 }
-
-// OS specific thread initialization
-//
-// Calculate and store the limits of the memory stack.
-void os::initialize_thread(Thread *thread) { }
 
 // Frame information (pc, sp, fp) retrieved via ucontext
 // always looks like a C-frame according to the frame
@@ -414,7 +409,7 @@ JVM_handle_aix_signal(int sig, siginfo_t* info, void* ucVoid, int abort_if_unrec
       // SIGSEGV-based implicit null check in compiled code.
       else if (sig == SIGSEGV && ImplicitNullChecks &&
                CodeCache::contains((void*) pc) &&
-               !MacroAssembler::needs_explicit_null_check((intptr_t) info->si_addr)) {
+               MacroAssembler::uses_implicit_null_check(info->si_addr)) {
         if (TraceTraps) {
           tty->print_cr("trap: null_check at " INTPTR_FORMAT " (SIGSEGV)", pc);
         }
@@ -473,18 +468,6 @@ JVM_handle_aix_signal(int sig, siginfo_t* info, void* ucVoid, int abort_if_unrec
         os::Aix::ucontext_set_pc(uc, next_pc);
         return 1;
       }
-    }
-
-    // Check to see if we caught the safepoint code in the
-    // process of write protecting the memory serialization page.
-    // It write enables the page immediately after protecting it
-    // so we can just return to retry the write.
-    if ((sig == SIGSEGV) &&
-        os::is_memory_serialize_page(thread, addr)) {
-      // Synchronization problem in the pseudo memory barrier code (bug id 6546278)
-      // Block current thread until the memory serialize page permission restored.
-      os::block_on_serialize_page_trap();
-      return true;
     }
   }
 
@@ -578,8 +561,7 @@ void os::print_context(outputStream *st, const void *context) {
   // point to garbage if entry point in an nmethod is corrupted. Leave
   // this at the end, and hope for the best.
   address pc = os::Aix::ucontext_get_pc(uc);
-  st->print_cr("Instructions: (pc=" PTR_FORMAT ")", pc);
-  print_hex_dump(st, pc - 64, pc + 64, /*instrsize=*/4);
+  print_instructions(st, pc, /*instrsize=*/4);
   st->cr();
 
   // Try to decode the instructions.
@@ -629,5 +611,3 @@ bool os::platform_print_native_stack(outputStream* st, void* context, char *buf,
   AixNativeCallstack::print_callstack_for_context(st, (const ucontext_t*)context, true, buf, (size_t) buf_size);
   return true;
 }
-
-

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -1673,7 +1673,7 @@ setAgentPropertyValue(JNIEnv *env, char *propertyName, char* propertyValue)
     /* Create jstrings for property name and value */
     nameString = JNI_FUNC_PTR(env,NewStringUTF)(env, propertyName);
     if (nameString != NULL) {
-        valueString = JNI_FUNC_PTR(env,NewStringUTF)(env, propertyValue);
+        valueString = JNU_NewStringPlatform(env, propertyValue);
         if (valueString != NULL) {
             /* invoke Properties.setProperty */
             JNI_FUNC_PTR(env,CallObjectMethod)
@@ -1888,6 +1888,8 @@ map2jvmtiError(jdwpError error)
             return JVMTI_ERROR_UNSUPPORTED_REDEFINITION_CLASS_MODIFIERS_CHANGED;
         case JDWP_ERROR(METHOD_MODIFIERS_CHANGE_NOT_IMPLEMENTED):
             return JVMTI_ERROR_UNSUPPORTED_REDEFINITION_METHOD_MODIFIERS_CHANGED;
+        case JDWP_ERROR(CLASS_ATTRIBUTE_CHANGE_NOT_IMPLEMENTED):
+            return JVMTI_ERROR_UNSUPPORTED_REDEFINITION_CLASS_ATTRIBUTE_CHANGED;
         case JDWP_ERROR(NOT_IMPLEMENTED):
             return JVMTI_ERROR_NOT_AVAILABLE;
         case JDWP_ERROR(NULL_POINTER):
@@ -2220,6 +2222,8 @@ map2jdwpError(jvmtiError error)
             return JDWP_ERROR(CLASS_MODIFIERS_CHANGE_NOT_IMPLEMENTED);
         case JVMTI_ERROR_UNSUPPORTED_REDEFINITION_METHOD_MODIFIERS_CHANGED:
             return JDWP_ERROR(METHOD_MODIFIERS_CHANGE_NOT_IMPLEMENTED);
+        case JVMTI_ERROR_UNSUPPORTED_REDEFINITION_CLASS_ATTRIBUTE_CHANGED:
+            return JDWP_ERROR(CLASS_ATTRIBUTE_CHANGE_NOT_IMPLEMENTED);
         case AGENT_ERROR_NOT_CURRENT_FRAME:
             return JDWP_ERROR(NOT_CURRENT_FRAME);
         case AGENT_ERROR_INVALID_TAG:

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_OOPS_CONSTMETHODOOP_HPP
-#define SHARE_VM_OOPS_CONSTMETHODOOP_HPP
+#ifndef SHARE_OOPS_CONSTMETHOD_HPP
+#define SHARE_OOPS_CONSTMETHOD_HPP
 
 #include "oops/oop.hpp"
 #include "utilities/align.hpp"
@@ -88,14 +88,14 @@
 
 
 // Utility class describing elements in checked exceptions table inlined in Method*.
-class CheckedExceptionElement VALUE_OBJ_CLASS_SPEC {
+class CheckedExceptionElement {
  public:
   u2 class_cp_index;
 };
 
 
 // Utility class describing elements in local variable table inlined in Method*.
-class LocalVariableTableElement VALUE_OBJ_CLASS_SPEC {
+class LocalVariableTableElement {
  public:
   u2 start_bci;
   u2 length;
@@ -106,7 +106,7 @@ class LocalVariableTableElement VALUE_OBJ_CLASS_SPEC {
 };
 
 // Utility class describing elements in exception table
-class ExceptionTableElement VALUE_OBJ_CLASS_SPEC {
+class ExceptionTableElement {
  public:
   u2 start_pc;
   u2 end_pc;
@@ -115,7 +115,7 @@ class ExceptionTableElement VALUE_OBJ_CLASS_SPEC {
 };
 
 // Utility class describing elements in method parameters
-class MethodParametersElement VALUE_OBJ_CLASS_SPEC {
+class MethodParametersElement {
  public:
   u2 name_cp_index;
   u2 flags;
@@ -241,8 +241,6 @@ public:
                                MethodType mt,
                                TRAPS);
 
-  bool is_constMethod() const { return true; }
-
   // Inlined tables
   void set_inlined_tables_length(InlineTableSizes* sizes);
 
@@ -290,12 +288,16 @@ public:
 
   // adapter
   void set_adapter_entry(AdapterHandlerEntry* adapter) {
-    assert(!is_shared(), "shared methods have fixed adapter_trampoline");
+    assert(!is_shared(),
+           "shared methods in archive have fixed adapter_trampoline");
     _adapter = adapter;
   }
   void set_adapter_trampoline(AdapterHandlerEntry** trampoline) {
-    assert(DumpSharedSpaces, "must be");
-    assert(*trampoline == NULL, "must be NULL during dump time, to be initialized at run time");
+    assert(DumpSharedSpaces || DynamicDumpSharedSpaces, "must be");
+    if (DumpSharedSpaces) {
+      assert(*trampoline == NULL,
+             "must be NULL during dump time, to be initialized at run time");
+    }
     _adapter_trampoline = trampoline;
   }
   void update_adapter_trampoline(AdapterHandlerEntry* adapter) {
@@ -561,4 +563,4 @@ private:
   void verify_on(outputStream* st);
 };
 
-#endif // SHARE_VM_OOPS_CONSTMETHODOOP_HPP
+#endif // SHARE_OOPS_CONSTMETHOD_HPP

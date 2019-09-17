@@ -275,6 +275,11 @@ public class Lint
         STATIC("static"),
 
         /**
+         * Warn about issues relating to use of text blocks
+         */
+        TEXT_BLOCKS("text-blocks"),
+
+        /**
          * Warn about issues relating to use of try blocks (i.e. try-with-resources)
          */
         TRY("try"),
@@ -287,7 +292,12 @@ public class Lint
         /**
          * Warn about potentially unsafe vararg methods
          */
-        VARARGS("varargs");
+        VARARGS("varargs"),
+
+        /**
+         * Warn about use of preview features.
+         */
+        PREVIEW("preview");
 
         LintCategory(String option) {
             this(option, false);

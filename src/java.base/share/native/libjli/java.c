@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -52,6 +52,7 @@
 
 
 #include "java.h"
+#include "jni.h"
 
 /*
  * A NOTE TO DEVELOPERS: For performance reasons it is important that
@@ -171,6 +172,9 @@ static int  KnownVMIndex(const char* name);
 static void FreeKnownVMs();
 static jboolean IsWildCardEnabled();
 
+
+#define SOURCE_LAUNCHER_MAIN_ENTRY "jdk.compiler/com.sun.tools.javac.launcher.Main"
+
 /*
  * This reports error.  VM will not be created and no usage is printed.
  */
@@ -200,11 +204,14 @@ static jboolean IsWildCardEnabled();
  */
 static jlong threadStackSize    = 0;  /* stack size of the new thread */
 static jlong maxHeapSize        = 0;  /* max heap size */
-static jlong initialHeapSize    = 0;  /* inital heap size */
+static jlong initialHeapSize    = 0;  /* initial heap size */
 
 /*
- * A minimum -Xss stack size suitable for all platforms.
- */
+ * A minimum initial-thread stack size suitable for most platforms.
+ * This is the minimum amount of stack needed to load the JVM such
+ * that it can reject a too small -Xss value. If this is too small
+ * JVM initialization would cause a StackOverflowError.
+  */
 #ifndef STACK_SIZE_MINIMUM
 #define STACK_SIZE_MINIMUM (64 * KB)
 #endif
@@ -212,8 +219,8 @@ static jlong initialHeapSize    = 0;  /* inital heap size */
 /*
  * Entry point.
  */
-int
-JLI_Launch(int argc, char ** argv,              /* main argc, argc */
+JNIEXPORT int JNICALL
+JLI_Launch(int argc, char ** argv,              /* main argc, argv */
         int jargc, const char** jargv,          /* java args */
         int appclassc, const char** appclassv,  /* app classpath */
         const char* fullversion,                /* full version defined */
@@ -316,8 +323,7 @@ JLI_Launch(int argc, char ** argv,              /* main argc, argc */
     /* Parse command line options; if the return value of
      * ParseArguments is false, the program should exit.
      */
-    if (!ParseArguments(&argc, &argv, &mode, &what, &ret, jrepath))
-    {
+    if (!ParseArguments(&argc, &argv, &mode, &what, &ret, jrepath)) {
         return(ret);
     }
 
@@ -385,8 +391,8 @@ JLI_Launch(int argc, char ** argv,              /* main argc, argc */
     } while (JNI_FALSE)
 
 
-int JNICALL
-JavaMain(void * _args)
+int
+JavaMain(void* _args)
 {
     JavaMainArgs *args = (JavaMainArgs *)_args;
     int argc = args->argc;
@@ -438,20 +444,17 @@ JavaMain(void * _args)
         LEAVE();
     }
 
-    // validate modules on the module path, then exit
-    if (validateModules) {
-        jboolean okay = ValidateModules(env);
-        CHECK_EXCEPTION_LEAVE(1);
-        if (!okay) ret = 1;
-        LEAVE();
-    }
-
     if (printVersion || showVersion) {
         PrintJavaVersion(env, showVersion);
         CHECK_EXCEPTION_LEAVE(0);
         if (printVersion) {
             LEAVE();
         }
+    }
+
+    // modules have been validated at startup so exit
+    if (validateModules) {
+        LEAVE();
     }
 
     /* If the user specified neither a class name nor a JAR file */
@@ -584,7 +587,8 @@ IsLauncherOption(const char* name) {
     return IsClassPathOption(name) ||
            IsLauncherMainOption(name) ||
            JLI_StrCmp(name, "--describe-module") == 0 ||
-           JLI_StrCmp(name, "-d") == 0;
+           JLI_StrCmp(name, "-d") == 0 ||
+           JLI_StrCmp(name, "--source") == 0;
 }
 
 /*
@@ -623,6 +627,29 @@ jboolean
 IsWhiteSpaceOption(const char* name) {
     return IsModuleOption(name) ||
            IsLauncherOption(name);
+}
+
+/*
+ * Check if it is OK to set the mode.
+ * If the mode was previously set, and should not be changed,
+ * a fatal error is reported.
+ */
+static int
+checkMode(int mode, int newMode, const char *arg) {
+    if (mode == LM_SOURCE) {
+        JLI_ReportErrorMessage(ARG_ERROR14, arg);
+        exit(1);
+    }
+    return newMode;
+}
+
+/*
+ * Test if an arg identifies a source file.
+ */
+jboolean
+IsSourceFile(const char *arg) {
+    struct stat st;
+    return (JLI_HasSuffix(arg, ".java") && stat(arg, &st) == 0);
 }
 
 /*
@@ -910,16 +937,18 @@ AddOption(char *str, void *info)
     options[numOptions].optionString = str;
     options[numOptions++].extraInfo = info;
 
+    /*
+     * -Xss is used both by the JVM and here to establish the stack size of the thread
+     * created to launch the JVM. In the latter case we need to ensure we don't go
+     * below the minimum stack size allowed. If -Xss is zero that tells the JVM to use
+     * 'default' sizes (either from JVM or system configuration, e.g. 'ulimit -s' on linux),
+     * and is not itself a small stack size that will be rejected. So we ignore -Xss0 here.
+     */
     if (JLI_StrCCmp(str, "-Xss") == 0) {
         jlong tmp;
         if (parse_size(str + 4, &tmp)) {
             threadStackSize = tmp;
-            /*
-             * Make sure the thread stack size is big enough that we won't get a stack
-             * overflow before the JVM startup code can check to make sure the stack
-             * is big enough.
-             */
-            if (threadStackSize < (jlong)STACK_SIZE_MINIMUM) {
+            if (threadStackSize > 0 && threadStackSize < (jlong)STACK_SIZE_MINIMUM) {
                 threadStackSize = STACK_SIZE_MINIMUM;
             }
         }
@@ -1140,13 +1169,13 @@ SelectVersion(int argc, char **argv, char **main_class)
      * Passing on splash screen info in environment variables
      */
     if (splash_file_name && !headlessflag) {
-        char* splash_file_entry = JLI_MemAlloc(JLI_StrLen(SPLASH_FILE_ENV_ENTRY "=")+JLI_StrLen(splash_file_name)+1);
+        splash_file_entry = JLI_MemAlloc(JLI_StrLen(SPLASH_FILE_ENV_ENTRY "=")+JLI_StrLen(splash_file_name)+1);
         JLI_StrCpy(splash_file_entry, SPLASH_FILE_ENV_ENTRY "=");
         JLI_StrCat(splash_file_entry, splash_file_name);
         putenv(splash_file_entry);
     }
     if (splash_jar_name && !headlessflag) {
-        char* splash_jar_entry = JLI_MemAlloc(JLI_StrLen(SPLASH_JAR_ENV_ENTRY "=")+JLI_StrLen(splash_jar_name)+1);
+        splash_jar_entry = JLI_MemAlloc(JLI_StrLen(SPLASH_JAR_ENV_ENTRY "=")+JLI_StrLen(splash_jar_name)+1);
         JLI_StrCpy(splash_jar_entry, SPLASH_JAR_ENV_ENTRY "=");
         JLI_StrCat(splash_jar_entry, splash_jar_name);
         putenv(splash_jar_entry);
@@ -1229,7 +1258,8 @@ GetOpt(int *pargc, char ***pargv, char **poption, char **pvalue) {
         value = equals+1;
         if (JLI_StrCCmp(arg, "--describe-module=") == 0 ||
             JLI_StrCCmp(arg, "--module=") == 0 ||
-            JLI_StrCCmp(arg, "--class-path=") == 0) {
+            JLI_StrCCmp(arg, "--class-path=") == 0||
+            JLI_StrCCmp(arg, "--source=") == 0) {
             kind = LAUNCHER_OPTION_WITH_ARGUMENT;
         } else {
             kind = VM_LONG_OPTION;
@@ -1273,16 +1303,27 @@ ParseArguments(int *pargc, char ***pargv,
  */
         if (JLI_StrCmp(arg, "-jar") == 0) {
             ARG_CHECK(argc, ARG_ERROR2, arg);
-            mode = LM_JAR;
+            mode = checkMode(mode, LM_JAR, arg);
         } else if (JLI_StrCmp(arg, "--module") == 0 ||
                    JLI_StrCCmp(arg, "--module=") == 0 ||
                    JLI_StrCmp(arg, "-m") == 0) {
             REPORT_ERROR (has_arg, ARG_ERROR5, arg);
             SetMainModule(value);
-            mode = LM_MODULE;
+            mode = checkMode(mode, LM_MODULE, arg);
             if (has_arg) {
                *pwhat = value;
                 break;
+            }
+        } else if (JLI_StrCmp(arg, "--source") == 0 ||
+                   JLI_StrCCmp(arg, "--source=") == 0) {
+            REPORT_ERROR (has_arg, ARG_ERROR13, arg);
+            mode = LM_SOURCE;
+            if (has_arg) {
+                const char *prop = "-Djdk.internal.javac.source=";
+                size_t size = JLI_StrLen(prop) + JLI_StrLen(value) + 1;
+                char *propValue = (char *)JLI_MemAlloc(size);
+                JLI_Snprintf(propValue, size, "%s%s", prop, value);
+                AddOption(propValue, NULL);
             }
         } else if (JLI_StrCmp(arg, "--class-path") == 0 ||
                    JLI_StrCCmp(arg, "--class-path=") == 0 ||
@@ -1290,7 +1331,9 @@ ParseArguments(int *pargc, char ***pargv,
                    JLI_StrCmp(arg, "-cp") == 0) {
             REPORT_ERROR (has_arg_any_len, ARG_ERROR1, arg);
             SetClassPath(value);
-            mode = LM_CLASS;
+            if (mode != LM_SOURCE) {
+                mode = LM_CLASS;
+            }
         } else if (JLI_StrCmp(arg, "--list-modules") == 0) {
             listModules = JNI_TRUE;
         } else if (JLI_StrCmp(arg, "--show-resolved-modules") == 0) {
@@ -1387,12 +1430,17 @@ ParseArguments(int *pargc, char ***pargv,
         } else if (JLI_StrCmp(arg, "-noclassgc") == 0) {
             AddOption("-Xnoclassgc", NULL);
         } else if (JLI_StrCmp(arg, "-Xfuture") == 0) {
+            JLI_ReportErrorMessage(ARG_DEPRECATED, "-Xfuture");
             AddOption("-Xverify:all", NULL);
         } else if (JLI_StrCmp(arg, "-verify") == 0) {
             AddOption("-Xverify:all", NULL);
         } else if (JLI_StrCmp(arg, "-verifyremote") == 0) {
             AddOption("-Xverify:remote", NULL);
         } else if (JLI_StrCmp(arg, "-noverify") == 0) {
+            /*
+             * Note that no 'deprecated' message is needed here because the VM
+             * issues 'deprecated' messages for -noverify and -Xverify:none.
+             */
             AddOption("-Xverify:none", NULL);
         } else if (JLI_StrCCmp(arg, "-ss") == 0 ||
                    JLI_StrCCmp(arg, "-oss") == 0 ||
@@ -1434,12 +1482,25 @@ ParseArguments(int *pargc, char ***pargv,
         if (!_have_classpath) {
             SetClassPath(".");
         }
-        mode = LM_CLASS;
+        mode = IsSourceFile(arg) ? LM_SOURCE : LM_CLASS;
+    } else if (mode == LM_CLASS && IsSourceFile(arg)) {
+        /* override LM_CLASS mode if given a source file */
+        mode = LM_SOURCE;
     }
 
-    if (argc >= 0) {
-        *pargc = argc;
-        *pargv = argv;
+    if (mode == LM_SOURCE) {
+        AddOption("--add-modules=ALL-DEFAULT", NULL);
+        *pwhat = SOURCE_LAUNCHER_MAIN_ENTRY;
+        // adjust (argc, argv) so that the name of the source file
+        // is included in the args passed to the source launcher
+        // main entry class
+        *pargc = argc + 1;
+        *pargv = argv - 1;
+    } else {
+        if (argc >= 0) {
+            *pargc = argc;
+            *pargv = argv;
+        }
     }
 
     *pmode = mode;
@@ -1903,20 +1964,6 @@ DescribeModule(JNIEnv *env, char *optString)
     (*env)->CallStaticVoidMethod(env, cls, describeModuleID, joptString);
 }
 
-/**
- * Validate modules
- */
-static jboolean
-ValidateModules(JNIEnv *env)
-{
-    jmethodID validateModulesID;
-    jclass cls = GetLauncherHelperClass(env);
-    NULL_CHECK_RETURN_VALUE(cls, JNI_FALSE);
-    validateModulesID = (*env)->GetStaticMethodID(env, cls, "validateModules", "()Z");
-    NULL_CHECK_RETURN_VALUE(cls, JNI_FALSE);
-    return (*env)->CallStaticBooleanMethod(env, cls, validateModulesID);
-}
-
 /*
  * Prints default usage or the Xusage message, see sun.launcher.LauncherHelper.java
  */
@@ -2199,6 +2246,11 @@ ShowSplashScreen()
     if (file_name == NULL){
         return;
     }
+
+    if (!DoSplashInit()) {
+        goto exit;
+    }
+
     maxScaledImgNameLength = DoSplashGetScaledImgNameMaxPstfixLen(file_name);
 
     scaled_splash_name = JLI_MemAlloc(
@@ -2219,13 +2271,13 @@ ShowSplashScreen()
                             jar_name, file_name, &data_size);
         }
         if (image_data) {
-            DoSplashInit();
             DoSplashSetScaleFactor(scale_factor);
             DoSplashLoadMemory(image_data, data_size);
             JLI_MemFree(image_data);
+        } else {
+            DoSplashClose();
         }
     } else {
-        DoSplashInit();
         if (isImageScaled) {
             DoSplashSetScaleFactor(scale_factor);
             DoSplashLoadFile(scaled_splash_name);
@@ -2237,6 +2289,7 @@ ShowSplashScreen()
 
     DoSplashSetFileJarName(file_name, jar_name);
 
+    exit:
     /*
      * Done with all command line processing and potential re-execs so
      * clean up the environment.
@@ -2285,38 +2338,38 @@ ContinueInNewThread(InvocationFunctions* ifn, jlong threadStackSize,
                     int argc, char **argv,
                     int mode, char *what, int ret)
 {
-
-    /*
-     * If user doesn't specify stack size, check if VM has a preference.
-     * Note that HotSpot no longer supports JNI_VERSION_1_1 but it will
-     * return its default stack size through the init args structure.
-     */
     if (threadStackSize == 0) {
-      struct JDK1_1InitArgs args1_1;
-      memset((void*)&args1_1, 0, sizeof(args1_1));
-      args1_1.version = JNI_VERSION_1_1;
-      ifn->GetDefaultJavaVMInitArgs(&args1_1);  /* ignore return value */
-      if (args1_1.javaStackSize > 0) {
-         threadStackSize = args1_1.javaStackSize;
-      }
+        /*
+         * If the user hasn't specified a non-zero stack size ask the JVM for its default.
+         * A returned 0 means 'use the system default' for a platform, e.g., Windows.
+         * Note that HotSpot no longer supports JNI_VERSION_1_1 but it will
+         * return its default stack size through the init args structure.
+         */
+        struct JDK1_1InitArgs args1_1;
+        memset((void*)&args1_1, 0, sizeof(args1_1));
+        args1_1.version = JNI_VERSION_1_1;
+        ifn->GetDefaultJavaVMInitArgs(&args1_1);  /* ignore return value */
+        if (args1_1.javaStackSize > 0) {
+            threadStackSize = args1_1.javaStackSize;
+        }
     }
 
     { /* Create a new thread to create JVM and invoke main method */
-      JavaMainArgs args;
-      int rslt;
+        JavaMainArgs args;
+        int rslt;
 
-      args.argc = argc;
-      args.argv = argv;
-      args.mode = mode;
-      args.what = what;
-      args.ifn = *ifn;
+        args.argc = argc;
+        args.argv = argv;
+        args.mode = mode;
+        args.what = what;
+        args.ifn = *ifn;
 
-      rslt = ContinueInNewThread0(JavaMain, threadStackSize, (void*)&args);
-      /* If the caller has deemed there is an error we
-       * simply return that, otherwise we return the value of
-       * the callee
-       */
-      return (ret != 0) ? ret : rslt;
+        rslt = CallJavaMainInNewThread(threadStackSize, (void*)&args);
+        /* If the caller has deemed there is an error we
+         * simply return that, otherwise we return the value of
+         * the callee
+         */
+        return (ret != 0) ? ret : rslt;
     }
 }
 
@@ -2337,7 +2390,7 @@ DumpState()
 /*
  * A utility procedure to always print to stderr
  */
-void
+JNIEXPORT void JNICALL
 JLI_ReportMessage(const char* fmt, ...)
 {
     va_list vl;

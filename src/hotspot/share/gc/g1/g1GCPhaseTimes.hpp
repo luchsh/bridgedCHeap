@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,15 +22,18 @@
  *
  */
 
-#ifndef SHARE_VM_GC_G1_G1GCPHASETIMES_HPP
-#define SHARE_VM_GC_G1_G1GCPHASETIMES_HPP
+#ifndef SHARE_GC_G1_G1GCPHASETIMES_HPP
+#define SHARE_GC_G1_G1GCPHASETIMES_HPP
 
 #include "gc/shared/referenceProcessorPhaseTimes.hpp"
+#include "gc/shared/weakProcessorPhaseTimes.hpp"
+#include "jfr/jfrEvents.hpp"
 #include "logging/logLevel.hpp"
 #include "memory/allocation.hpp"
 #include "utilities/macros.hpp"
 
 class LineBuffer;
+class G1ParScanThreadState;
 class STWGCTimer;
 
 template <class T> class WorkerDataArray;
@@ -45,7 +48,6 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
     GCWorkerStart,
     ExtRootScan,
     ThreadRoots,
-    StringTableRoots,
     UniverseRoots,
     JNIRoots,
     ObjectSynchronizerRoots,
@@ -53,35 +55,41 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
     SystemDictionaryRoots,
     CLDGRoots,
     JVMTIRoots,
+    AOT_ONLY(AOTCodeRoots COMMA)
+    JVMCI_ONLY(JVMCIRoots COMMA)
     CMRefRoots,
     WaitForStrongCLD,
     WeakCLDRoots,
-    SATBFiltering,
     UpdateRS,
     ScanHCC,
     ScanRS,
+    OptScanRS,
     CodeRoots,
-#if INCLUDE_AOT
-    AOTCodeRoots,
-#endif
+    OptCodeRoots,
     ObjCopy,
+    OptObjCopy,
     Termination,
+    OptTermination,
     Other,
     GCWorkerTotal,
     GCWorkerEnd,
     StringDedupQueueFixup,
     StringDedupTableFixup,
     RedirtyCards,
-    PreserveCMReferents,
     YoungFreeCSet,
     NonYoungFreeCSet,
     GCParPhasesSentinel
   };
 
+  static const GCParPhases ExtRootScanSubPhasesFirst = ThreadRoots;
+  static const GCParPhases ExtRootScanSubPhasesLast = WeakCLDRoots;
+
   enum GCScanRSWorkItems {
     ScanRSScannedCards,
     ScanRSClaimedCards,
-    ScanRSSkippedCards
+    ScanRSSkippedCards,
+    ScanRSScannedOptRefs,
+    ScanRSUsedMemory
   };
 
   enum GCUpdateRSWorkItems {
@@ -90,11 +98,14 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
     UpdateRSSkippedCards
   };
 
+  enum GCObjCopyWorkItems {
+    ObjCopyLABWaste,
+    ObjCopyLABUndoWaste
+  };
+
  private:
   // Markers for grouping the phases in the GCPhases enum above
   static const int GCMainParPhasesLast = GCWorkerEnd;
-  static const int StringDedupPhasesFirst = StringDedupQueueFixup;
-  static const int StringDedupPhasesLast = StringDedupTableFixup;
 
   WorkerDataArray<double>* _gc_par_phases[GCParPhasesSentinel];
 
@@ -106,18 +117,33 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   WorkerDataArray<size_t>* _scan_rs_claimed_cards;
   WorkerDataArray<size_t>* _scan_rs_skipped_cards;
 
+  WorkerDataArray<size_t>* _opt_scan_rs_scanned_cards;
+  WorkerDataArray<size_t>* _opt_scan_rs_claimed_cards;
+  WorkerDataArray<size_t>* _opt_scan_rs_skipped_cards;
+  WorkerDataArray<size_t>* _opt_scan_rs_scanned_opt_refs;
+  WorkerDataArray<size_t>* _opt_scan_rs_used_memory;
+
+  WorkerDataArray<size_t>* _obj_copy_lab_waste;
+  WorkerDataArray<size_t>* _obj_copy_lab_undo_waste;
+
+  WorkerDataArray<size_t>* _opt_obj_copy_lab_waste;
+  WorkerDataArray<size_t>* _opt_obj_copy_lab_undo_waste;
+
   WorkerDataArray<size_t>* _termination_attempts;
+
+  WorkerDataArray<size_t>* _opt_termination_attempts;
 
   WorkerDataArray<size_t>* _redirtied_cards;
 
-  double _cur_collection_par_time_ms;
+  double _cur_collection_initial_evac_time_ms;
+  double _cur_optional_evac_ms;
   double _cur_collection_code_root_fixup_time_ms;
   double _cur_strong_code_root_purge_time_ms;
 
   double _cur_evac_fail_recalc_used;
   double _cur_evac_fail_remove_self_forwards;
 
-  double _cur_string_dedup_fixup_time_ms;
+  double _cur_string_deduplication_time_ms;
 
   double _cur_prepare_tlab_time_ms;
   double _cur_resize_tlab_time_ms;
@@ -127,7 +153,6 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   double _cur_clear_ct_time_ms;
   double _cur_expand_heap_time_ms;
   double _cur_ref_proc_time_ms;
-  double _cur_ref_enq_time_ms;
 
   double _cur_collection_start_sec;
   double _root_region_scan_wait_time_ms;
@@ -151,8 +176,9 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
 
   double _recorded_serial_free_cset_time_ms;
 
+  double _cur_region_register_time;
+
   double _cur_fast_reclaim_humongous_time_ms;
-  double _cur_fast_reclaim_humongous_register_time_ms;
   size_t _cur_fast_reclaim_humongous_total;
   size_t _cur_fast_reclaim_humongous_candidates;
   size_t _cur_fast_reclaim_humongous_reclaimed;
@@ -161,6 +187,7 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   double _cur_verify_after_time_ms;
 
   ReferenceProcessorPhaseTimes _ref_phase_times;
+  WeakProcessorPhaseTimes _weak_phase_times;
 
   double worker_time(GCParPhases phase, uint worker);
   void note_gc_end();
@@ -170,7 +197,7 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   void details(T* phase, const char* indent) const;
 
   void log_phase(WorkerDataArray<double>* phase, uint indent, outputStream* out, bool print_sum) const;
-  void debug_phase(WorkerDataArray<double>* phase) const;
+  void debug_phase(WorkerDataArray<double>* phase, uint extra_indent = 0) const;
   void trace_phase(WorkerDataArray<double>* phase, bool print_sum = true) const;
 
   void info_time(const char* name, double value) const;
@@ -182,6 +209,7 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
 
   double print_pre_evacuate_collection_set() const;
   double print_evacuate_collection_set() const;
+  double print_evacuate_optional_collection_set() const;
   double print_post_evacuate_collection_set() const;
   void print_other(double accounted_ms) const;
 
@@ -189,6 +217,7 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   G1GCPhaseTimes(STWGCTimer* gc_timer, uint max_gc_threads);
   void note_gc_start();
   void print();
+  static const char* phase_name(GCParPhases phase);
 
   // record the time a phase took in seconds
   void record_time_secs(GCParPhases phase, uint worker_i, double secs);
@@ -196,7 +225,15 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   // add a number of seconds to a phase
   void add_time_secs(GCParPhases phase, uint worker_i, double secs);
 
+  void record_or_add_time_secs(GCParPhases phase, uint worker_i, double secs);
+
+  double get_time_secs(GCParPhases phase, uint worker_i);
+
   void record_thread_work_item(GCParPhases phase, uint worker_i, size_t count, uint index = 0);
+
+  void record_or_add_thread_work_item(GCParPhases phase, uint worker_i, size_t count, uint index = 0);
+
+  size_t get_thread_work_item(GCParPhases phase, uint worker_i, uint index = 0);
 
   // return the average time for a phase in milliseconds
   double average_time_ms(GCParPhases phase);
@@ -225,12 +262,16 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
     _cur_expand_heap_time_ms = ms;
   }
 
-  void record_par_time(double ms) {
-    _cur_collection_par_time_ms = ms;
+  void record_initial_evac_time(double ms) {
+    _cur_collection_initial_evac_time_ms = ms;
   }
 
-  void record_code_root_fixup_time(double ms) {
-    _cur_collection_code_root_fixup_time_ms = ms;
+  void record_or_add_optional_evac_time(double ms) {
+    _cur_optional_evac_ms += ms;
+  }
+
+  void record_or_add_code_root_fixup_time(double ms) {
+    _cur_collection_code_root_fixup_time_ms += ms;
   }
 
   void record_strong_code_root_purge_time(double ms) {
@@ -245,16 +286,12 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
     _cur_evac_fail_remove_self_forwards = ms;
   }
 
-  void record_string_dedup_fixup_time(double ms) {
-    _cur_string_dedup_fixup_time_ms = ms;
+  void record_string_deduplication_time(double ms) {
+    _cur_string_deduplication_time_ms = ms;
   }
 
   void record_ref_proc_time(double ms) {
     _cur_ref_proc_time_ms = ms;
-  }
-
-  void record_ref_enq_time(double ms) {
-    _cur_ref_enq_time_ms = ms;
   }
 
   void record_root_region_scan_wait_time(double time_ms) {
@@ -269,8 +306,8 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
     _recorded_serial_free_cset_time_ms = time_ms;
   }
 
-  void record_fast_reclaim_humongous_stats(double time_ms, size_t total, size_t candidates) {
-    _cur_fast_reclaim_humongous_register_time_ms = time_ms;
+  void record_register_regions(double time_ms, size_t total, size_t candidates) {
+    _cur_region_register_time = time_ms;
     _cur_fast_reclaim_humongous_total = total;
     _cur_fast_reclaim_humongous_candidates = candidates;
   }
@@ -329,7 +366,7 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   }
 
   double cur_collection_par_time_ms() {
-    return _cur_collection_par_time_ms;
+    return _cur_collection_initial_evac_time_ms;
   }
 
   double cur_clear_ct_time_ms() {
@@ -361,16 +398,45 @@ class G1GCPhaseTimes : public CHeapObj<mtGC> {
   }
 
   ReferenceProcessorPhaseTimes* ref_phase_times() { return &_ref_phase_times; }
+
+  WeakProcessorPhaseTimes* weak_phase_times() { return &_weak_phase_times; }
 };
 
-class G1GCParPhaseTimesTracker : public StackObj {
-  double _start_time;
+class G1EvacPhaseWithTrimTimeTracker : public StackObj {
+  G1ParScanThreadState* _pss;
+  Ticks _start;
+
+  Tickspan& _total_time;
+  Tickspan& _trim_time;
+
+  bool _stopped;
+public:
+  G1EvacPhaseWithTrimTimeTracker(G1ParScanThreadState* pss, Tickspan& total_time, Tickspan& trim_time);
+  ~G1EvacPhaseWithTrimTimeTracker();
+
+  void stop();
+};
+
+class G1GCParPhaseTimesTracker : public CHeapObj<mtGC> {
+protected:
+  Ticks _start_time;
   G1GCPhaseTimes::GCParPhases _phase;
   G1GCPhaseTimes* _phase_times;
   uint _worker_id;
+  EventGCPhaseParallel _event;
 public:
   G1GCParPhaseTimesTracker(G1GCPhaseTimes* phase_times, G1GCPhaseTimes::GCParPhases phase, uint worker_id);
-  ~G1GCParPhaseTimesTracker();
+  virtual ~G1GCParPhaseTimesTracker();
 };
 
-#endif // SHARE_VM_GC_G1_G1GCPHASETIMES_HPP
+class G1EvacPhaseTimesTracker : public G1GCParPhaseTimesTracker {
+  Tickspan _total_time;
+  Tickspan _trim_time;
+
+  G1EvacPhaseWithTrimTimeTracker _trim_tracker;
+public:
+  G1EvacPhaseTimesTracker(G1GCPhaseTimes* phase_times, G1ParScanThreadState* pss, G1GCPhaseTimes::GCParPhases phase, uint worker_id);
+  virtual ~G1EvacPhaseTimesTracker();
+};
+
+#endif // SHARE_GC_G1_G1GCPHASETIMES_HPP

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -58,7 +58,7 @@ int main(int argc, char *argv[])
 
   // Read command line arguments and file names
   for( int i = 1; i < argc; i++ ) { // For all arguments
-    register char *s = argv[i]; // Get option/filename
+    char *s = argv[i];          // Get option/filename
 
     if( *s++ == '-' ) {         // It's a flag? (not a filename)
       if( !*s ) {               // Stand-alone `-' means stdin
@@ -142,7 +142,7 @@ int main(int argc, char *argv[])
       const char *base = strip_ext(strdup(argv[i]));
       char       *temp = base_plus_suffix("dfa_",base);
       AD._DFA_file._name = base_plus_suffix(temp,".cpp");
-      delete temp;
+      delete[] temp;
       temp = base_plus_suffix("ad_",base);
       AD._CPP_file._name          = base_plus_suffix(temp,".cpp");
       AD._CPP_CLONE_file._name    = base_plus_suffix(temp,"_clone.cpp");
@@ -153,13 +153,13 @@ int main(int argc, char *argv[])
       AD._CPP_PEEPHOLE_file._name = base_plus_suffix(temp,"_peephole.cpp");
       AD._CPP_PIPELINE_file._name = base_plus_suffix(temp,"_pipeline.cpp");
       AD._HPP_file._name = base_plus_suffix(temp,".hpp");
-      delete temp;
+      delete[] temp;
       temp = base_plus_suffix("adGlobals_",base);
       AD._VM_file._name = base_plus_suffix(temp,".hpp");
-      delete temp;
+      delete[] temp;
       temp = base_plus_suffix("bugs_",base);
       AD._bug_file._name = base_plus_suffix(temp,".out");
-      delete temp;
+      delete[] temp;
     }                           // End of files vs options...
   }                             // End of while have command line arguments
 
@@ -217,6 +217,7 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_file, "code/vmreg.inline.hpp");
   AD.addInclude(AD._CPP_file, "gc/shared/collectedHeap.inline.hpp");
   AD.addInclude(AD._CPP_file, "oops/compiledICHolder.hpp");
+  AD.addInclude(AD._CPP_file, "oops/compressedOops.hpp");
   AD.addInclude(AD._CPP_file, "oops/markOop.hpp");
   AD.addInclude(AD._CPP_file, "oops/method.hpp");
   AD.addInclude(AD._CPP_file, "oops/oop.inline.hpp");
@@ -228,10 +229,12 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_file, "opto/regmask.hpp");
   AD.addInclude(AD._CPP_file, "opto/runtime.hpp");
   AD.addInclude(AD._CPP_file, "runtime/biasedLocking.hpp");
+  AD.addInclude(AD._CPP_file, "runtime/safepointMechanism.hpp");
   AD.addInclude(AD._CPP_file, "runtime/sharedRuntime.hpp");
   AD.addInclude(AD._CPP_file, "runtime/stubRoutines.hpp");
   AD.addInclude(AD._CPP_file, "utilities/growableArray.hpp");
   AD.addInclude(AD._HPP_file, "memory/allocation.hpp");
+  AD.addInclude(AD._HPP_file, "oops/compressedOops.hpp");
   AD.addInclude(AD._HPP_file, "code/nativeInst.hpp");
   AD.addInclude(AD._HPP_file, "opto/machnode.hpp");
   AD.addInclude(AD._HPP_file, "opto/node.hpp");
@@ -242,6 +245,7 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_CLONE_file, "adfiles", get_basename(AD._HPP_file._name));
   AD.addInclude(AD._CPP_EXPAND_file, "precompiled.hpp");
   AD.addInclude(AD._CPP_EXPAND_file, "adfiles", get_basename(AD._HPP_file._name));
+  AD.addInclude(AD._CPP_EXPAND_file, "oops/compressedOops.hpp");
   AD.addInclude(AD._CPP_FORMAT_file, "precompiled.hpp");
   AD.addInclude(AD._CPP_FORMAT_file, "adfiles", get_basename(AD._HPP_file._name));
   AD.addInclude(AD._CPP_GEN_file, "precompiled.hpp");
@@ -256,6 +260,7 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_PIPELINE_file, "adfiles", get_basename(AD._HPP_file._name));
   AD.addInclude(AD._DFA_file, "precompiled.hpp");
   AD.addInclude(AD._DFA_file, "adfiles", get_basename(AD._HPP_file._name));
+  AD.addInclude(AD._DFA_file, "oops/compressedOops.hpp");
   AD.addInclude(AD._DFA_file, "opto/cfgnode.hpp");  // Use PROB_MAX in predicate.
   AD.addInclude(AD._DFA_file, "opto/intrinsicnode.hpp");
   AD.addInclude(AD._DFA_file, "opto/matcher.hpp");

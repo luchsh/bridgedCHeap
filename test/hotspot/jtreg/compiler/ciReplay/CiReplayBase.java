@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -61,15 +61,20 @@ public abstract class CiReplayBase {
     private static final String HS_ERR_NAME = "hs_err_pid";
     private static final String RUN_SHELL_ZERO_LIMIT = "ulimit -S -c 0 && ";
     private static final String VERSION_OPTION = "-version";
-    private static final String[] REPLAY_GENERATION_OPTIONS = new String[]{"-Xms8m", "-Xmx32m",
+    private static final String[] REPLAY_GENERATION_OPTIONS = new String[]{"-Xms128m", "-Xmx128m",
         "-XX:MetaspaceSize=4m", "-XX:MaxMetaspaceSize=16m", "-XX:InitialCodeCacheSize=512k",
         "-XX:ReservedCodeCacheSize=4m", "-XX:ThreadStackSize=512", "-XX:VMThreadStackSize=512",
         "-XX:CompilerThreadStackSize=512", "-XX:ParallelGCThreads=1", "-XX:CICompilerCount=2",
-        "-Xcomp", "-XX:CICrashAt=1", "-XX:+DumpReplayDataOnError", "-XX:-TransmitErrorReport",
+        "-Xcomp", "-XX:CICrashAt=1", "-XX:+DumpReplayDataOnError",
         "-XX:+PreferInterpreterNativeStubs", "-XX:+PrintCompilation", REPLAY_FILE_OPTION};
     private static final String[] REPLAY_OPTIONS = new String[]{DISABLE_COREDUMP_ON_CRASH,
         "-XX:+ReplayCompiles", REPLAY_FILE_OPTION};
     protected final Optional<Boolean> runServer;
+
+    public static class EmptyMain {
+        public static void main(String[] args) {
+        }
+    }
 
     static {
         try {
@@ -135,7 +140,7 @@ public abstract class CiReplayBase {
             options.addAll(Arrays.asList(REPLAY_GENERATION_OPTIONS));
             options.addAll(Arrays.asList(vmopts));
             options.add(needCoreDump ? ENABLE_COREDUMP_ON_CRASH : DISABLE_COREDUMP_ON_CRASH);
-            options.add(VERSION_OPTION);
+            options.add(EmptyMain.class.getName());
             if (needCoreDump) {
                 crashOut = ProcessTools.executeProcess(getTestJavaCommandlineWithPrefix(
                         RUN_SHELL_NO_LIMIT, options.toArray(new String[0])));
@@ -289,7 +294,7 @@ public abstract class CiReplayBase {
         try {
             String cmd = ProcessTools.getCommandLine(ProcessTools.createJavaProcessBuilder(true, args));
             return new String[]{"sh", "-c", prefix
-                    + (Platform.isWindows() ? cmd.replace('\\', '/').replace(";", "\\;") : cmd)};
+                + (Platform.isWindows() ? cmd.replace('\\', '/').replace(";", "\\;").replace("|", "\\|") : cmd)};
         } catch(Throwable t) {
             throw new Error("Can't create process builder: " + t, t);
         }

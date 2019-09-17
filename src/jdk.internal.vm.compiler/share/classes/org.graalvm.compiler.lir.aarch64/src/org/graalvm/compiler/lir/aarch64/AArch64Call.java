@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,8 +21,11 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.lir.aarch64;
 
+import static org.graalvm.compiler.core.common.GraalOptions.GeneratePIC;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.ILLEGAL;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.REG;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.STACK;
@@ -36,6 +40,7 @@ import org.graalvm.compiler.core.common.spi.ForeignCallLinkage;
 import org.graalvm.compiler.lir.LIRFrameState;
 import org.graalvm.compiler.lir.LIRInstructionClass;
 import org.graalvm.compiler.lir.Opcode;
+import org.graalvm.compiler.lir.StandardOp.LabelHoldingOp;
 import org.graalvm.compiler.lir.asm.CompilationResultBuilder;
 
 import jdk.vm.ci.code.Register;
@@ -122,7 +127,7 @@ public class AArch64Call {
         }
     }
 
-    public abstract static class ForeignCallOp extends CallOp {
+    public abstract static class ForeignCallOp extends CallOp implements LabelHoldingOp {
         protected final ForeignCallLinkage callTarget;
         protected final Label label;
 
@@ -143,6 +148,11 @@ public class AArch64Call {
         }
 
         protected abstract void emitCall(CompilationResultBuilder crb, AArch64MacroAssembler masm);
+
+        @Override
+        public Label getLabel() {
+            return label;
+        }
     }
 
     @Opcode("NEAR_FOREIGN_CALL")
@@ -198,12 +208,16 @@ public class AArch64Call {
     public static void directCall(CompilationResultBuilder crb, AArch64MacroAssembler masm, InvokeTarget callTarget, Register scratch, LIRFrameState info, Label label) {
         int before = masm.position();
         if (scratch != null) {
-            /*
-             * Offset might not fit into a 28-bit immediate, generate an indirect call with a 64-bit
-             * immediate address which is fixed up by HotSpot.
-             */
-            masm.movNativeAddress(scratch, 0L);
-            masm.blr(scratch);
+            if (GeneratePIC.getValue(crb.getOptions())) {
+                masm.bl(0);
+            } else {
+                /*
+                 * Offset might not fit into a 28-bit immediate, generate an indirect call with a
+                 * 64-bit immediate address which is fixed up by HotSpot.
+                 */
+                masm.movNativeAddress(scratch, 0L, true);
+                masm.blr(scratch);
+            }
         } else {
             // Address is fixed up by HotSpot.
             masm.bl(0);
@@ -227,13 +241,19 @@ public class AArch64Call {
         masm.ensureUniquePC();
     }
 
-    public static void directJmp(CompilationResultBuilder crb, AArch64MacroAssembler masm, InvokeTarget target) {
-        int before = masm.position();
-        // Address is fixed up later by c++ code.
-        masm.jmp();
-        int after = masm.position();
-        crb.recordDirectCall(before, after, target, null);
-        masm.ensureUniquePC();
+    public static void directJmp(CompilationResultBuilder crb, AArch64MacroAssembler masm, InvokeTarget callTarget) {
+        try (AArch64MacroAssembler.ScratchRegister scratch = masm.getScratchRegister()) {
+            int before = masm.position();
+            if (GeneratePIC.getValue(crb.getOptions())) {
+                masm.jmp();
+            } else {
+                masm.movNativeAddress(scratch.getRegister(), 0L);
+                masm.jmp(scratch.getRegister());
+            }
+            int after = masm.position();
+            crb.recordDirectCall(before, after, callTarget, null);
+            masm.ensureUniquePC();
+        }
     }
 
     public static void indirectJmp(CompilationResultBuilder crb, AArch64MacroAssembler masm, Register dst, InvokeTarget target) {

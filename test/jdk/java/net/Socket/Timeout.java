@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,14 +24,19 @@
 /**
  * @test
  * @bug 4163126
+ * @library /test/lib
  * @summary  test to see if timeout hangs
  * @run main/timeout=15 Timeout
+ * @run main/othervm/timeout=15 -Djava.net.preferIPv4Stack=true Timeout
  */
 import java.net.*;
 import java.io.*;
+import jdk.test.lib.net.IPSupport;
 
 public class Timeout {
     public static void main(String[] args) throws Exception {
+        IPSupport.throwSkippedExceptionIfNonOperational();
+
         boolean success = false;
         ServerSocket sock = new ServerSocket(0);
         try {

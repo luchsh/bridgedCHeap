@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2012, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 #include "precompiled.hpp"
 #include "libadt/vectset.hpp"
 #include "memory/allocation.inline.hpp"
+#include "memory/arena.hpp"
 
 // Vector Sets - An Abstract Data Type
 
@@ -57,12 +58,6 @@ VectorSet::VectorSet(Arena *arena) : Set(arena) {
   data = (uint32_t *)_set_arena->Amalloc(size*sizeof(uint32_t));
   data[0] = 0;                  // No elements
   data[1] = 0;
-}
-
-//------------------------------Construct--------------------------------------
-Set &VectorSet_Construct(Arena *arena)
-{
-  return *(new VectorSet(arena));
 }
 
 //------------------------------operator=--------------------------------------
@@ -100,8 +95,8 @@ void VectorSet::grow( uint newsize )
 // Insert a member into an existing Set.
 Set &VectorSet::operator <<= (uint elem)
 {
-  register uint word = elem >> 5;            // Get the longword offset
-  register uint32_t mask = 1L << (elem & 31);  // Get bit mask
+  uint word = elem >> 5;            // Get the longword offset
+  uint32_t mask = 1L << (elem & 31);  // Get bit mask
 
   if( word >= size )            // Need to grow set?
     grow(elem+1);               // Then grow it
@@ -113,10 +108,10 @@ Set &VectorSet::operator <<= (uint elem)
 // Delete a member from an existing Set.
 Set &VectorSet::operator >>= (uint elem)
 {
-  register uint word = elem >> 5; // Get the longword offset
+  uint word = elem >> 5;          // Get the longword offset
   if( word >= size )              // Beyond the last?
     return *this;                 // Then it's clear & return clear
-  register uint32_t mask = 1L << (elem & 31);     // Get bit mask
+  uint32_t mask = 1L << (elem & 31);     // Get bit mask
   data[word] &= ~mask;            // Clear bit
   return *this;
 }
@@ -127,8 +122,8 @@ VectorSet &VectorSet::operator &= (const VectorSet &s)
 {
   // NOTE: The intersection is never any larger than the smallest set.
   if( s.size < size ) size = s.size; // Get smaller size
-  register uint32_t *u1 = data;   // Pointer to the destination data
-  register uint32_t *u2 = s.data; // Pointer to the source data
+  uint32_t *u1 = data;          // Pointer to the destination data
+  uint32_t *u2 = s.data;        // Pointer to the source data
   for( uint i=0; i<size; i++)   // For data in set
     *u1++ &= *u2++;             // Copy and AND longwords
   return *this;                 // Return set
@@ -146,9 +141,9 @@ Set &VectorSet::operator &= (const Set &set)
 VectorSet &VectorSet::operator |= (const VectorSet &s)
 {
   // This many words must be unioned
-  register uint cnt = ((size<s.size)?size:s.size);
-  register uint32_t *u1 = data;   // Pointer to the destination data
-  register uint32_t *u2 = s.data; // Pointer to the source data
+  uint cnt = ((size<s.size)?size:s.size);
+  uint32_t *u1 = data;          // Pointer to the destination data
+  uint32_t *u2 = s.data;        // Pointer to the source data
   for( uint i=0; i<cnt; i++)    // Copy and OR the two sets
     *u1++ |= *u2++;
   if( size < s.size ) {         // Is set 2 larger than set 1?
@@ -171,9 +166,9 @@ Set &VectorSet::operator |= (const Set &set)
 VectorSet &VectorSet::operator -= (const VectorSet &s)
 {
   // This many words must be unioned
-  register uint cnt = ((size<s.size)?size:s.size);
-  register uint32_t *u1 = data;   // Pointer to the destination data
-  register uint32_t *u2 = s.data; // Pointer to the source data
+  uint cnt = ((size<s.size)?size:s.size);
+  uint32_t *u1 = data;          // Pointer to the destination data
+  uint32_t *u2 = s.data;        // Pointer to the source data
   for( uint i=0; i<cnt; i++ )   // For data in set
     *u1++ &= ~(*u2++);          // A <-- A & ~B  with longwords
   return *this;                 // Return new set
@@ -194,17 +189,17 @@ Set &VectorSet::operator -= (const Set &set)
 //        1X --  B is a subset of A
 int VectorSet::compare (const VectorSet &s) const
 {
-  register uint32_t *u1 = data;   // Pointer to the destination data
-  register uint32_t *u2 = s.data; // Pointer to the source data
-  register uint32_t AnotB = 0, BnotA = 0;
+  uint32_t *u1 = data;          // Pointer to the destination data
+  uint32_t *u2 = s.data;        // Pointer to the source data
+  uint32_t AnotB = 0, BnotA = 0;
   // This many words must be unioned
-  register uint cnt = ((size<s.size)?size:s.size);
+  uint cnt = ((size<s.size)?size:s.size);
 
   // Get bits for both sets
   uint i;                       // Exit value of loop
   for( i=0; i<cnt; i++ ) {      // For data in BOTH sets
-    register uint32_t A = *u1++;  // Data from one guy
-    register uint32_t B = *u2++;  // Data from other guy
+    uint32_t A = *u1++;         // Data from one guy
+    uint32_t B = *u2++;         // Data from other guy
     AnotB |= (A & ~B);          // Compute bits in A not B
     BnotA |= (B & ~A);          // Compute bits in B not A
   }
@@ -244,9 +239,9 @@ int VectorSet::disjoint(const Set &set) const
   const VectorSet &s = *(set.asVectorSet());
 
   // NOTE: The intersection is never any larger than the smallest set.
-  register uint small_size = ((size<s.size)?size:s.size);
-  register uint32_t *u1 = data;        // Pointer to the destination data
-  register uint32_t *u2 = s.data;      // Pointer to the source data
+  uint small_size = ((size<s.size)?size:s.size);
+  uint32_t *u1 = data;               // Pointer to the destination data
+  uint32_t *u2 = s.data;             // Pointer to the source data
   for( uint i=0; i<small_size; i++)  // For data in set
     if( *u1++ & *u2++ )              // If any elements in common
       return 0;                      // Then not disjoint
@@ -285,25 +280,11 @@ int VectorSet::operator <= (const Set &set) const
 // Test for membership.  A Zero/Non-Zero value is returned!
 int VectorSet::operator[](uint elem) const
 {
-  register uint word = elem >> 5; // Get the longword offset
-  if( word >= size )              // Beyond the last?
-    return 0;                     // Then it's clear
-  register uint32_t mask = 1L << (elem & 31);  // Get bit mask
-  return ((data[word] & mask))!=0;           // Return the sense of the bit
-}
-
-//------------------------------getelem----------------------------------------
-// Get any element from the set.
-uint VectorSet::getelem(void) const
-{
-  uint i;                       // Exit value of loop
-  for( i=0; i<size; i++ )
-    if( data[i] )
-      break;
-  uint32_t word = data[i];
-  int j;                        // Exit value of loop
-  for( j= -1; word; j++, word>>=1 );
-  return (i<<5)+j;
+  uint word = elem >> 5;              // Get the longword offset
+  if( word >= size )                  // Beyond the last?
+    return 0;                         // Then it's clear
+  uint32_t mask = 1L << (elem & 31);  // Get bit mask
+  return ((data[word] & mask))!=0;    // Return the sense of the bit
 }
 
 //------------------------------Clear------------------------------------------

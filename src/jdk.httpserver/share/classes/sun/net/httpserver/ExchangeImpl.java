@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,6 +32,7 @@ import java.util.*;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.text.*;
+import java.util.stream.Stream;
 import com.sun.net.httpserver.*;
 
 class ExchangeImpl {
@@ -210,6 +211,7 @@ class ExchangeImpl {
         PlaceholderOutputStream o = getPlaceholderResponseBody();
         tmpout.write (bytes(statusLine, 0), 0, statusLine.length());
         boolean noContentToSend = false; // assume there is content
+        boolean noContentLengthHeader = false; // must not send Content-length is set
         rspHdrs.set ("Date", dateFormat.get().format (new Date()));
 
         /* check for response type that is not allowed to send a body */
@@ -225,10 +227,11 @@ class ExchangeImpl {
                 logger.log (Level.WARNING, msg);
             }
             contentLen = -1;
+            noContentLengthHeader = (rCode != 304);
         }
 
-        if (isHeadRequest()) {
-            /* HEAD requests should not set a content length by passing it
+        if (isHeadRequest() || rCode == 304) {
+            /* HEAD requests or 304 responses should not set a content length by passing it
              * through this API, but should instead manually set the required
              * headers.*/
             if (contentLen >= 0) {
@@ -239,7 +242,7 @@ class ExchangeImpl {
             }
             noContentToSend = true;
             contentLen = 0;
-        } else { /* not a HEAD request */
+        } else { /* not a HEAD request or 304 response */
             if (contentLen == 0) {
                 if (http10) {
                     o.setWrappedStream (new UndefLengthOutputStream (this, ros));
@@ -253,10 +256,28 @@ class ExchangeImpl {
                     noContentToSend = true;
                     contentLen = 0;
                 }
-                rspHdrs.set("Content-length", Long.toString(contentLen));
+                if (!noContentLengthHeader) {
+                    rspHdrs.set("Content-length", Long.toString(contentLen));
+                }
                 o.setWrappedStream (new FixedLengthOutputStream (this, ros, contentLen));
             }
         }
+
+        // A custom handler can request that the connection be
+        // closed after the exchange by supplying Connection: close
+        // to the response header. Nothing to do if the exchange is
+        // already set up to be closed.
+        if (!close) {
+            Stream<String> conheader =
+                    Optional.ofNullable(rspHdrs.get("Connection"))
+                    .map(List::stream).orElse(Stream.empty());
+            if (conheader.anyMatch("close"::equalsIgnoreCase)) {
+                Logger logger = server.getLogger();
+                logger.log (Level.DEBUG, "Connection: close requested by handler");
+                close = true;
+            }
+        }
+
         write (rspHdrs, tmpout);
         this.rspContentLen = contentLen;
         tmpout.flush() ;

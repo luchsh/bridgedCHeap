@@ -26,9 +26,12 @@
 
 #include "precompiled.hpp"
 #include "asm/macroAssembler.inline.hpp"
+#include "gc/shared/barrierSet.hpp"
+#include "gc/shared/barrierSetAssembler.hpp"
 #include "interp_masm_ppc.hpp"
 #include "interpreter/interpreterRuntime.hpp"
 #include "prims/jvmtiThreadState.hpp"
+#include "runtime/frame.inline.hpp"
 #include "runtime/safepointMechanism.hpp"
 #include "runtime/sharedRuntime.hpp"
 
@@ -468,7 +471,7 @@ void InterpreterMacroAssembler::get_u4(Register Rdst, Register Rsrc, int offset,
 }
 
 // Load object from cpool->resolved_references(index).
-void InterpreterMacroAssembler::load_resolved_reference_at_index(Register result, Register index, Label *is_null) {
+void InterpreterMacroAssembler::load_resolved_reference_at_index(Register result, Register index, Label *L_handle_null) {
   assert_different_registers(result, index);
   get_constant_pool(result);
 
@@ -491,7 +494,7 @@ void InterpreterMacroAssembler::load_resolved_reference_at_index(Register result
 #endif
   // Add in the index.
   add(result, tmp, result);
-  load_heap_oop(result, arrayOopDesc::base_offset_in_bytes(T_OBJECT), result, is_null);
+  load_heap_oop(result, arrayOopDesc::base_offset_in_bytes(T_OBJECT), result, tmp, R0, false, 0, L_handle_null);
 }
 
 // load cpool->resolved_klass_at(index)
@@ -511,6 +514,18 @@ void InterpreterMacroAssembler::load_resolved_klass_at_offset(Register Rcpool, R
   addi(Roffset, Roffset, Array<Klass*>::base_offset_in_bytes());
   isync(); // Order load of instance Klass wrt. tags.
   ldx(Rklass, Rklass, Roffset);
+}
+
+void InterpreterMacroAssembler::load_resolved_method_at_index(int byte_no,
+                                                              Register cache,
+                                                              Register method) {
+  const int method_offset = in_bytes(
+    ConstantPoolCache::base_offset() +
+      ((byte_no == TemplateTable::f2_byte)
+       ? ConstantPoolCacheEntry::f2_offset()
+       : ConstantPoolCacheEntry::f1_offset()));
+
+  ld(method, method_offset, cache); // get f1 Method*
 }
 
 // Generate a subtype check: branch to ok_is_subtype if sub_klass is
@@ -2443,4 +2458,3 @@ void InterpreterMacroAssembler::notify_method_exit(bool is_native_method, TosSta
 
   // Dtrace support not implemented.
 }
-

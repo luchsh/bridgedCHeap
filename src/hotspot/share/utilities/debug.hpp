@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,14 +22,25 @@
  *
  */
 
-#ifndef SHARE_VM_UTILITIES_DEBUG_HPP
-#define SHARE_VM_UTILITIES_DEBUG_HPP
+#ifndef SHARE_UTILITIES_DEBUG_HPP
+#define SHARE_UTILITIES_DEBUG_HPP
 
 #include "utilities/breakpoint.hpp"
 #include "utilities/compilerWarnings.hpp"
 #include "utilities/macros.hpp"
 
 #include <stddef.h>
+
+// ShowRegistersOnAssert support (for now Linux only)
+#if defined(LINUX) && !defined(ZERO)
+#define CAN_SHOW_REGISTERS_ON_ASSERT
+extern char* g_assert_poison;
+#define TOUCH_ASSERT_POISON (*g_assert_poison) = 'X';
+void initialize_assert_poison();
+bool handle_assert_poison_fault(const void* ucVoid, const void* faulting_address);
+#else
+#define TOUCH_ASSERT_POISON
+#endif // CAN_SHOW_REGISTERS_ON_ASSERT
 
 // assertions
 #ifndef ASSERT
@@ -42,9 +53,7 @@
 #define vmassert(p, ...)                                                       \
 do {                                                                           \
   if (!(p)) {                                                                  \
-    if (is_executing_unit_tests()) {                                           \
-      report_assert_msg(__VA_ARGS__);                                          \
-    }                                                                          \
+    TOUCH_ASSERT_POISON;                                                       \
     report_vm_error(__FILE__, __LINE__, "assert(" #p ") failed", __VA_ARGS__); \
     BREAKPOINT;                                                                \
   }                                                                            \
@@ -53,6 +62,9 @@ do {                                                                           \
 
 // For backward compatibility.
 #define assert(p, ...) vmassert(p, __VA_ARGS__)
+
+#define precond(p)   assert(p, "precond")
+#define postcond(p)  assert(p, "postcond")
 
 #ifndef ASSERT
 #define vmassert_status(p, status, msg)
@@ -67,6 +79,7 @@ do {                                                                           \
 #define vmassert_status(p, status, msg) \
 do {                                                                           \
   if (!(p)) {                                                                  \
+    TOUCH_ASSERT_POISON;                                                       \
     report_vm_status_error(__FILE__, __LINE__, "assert(" #p ") failed",        \
                            status, msg);                                       \
     BREAKPOINT;                                                                \
@@ -83,6 +96,7 @@ do {                                                                           \
 #define guarantee(p, ...)                                                         \
 do {                                                                              \
   if (!(p)) {                                                                     \
+    TOUCH_ASSERT_POISON;                                                          \
     report_vm_error(__FILE__, __LINE__, "guarantee(" #p ") failed", __VA_ARGS__); \
     BREAKPOINT;                                                                   \
   }                                                                               \
@@ -90,6 +104,7 @@ do {                                                                            
 
 #define fatal(...)                                                                \
 do {                                                                              \
+  TOUCH_ASSERT_POISON;                                                            \
   report_fatal(__FILE__, __LINE__, __VA_ARGS__);                                  \
   BREAKPOINT;                                                                     \
 } while (0)
@@ -103,18 +118,21 @@ do {                                                                            
 
 #define ShouldNotCallThis()                                                       \
 do {                                                                              \
+  TOUCH_ASSERT_POISON;                                                            \
   report_should_not_call(__FILE__, __LINE__);                                     \
   BREAKPOINT;                                                                     \
 } while (0)
 
 #define ShouldNotReachHere()                                                      \
 do {                                                                              \
+  TOUCH_ASSERT_POISON;                                                            \
   report_should_not_reach_here(__FILE__, __LINE__);                               \
   BREAKPOINT;                                                                     \
 } while (0)
 
 #define Unimplemented()                                                           \
 do {                                                                              \
+  TOUCH_ASSERT_POISON;                                                            \
   report_unimplemented(__FILE__, __LINE__);                                       \
   BREAKPOINT;                                                                     \
 } while (0)
@@ -139,16 +157,10 @@ void report_vm_error(const char* file, int line, const char* error_msg);
 // ATTRIBUTE_PRINTF works with gcc >= 4.8 and any other compiler.
 void report_vm_error(const char* file, int line, const char* error_msg,
                      const char* detail_fmt, ...) ATTRIBUTE_PRINTF(4, 5);
-#ifdef ASSERT
-void report_assert_msg(const char* msg, ...) ATTRIBUTE_PRINTF(1, 2);
-#endif // ASSERT
 #else
 // GCC < 4.8 warns because of empty format string.  Warning can not be switched off selectively.
 void report_vm_error(const char* file, int line, const char* error_msg,
                      const char* detail_fmt, ...);
-#ifdef ASSERT
-void report_assert_msg(const char* msg, ...);
-#endif // ASSERT
 #endif
 void report_vm_status_error(const char* file, int line, const char* error_msg,
                             int status, const char* detail);
@@ -159,11 +171,6 @@ void report_should_not_call(const char* file, int line);
 void report_should_not_reach_here(const char* file, int line);
 void report_unimplemented(const char* file, int line);
 void report_untested(const char* file, int line, const char* message);
-
-#ifdef ASSERT
-// unit test support
-bool is_executing_unit_tests();
-#endif // ASSERT
 
 void warning(const char* format, ...) ATTRIBUTE_PRINTF(1, 2);
 
@@ -187,4 +194,4 @@ template<> struct STATIC_ASSERT_FAILURE<true> { enum { value = 1 }; };
 // out of memory reporting
 void report_java_out_of_memory(const char* message);
 
-#endif // SHARE_VM_UTILITIES_DEBUG_HPP
+#endif // SHARE_UTILITIES_DEBUG_HPP

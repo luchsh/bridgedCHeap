@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
 
 #include "precompiled.hpp"
 #include "aot/aotLoader.hpp"
+#include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/stringTable.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
@@ -39,18 +40,22 @@
 #include "gc/shared/gcCause.hpp"
 #include "gc/shared/gcHeapSummary.hpp"
 #include "gc/shared/gcId.hpp"
-#include "gc/shared/gcLocker.inline.hpp"
+#include "gc/shared/gcLocker.hpp"
 #include "gc/shared/gcTimer.hpp"
 #include "gc/shared/gcTrace.hpp"
 #include "gc/shared/gcTraceTime.inline.hpp"
 #include "gc/shared/isGCActiveMark.hpp"
 #include "gc/shared/referencePolicy.hpp"
 #include "gc/shared/referenceProcessor.hpp"
+#include "gc/shared/referenceProcessorPhaseTimes.hpp"
 #include "gc/shared/spaceDecorator.hpp"
 #include "gc/shared/weakProcessor.hpp"
+#include "memory/universe.hpp"
 #include "logging/log.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/biasedLocking.hpp"
+#include "runtime/flags/flagSetting.hpp"
+#include "runtime/handles.inline.hpp"
 #include "runtime/safepoint.hpp"
 #include "runtime/vmThread.hpp"
 #include "services/management.hpp"
@@ -58,15 +63,21 @@
 #include "utilities/align.hpp"
 #include "utilities/events.hpp"
 #include "utilities/stack.inline.hpp"
+#if INCLUDE_JVMCI
+#include "jvmci/jvmci.hpp"
+#endif
 
 elapsedTimer        PSMarkSweep::_accumulated_time;
 jlong               PSMarkSweep::_time_of_last_gc   = 0;
 CollectorCounters*  PSMarkSweep::_counters = NULL;
 
+SpanSubjectToDiscoveryClosure PSMarkSweep::_span_based_discoverer;
+
 void PSMarkSweep::initialize() {
-  MemRegion mr = ParallelScavengeHeap::heap()->reserved_region();
-  set_ref_processor(new ReferenceProcessor(mr));     // a vanilla ref proc
-  _counters = new CollectorCounters("PSMarkSweep", 1);
+  _span_based_discoverer.set_span(ParallelScavengeHeap::heap()->reserved_region());
+  set_ref_processor(new ReferenceProcessor(&_span_based_discoverer));     // a vanilla ref proc
+  _counters = new CollectorCounters("Serial full collection pauses", 1);
+  MarkSweep::initialize();
 }
 
 // This method contains all heap specific policy for invoking mark sweep.
@@ -78,7 +89,7 @@ void PSMarkSweep::initialize() {
 // Note that this method should only be called from the vm_thread while
 // at a safepoint!
 //
-// Note that the all_soft_refs_clear flag in the collector policy
+// Note that the all_soft_refs_clear flag in the soft ref policy
 // may be true because this method can be called without intervening
 // activity.  For example when the heap space is tight and full measure
 // are being taken to free space.
@@ -98,7 +109,7 @@ void PSMarkSweep::invoke(bool maximum_heap_compaction) {
   }
 
   const bool clear_all_soft_refs =
-    heap->collector_policy()->should_clear_all_soft_refs();
+    heap->soft_ref_policy()->should_clear_all_soft_refs();
 
   uint count = maximum_heap_compaction ? 1 : MarkSweepAlwaysCompactCount;
   UIntFlagSetting flag_setting(MarkSweepAlwaysCompactCount, count);
@@ -125,8 +136,8 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
   PSAdaptiveSizePolicy* size_policy = heap->size_policy();
 
   // The scope of casr should end after code that can change
-  // CollectorPolicy::_should_clear_all_soft_refs.
-  ClearedAllSoftRefs casr(clear_all_softrefs, heap->collector_policy());
+  // SoftRefolicy::_should_clear_all_soft_refs.
+  ClearedAllSoftRefs casr(clear_all_softrefs, heap->soft_ref_policy());
 
   PSYoungGen* young_gen = heap->young_gen();
   PSOldGen* old_gen = heap->old_gen();
@@ -144,7 +155,6 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
   heap->trace_heap_before_gc(_gc_tracer);
 
   // Fill in TLABs
-  heap->accumulate_statistics_all_tlabs();
   heap->ensure_parsability(true);  // retire TLABs
 
   if (VerifyBeforeGC && heap->total_collections() >= VerifyGCStartAt) {
@@ -181,11 +191,10 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
     // Let the size policy know we're starting
     size_policy->major_collection_begin();
 
-    CodeCache::gc_prologue();
     BiasedLocking::preserve_marks();
 
     // Capture metadata size before collection for sizing.
-    size_t metadata_prev_used = MetaspaceAux::used_bytes();
+    size_t metadata_prev_used = MetaspaceUtils::used_bytes();
 
     size_t old_gen_prev_used = old_gen->used_in_bytes();
     size_t young_gen_prev_used = young_gen->used_in_bytes();
@@ -236,31 +245,27 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
                       young_gen->to_space()->is_empty();
     young_gen_empty = eden_empty && survivors_empty;
 
-    ModRefBarrierSet* modBS = barrier_set_cast<ModRefBarrierSet>(heap->barrier_set());
+    PSCardTable* card_table = heap->card_table();
     MemRegion old_mr = heap->old_gen()->reserved();
     if (young_gen_empty) {
-      modBS->clear(MemRegion(old_mr.start(), old_mr.end()));
+      card_table->clear(MemRegion(old_mr.start(), old_mr.end()));
     } else {
-      modBS->invalidate(MemRegion(old_mr.start(), old_mr.end()));
+      card_table->invalidate(MemRegion(old_mr.start(), old_mr.end()));
     }
 
     // Delete metaspaces for unloaded class loaders and clean up loader_data graph
     ClassLoaderDataGraph::purge();
-    MetaspaceAux::verify_metrics();
+    MetaspaceUtils::verify_metrics();
 
     BiasedLocking::restore_marks();
-    CodeCache::gc_epilogue();
+    heap->prune_scavengable_nmethods();
     JvmtiExport::gc_epilogue();
 
 #if COMPILER2_OR_JVMCI
     DerivedPointerTable::update_pointers();
 #endif
 
-    ReferenceProcessorPhaseTimes pt(_gc_timer, ref_processor()->num_q());
-
-    ref_processor()->enqueue_discovered_references(NULL, &pt);
-
-    pt.print_enqueue_phase();
+    assert(!ref_processor()->discovery_enabled(), "Should have been disabled earlier");
 
     // Update time of last GC
     reset_millis_since_last_gc();
@@ -292,7 +297,7 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
         assert(young_gen->max_size() >
           young_gen->from_space()->capacity_in_bytes() +
           young_gen->to_space()->capacity_in_bytes(),
-          "Sizes of space in young gen are out-of-bounds");
+          "Sizes of space in young gen are out of bounds");
 
         size_t young_live = young_gen->used_in_bytes();
         size_t eden_live = young_gen->eden_space()->used_in_bytes();
@@ -314,13 +319,12 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
                                                     max_eden_size,
                                                     true /* full gc*/);
 
-        size_policy->check_gc_overhead_limit(young_live,
-                                             eden_live,
+        size_policy->check_gc_overhead_limit(eden_live,
                                              max_old_gen_size,
                                              max_eden_size,
                                              true /* full gc*/,
                                              gc_cause,
-                                             heap->collector_policy());
+                                             heap->soft_ref_policy());
 
         size_policy->decay_supplemental_growth(true /* full gc*/);
 
@@ -351,7 +355,7 @@ bool PSMarkSweep::invoke_no_policy(bool clear_all_softrefs) {
 
     young_gen->print_used_change(young_gen_prev_used);
     old_gen->print_used_change(old_gen_prev_used);
-    MetaspaceAux::print_metaspace_change(metadata_prev_used);
+    MetaspaceUtils::print_metaspace_change(metadata_prev_used);
 
     // Track memory usage and detect low memory
     MemoryService::track_memory_usage();
@@ -431,15 +435,15 @@ bool PSMarkSweep::absorb_live_data_from_eden(PSAdaptiveSizePolicy* size_policy,
     return false; // Respect young gen minimum size.
   }
 
-  log_trace(heap, ergo)(" absorbing " SIZE_FORMAT "K:  "
-                        "eden " SIZE_FORMAT "K->" SIZE_FORMAT "K "
-                        "from " SIZE_FORMAT "K, to " SIZE_FORMAT "K "
-                        "young_gen " SIZE_FORMAT "K->" SIZE_FORMAT "K ",
-                        absorb_size / K,
-                        eden_capacity / K, (eden_capacity - absorb_size) / K,
-                        young_gen->from_space()->used_in_bytes() / K,
-                        young_gen->to_space()->used_in_bytes() / K,
-                        young_gen->capacity_in_bytes() / K, new_young_size / K);
+  log_trace(gc, ergo, heap)(" absorbing " SIZE_FORMAT "K:  "
+                            "eden " SIZE_FORMAT "K->" SIZE_FORMAT "K "
+                            "from " SIZE_FORMAT "K, to " SIZE_FORMAT "K "
+                            "young_gen " SIZE_FORMAT "K->" SIZE_FORMAT "K ",
+                            absorb_size / K,
+                            eden_capacity / K, (eden_capacity - absorb_size) / K,
+                            young_gen->from_space()->used_in_bytes() / K,
+                            young_gen->to_space()->used_in_bytes() / K,
+                            young_gen->capacity_in_bytes() / K, new_young_size / K);
 
   // Fill the unused part of the old gen.
   MutableSpace* const old_space = old_gen->object_space();
@@ -520,11 +524,12 @@ void PSMarkSweep::mark_sweep_phase1(bool clear_all_softrefs) {
     ObjectSynchronizer::oops_do(mark_and_push_closure());
     Management::oops_do(mark_and_push_closure());
     JvmtiExport::oops_do(mark_and_push_closure());
-    SystemDictionary::always_strong_oops_do(mark_and_push_closure());
+    SystemDictionary::oops_do(mark_and_push_closure());
     ClassLoaderDataGraph::always_strong_cld_do(follow_cld_closure());
     // Do not treat nmethods as strong roots for mark/sweep, since we can unload them.
-    //CodeCache::scavenge_root_nmethods_do(CodeBlobToOopClosure(mark_and_push_closure()));
-    AOTLoader::oops_do(mark_and_push_closure());
+    //ScavengableNMethods::scavengable_nmethods_do(CodeBlobToOopClosure(mark_and_push_closure()));
+    AOT_ONLY(AOTLoader::oops_do(mark_and_push_closure());)
+    JVMCI_ONLY(JVMCI::oops_do(mark_and_push_closure());)
   }
 
   // Flush marking stack.
@@ -535,7 +540,7 @@ void PSMarkSweep::mark_sweep_phase1(bool clear_all_softrefs) {
     GCTraceTime(Debug, gc, phases) t("Reference Processing", _gc_timer);
 
     ref_processor()->setup_policy(clear_all_softrefs);
-    ReferenceProcessorPhaseTimes pt(_gc_timer, ref_processor()->num_q());
+    ReferenceProcessorPhaseTimes pt(_gc_timer, ref_processor()->max_num_queues());
     const ReferenceProcessorStats& stats =
       ref_processor()->process_discovered_references(
         is_alive_closure(), mark_and_push_closure(), follow_stack_closure(), NULL, &pt);
@@ -555,25 +560,16 @@ void PSMarkSweep::mark_sweep_phase1(bool clear_all_softrefs) {
     GCTraceTime(Debug, gc, phases) t("Class Unloading", _gc_timer);
 
     // Unload classes and purge the SystemDictionary.
-    bool purged_class = SystemDictionary::do_unloading(is_alive_closure(), _gc_timer);
+    bool purged_class = SystemDictionary::do_unloading(_gc_timer);
 
     // Unload nmethods.
     CodeCache::do_unloading(is_alive_closure(), purged_class);
 
     // Prune dead klasses from subklass/sibling/implementor lists.
-    Klass::clean_weak_klass_links(is_alive_closure());
-  }
+    Klass::clean_weak_klass_links(purged_class);
 
-  {
-    GCTraceTime(Debug, gc, phases) t("Scrub String Table", _gc_timer);
-    // Delete entries for dead interned strings.
-    StringTable::unlink(is_alive_closure());
-  }
-
-  {
-    GCTraceTime(Debug, gc, phases) t("Scrub Symbol Table", _gc_timer);
-    // Clean up unreferenced symbols in symbol table.
-    SymbolTable::unlink();
+    // Clean JVMCI metadata handles.
+    JVMCI_ONLY(JVMCI::do_unloading(purged_class));
   }
 
   _gc_tracer->report_object_count_after_gc(is_alive_closure());
@@ -627,8 +623,10 @@ void PSMarkSweep::mark_sweep_phase3() {
 
   CodeBlobToOopClosure adjust_from_blobs(adjust_pointer_closure(), CodeBlobToOopClosure::FixRelocations);
   CodeCache::blobs_do(&adjust_from_blobs);
-  AOTLoader::oops_do(adjust_pointer_closure());
-  StringTable::oops_do(adjust_pointer_closure());
+  AOT_ONLY(AOTLoader::oops_do(adjust_pointer_closure());)
+
+  JVMCI_ONLY(JVMCI::oops_do(adjust_pointer_closure());)
+
   ref_processor()->weak_oops_do(adjust_pointer_closure());
   PSScavenge::reference_processor()->weak_oops_do(adjust_pointer_closure());
 

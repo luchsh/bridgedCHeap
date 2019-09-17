@@ -93,6 +93,10 @@ class InvokerBytecodeGenerator {
     private ClassWriter cw;
     private MethodVisitor mv;
 
+    /** Single element internal class name lookup cache. */
+    private Class<?> lastClass;
+    private String lastInternalName;
+
     private static final MemberName.Factory MEMBERNAME_FACTORY = MemberName.getFactory();
     private static final Class<?> HOST_CLASS = LambdaForm.class;
 
@@ -602,13 +606,18 @@ class InvokerBytecodeGenerator {
         mv.visitInsn(opcode);
     }
 
-    private static String getInternalName(Class<?> c) {
+    private String getInternalName(Class<?> c) {
         if (c == Object.class)             return OBJ;
         else if (c == Object[].class)      return OBJARY;
         else if (c == Class.class)         return CLS;
         else if (c == MethodHandle.class)  return MH;
         assert(VerifyAccess.isTypeVisible(c, Object.class)) : c.getName();
-        return c.getName().replace('.', '/');
+
+        if (c == lastClass) {
+            return lastInternalName;
+        }
+        lastClass = c;
+        return lastInternalName = c.getName().replace('.', '/');
     }
 
     private static MemberName resolveFrom(String name, MethodType type, Class<?> holder) {
@@ -640,9 +649,11 @@ class InvokerBytecodeGenerator {
             }
             case EXACT_INVOKER:             // fall-through
             case EXACT_LINKER:              // fall-through
+            case LINK_TO_CALL_SITE:         // fall-through
+            case LINK_TO_TARGET_METHOD:     // fall-through
             case GENERIC_INVOKER:           // fall-through
             case GENERIC_LINKER:            return resolveFrom(name, invokerType.basicType(), Invokers.Holder.class);
-            case GET_OBJECT:                // fall-through
+            case GET_REFERENCE:             // fall-through
             case GET_BOOLEAN:               // fall-through
             case GET_BYTE:                  // fall-through
             case GET_CHAR:                  // fall-through
@@ -651,7 +662,7 @@ class InvokerBytecodeGenerator {
             case GET_LONG:                  // fall-through
             case GET_FLOAT:                 // fall-through
             case GET_DOUBLE:                // fall-through
-            case PUT_OBJECT:                // fall-through
+            case PUT_REFERENCE:             // fall-through
             case PUT_BOOLEAN:               // fall-through
             case PUT_BYTE:                  // fall-through
             case PUT_CHAR:                  // fall-through
@@ -660,8 +671,10 @@ class InvokerBytecodeGenerator {
             case PUT_LONG:                  // fall-through
             case PUT_FLOAT:                 // fall-through
             case PUT_DOUBLE:                // fall-through
+            case DIRECT_NEW_INVOKE_SPECIAL: // fall-through
             case DIRECT_INVOKE_INTERFACE:   // fall-through
             case DIRECT_INVOKE_SPECIAL:     // fall-through
+            case DIRECT_INVOKE_SPECIAL_IFC: // fall-through
             case DIRECT_INVOKE_STATIC:      // fall-through
             case DIRECT_INVOKE_STATIC_INIT: // fall-through
             case DIRECT_INVOKE_VIRTUAL:     return resolveFrom(name, invokerType, DirectMethodHandle.Holder.class);
@@ -708,11 +721,11 @@ class InvokerBytecodeGenerator {
         }
     }
 
-    static final String  LF_HIDDEN_SIG = className("Ljava/lang/invoke/LambdaForm$Hidden;");
-    static final String  LF_COMPILED_SIG = className("Ljava/lang/invoke/LambdaForm$Compiled;");
-    static final String  FORCEINLINE_SIG = className("Ljdk/internal/vm/annotation/ForceInline;");
-    static final String  DONTINLINE_SIG = className("Ljdk/internal/vm/annotation/DontInline;");
-    static final String  INJECTEDPROFILE_SIG = className("Ljava/lang/invoke/InjectedProfile;");
+    static final String      DONTINLINE_SIG = className("Ljdk/internal/vm/annotation/DontInline;");
+    static final String     FORCEINLINE_SIG = className("Ljdk/internal/vm/annotation/ForceInline;");
+    static final String          HIDDEN_SIG = className("Ljdk/internal/vm/annotation/Hidden;");
+    static final String INJECTEDPROFILE_SIG = className("Ljava/lang/invoke/InjectedProfile;");
+    static final String     LF_COMPILED_SIG = className("Ljava/lang/invoke/LambdaForm$Compiled;");
 
     /**
      * Generate an invoker method for the passed {@link LambdaForm}.
@@ -735,7 +748,7 @@ class InvokerBytecodeGenerator {
         methodPrologue();
 
         // Suppress this method in backtraces displayed to the user.
-        mv.visitAnnotation(LF_HIDDEN_SIG, true);
+        mv.visitAnnotation(HIDDEN_SIG, true);
 
         // Mark this method as a compiled LambdaForm
         mv.visitAnnotation(LF_COMPILED_SIG, true);
@@ -928,6 +941,12 @@ class InvokerBytecodeGenerator {
         if (member == null)  return false;
         if (member.isConstructor())  return false;
         Class<?> cls = member.getDeclaringClass();
+        // Fast-path non-private members declared by MethodHandles, which is a common
+        // case
+        if (MethodHandle.class.isAssignableFrom(cls) && !member.isPrivate()) {
+            assert(isStaticallyInvocableType(member.getMethodOrFieldType()));
+            return true;
+        }
         if (cls.isArray() || cls.isPrimitive())
             return false;  // FIXME
         if (cls.isAnonymousClass() || cls.isLocalClass())
@@ -936,12 +955,8 @@ class InvokerBytecodeGenerator {
             return false;  // not on BCP
         if (ReflectUtil.isVMAnonymousClass(cls)) // FIXME: switch to supported API once it is added
             return false;
-        MethodType mtype = member.getMethodOrFieldType();
-        if (!isStaticallyNameable(mtype.returnType()))
+        if (!isStaticallyInvocableType(member.getMethodOrFieldType()))
             return false;
-        for (Class<?> ptype : mtype.parameterArray())
-            if (!isStaticallyNameable(ptype))
-                return false;
         if (!member.isPrivate() && VerifyAccess.isSamePackage(MethodHandle.class, cls))
             return true;   // in java.lang.invoke package
         if (member.isPublic() && isStaticallyNameable(cls))
@@ -949,9 +964,22 @@ class InvokerBytecodeGenerator {
         return false;
     }
 
+    private static boolean isStaticallyInvocableType(MethodType mtype) {
+        if (!isStaticallyNameable(mtype.returnType()))
+            return false;
+        for (Class<?> ptype : mtype.parameterArray())
+            if (!isStaticallyNameable(ptype))
+                return false;
+        return true;
+    }
+
     static boolean isStaticallyNameable(Class<?> cls) {
         if (cls == Object.class)
             return true;
+        if (MethodHandle.class.isAssignableFrom(cls)) {
+            assert(!ReflectUtil.isVMAnonymousClass(cls));
+            return true;
+        }
         while (cls.isArray())
             cls = cls.getComponentType();
         if (cls.isPrimitive())
@@ -1724,7 +1752,7 @@ class InvokerBytecodeGenerator {
         methodPrologue();
 
         // Suppress this method in backtraces displayed to the user.
-        mv.visitAnnotation(LF_HIDDEN_SIG, true);
+        mv.visitAnnotation(HIDDEN_SIG, true);
 
         // Don't inline the interpreter entry.
         mv.visitAnnotation(DONTINLINE_SIG, true);
@@ -1784,7 +1812,7 @@ class InvokerBytecodeGenerator {
         methodPrologue();
 
         // Suppress this method in backtraces displayed to the user.
-        mv.visitAnnotation(LF_HIDDEN_SIG, true);
+        mv.visitAnnotation(HIDDEN_SIG, true);
 
         // Force inlining of this invoker method.
         mv.visitAnnotation(FORCEINLINE_SIG, true);
@@ -1840,13 +1868,11 @@ class InvokerBytecodeGenerator {
      * Emit a bogus method that just loads some string constants. This is to get the constants into the constant pool
      * for debugging purposes.
      */
-    private void bogusMethod(Object... os) {
+    private void bogusMethod(Object os) {
         if (DUMP_CLASS_FILES) {
             mv = cw.visitMethod(Opcodes.ACC_STATIC, "dummy", "()V", null, null);
-            for (Object o : os) {
-                mv.visitLdcInsn(o.toString());
-                mv.visitInsn(Opcodes.POP);
-            }
+            mv.visitLdcInsn(os.toString());
+            mv.visitInsn(Opcodes.POP);
             mv.visitInsn(Opcodes.RETURN);
             mv.visitMaxs(0, 0);
             mv.visitEnd();

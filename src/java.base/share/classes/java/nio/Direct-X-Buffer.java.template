@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,6 +28,8 @@
 package java.nio;
 
 import java.io.FileDescriptor;
+import java.lang.ref.Reference;
+import java.util.Objects;
 import jdk.internal.misc.VM;
 import jdk.internal.ref.Cleaner;
 import sun.nio.ch.DirectBuffer;
@@ -193,7 +195,8 @@ class Direct$Type$Buffer$RW$$BO$
 #if[byte]
         cleaner = null;
 #end[byte]
-        att = db;
+        Object attachment = db.attachment();
+        att = (attachment == null ? db : attachment);
 #else[rw]
         super(db, mark, pos, lim, cap, off);
         this.isReadOnly = true;
@@ -215,14 +218,16 @@ class Direct$Type$Buffer$RW$$BO$
         return new Direct$Type$Buffer$RW$$BO$(this, -1, 0, rem, rem, off);
     }
 
-#if[byte]
-    public $Type$Buffer slice(int pos, int lim) {
-        assert (pos >= 0);
-        assert (pos <= lim);
-        int rem = lim - pos;
-        return new Direct$Type$Buffer$RW$$BO$(this, -1, 0, rem, rem, pos);
+    @Override
+    public $Type$Buffer slice(int index, int length) {
+        Objects.checkFromIndexSize(index, length, limit());
+        return new Direct$Type$Buffer$RW$$BO$(this,
+                                              -1,
+                                              0,
+                                              length,
+                                              length,
+                                              index);
     }
-#end[byte]
 
     public $Type$Buffer duplicate() {
         return new Direct$Type$Buffer$RW$$BO$(this,
@@ -257,23 +262,35 @@ class Direct$Type$Buffer$RW$$BO$
     }
 
     public $type$ get() {
-        return $fromBits$($swap$(UNSAFE.get$Swaptype$(ix(nextGetIndex()))));
+        try {
+            return $fromBits$($swap$(UNSAFE.get$Swaptype$(ix(nextGetIndex()))));
+        } finally {
+            Reference.reachabilityFence(this);
+        }
     }
 
     public $type$ get(int i) {
-        return $fromBits$($swap$(UNSAFE.get$Swaptype$(ix(checkIndex(i)))));
+        try {
+            return $fromBits$($swap$(UNSAFE.get$Swaptype$(ix(checkIndex(i)))));
+        } finally {
+            Reference.reachabilityFence(this);
+        }
     }
 
 #if[streamableType]
     $type$ getUnchecked(int i) {
-        return $fromBits$($swap$(UNSAFE.get$Swaptype$(ix(i))));
+        try {
+            return $fromBits$($swap$(UNSAFE.get$Swaptype$(ix(i))));
+        } finally {
+            Reference.reachabilityFence(this);
+        }
     }
 #end[streamableType]
 
     public $Type$Buffer get($type$[] dst, int offset, int length) {
 #if[rw]
         if (((long)length << $LG_BYTES_PER_VALUE$) > Bits.JNI_COPY_TO_ARRAY_THRESHOLD) {
-            checkBounds(offset, length, dst.length);
+            Objects.checkFromIndexSize(offset, length, dst.length);
             int pos = position();
             int lim = limit();
             assert (pos <= lim);
@@ -282,21 +299,25 @@ class Direct$Type$Buffer$RW$$BO$
                 throw new BufferUnderflowException();
 
             long dstOffset = ARRAY_BASE_OFFSET + ((long)offset << $LG_BYTES_PER_VALUE$);
+            try {
 #if[!byte]
-            if (order() != ByteOrder.nativeOrder())
-                UNSAFE.copySwapMemory(null,
+                if (order() != ByteOrder.nativeOrder())
+                    UNSAFE.copySwapMemory(null,
+                                          ix(pos),
+                                          dst,
+                                          dstOffset,
+                                          (long)length << $LG_BYTES_PER_VALUE$,
+                                          (long)1 << $LG_BYTES_PER_VALUE$);
+                else
+#end[!byte]
+                    UNSAFE.copyMemory(null,
                                       ix(pos),
                                       dst,
                                       dstOffset,
-                                      (long)length << $LG_BYTES_PER_VALUE$,
-                                      (long)1 << $LG_BYTES_PER_VALUE$);
-            else
-#end[!byte]
-                UNSAFE.copyMemory(null,
-                                  ix(pos),
-                                  dst,
-                                  dstOffset,
-                                  (long)length << $LG_BYTES_PER_VALUE$);
+                                      (long)length << $LG_BYTES_PER_VALUE$);
+            } finally {
+                Reference.reachabilityFence(this);
+            }
             position(pos + length);
         } else {
             super.get(dst, offset, length);
@@ -307,11 +328,49 @@ class Direct$Type$Buffer$RW$$BO$
 #end[rw]
     }
 
+    public $Type$Buffer get(int index, $type$[] dst, int offset, int length) {
+#if[rw]
+        if (((long)length << $LG_BYTES_PER_VALUE$) > Bits.JNI_COPY_TO_ARRAY_THRESHOLD) {
+            Objects.checkFromIndexSize(index, length, limit());
+            Objects.checkFromIndexSize(offset, length, dst.length);
+
+            long dstOffset = ARRAY_BASE_OFFSET + ((long)offset << $LG_BYTES_PER_VALUE$);
+            try {
+#if[!byte]
+                if (order() != ByteOrder.nativeOrder())
+                    UNSAFE.copySwapMemory(null,
+                                          ix(index),
+                                          dst,
+                                          dstOffset,
+                                          (long)length << $LG_BYTES_PER_VALUE$,
+                                          (long)1 << $LG_BYTES_PER_VALUE$);
+                else
+#end[!byte]
+                    UNSAFE.copyMemory(null,
+                                      ix(index),
+                                      dst,
+                                      dstOffset,
+                                      (long)length << $LG_BYTES_PER_VALUE$);
+            } finally {
+                Reference.reachabilityFence(this);
+            }
+        } else {
+            super.get(index, dst, offset, length);
+        }
+        return this;
+#else[rw]
+        throw new ReadOnlyBufferException();
+#end[rw]
+    }
 #end[rw]
 
     public $Type$Buffer put($type$ x) {
 #if[rw]
-        UNSAFE.put$Swaptype$(ix(nextPutIndex()), $swap$($toBits$(x)));
+        try {
+            UNSAFE.put$Swaptype$(ix(nextPutIndex()), $swap$($toBits$(x)));
+        } finally {
+            Reference.reachabilityFence(this);
+        }
         return this;
 #else[rw]
         throw new ReadOnlyBufferException();
@@ -320,7 +379,11 @@ class Direct$Type$Buffer$RW$$BO$
 
     public $Type$Buffer put(int i, $type$ x) {
 #if[rw]
-        UNSAFE.put$Swaptype$(ix(checkIndex(i)), $swap$($toBits$(x)));
+        try {
+            UNSAFE.put$Swaptype$(ix(checkIndex(i)), $swap$($toBits$(x)));
+        } finally {
+            Reference.reachabilityFence(this);
+        }
         return this;
 #else[rw]
         throw new ReadOnlyBufferException();
@@ -346,7 +409,12 @@ class Direct$Type$Buffer$RW$$BO$
 
             if (srem > rem)
                 throw new BufferOverflowException();
-            UNSAFE.copyMemory(sb.ix(spos), ix(pos), (long)srem << $LG_BYTES_PER_VALUE$);
+            try {
+                UNSAFE.copyMemory(sb.ix(spos), ix(pos), (long)srem << $LG_BYTES_PER_VALUE$);
+            } finally {
+                Reference.reachabilityFence(sb);
+                Reference.reachabilityFence(this);
+            }
             sb.position(spos + srem);
             position(pos + srem);
         } else if (src.hb != null) {
@@ -371,7 +439,7 @@ class Direct$Type$Buffer$RW$$BO$
     public $Type$Buffer put($type$[] src, int offset, int length) {
 #if[rw]
         if (((long)length << $LG_BYTES_PER_VALUE$) > Bits.JNI_COPY_FROM_ARRAY_THRESHOLD) {
-            checkBounds(offset, length, src.length);
+            Objects.checkFromIndexSize(offset, length, src.length);
             int pos = position();
             int lim = limit();
             assert (pos <= lim);
@@ -380,24 +448,64 @@ class Direct$Type$Buffer$RW$$BO$
                 throw new BufferOverflowException();
 
             long srcOffset = ARRAY_BASE_OFFSET + ((long)offset << $LG_BYTES_PER_VALUE$);
+            try {
 #if[!byte]
-            if (order() != ByteOrder.nativeOrder())
-                UNSAFE.copySwapMemory(src,
+                if (order() != ByteOrder.nativeOrder())
+                    UNSAFE.copySwapMemory(src,
+                                          srcOffset,
+                                          null,
+                                          ix(pos),
+                                          (long)length << $LG_BYTES_PER_VALUE$,
+                                          (long)1 << $LG_BYTES_PER_VALUE$);
+                else
+#end[!byte]
+                    UNSAFE.copyMemory(src,
                                       srcOffset,
                                       null,
                                       ix(pos),
-                                      (long)length << $LG_BYTES_PER_VALUE$,
-                                      (long)1 << $LG_BYTES_PER_VALUE$);
-            else
-#end[!byte]
-                UNSAFE.copyMemory(src,
-                                  srcOffset,
-                                  null,
-                                  ix(pos),
-                                  (long)length << $LG_BYTES_PER_VALUE$);
+                                      (long)length << $LG_BYTES_PER_VALUE$);
+            } finally {
+                Reference.reachabilityFence(this);
+            }
             position(pos + length);
         } else {
             super.put(src, offset, length);
+        }
+        return this;
+#else[rw]
+        throw new ReadOnlyBufferException();
+#end[rw]
+    }
+
+    public $Type$Buffer put(int index, $type$[] src, int offset, int length) {
+#if[rw]
+        if (((long)length << $LG_BYTES_PER_VALUE$) > Bits.JNI_COPY_FROM_ARRAY_THRESHOLD) {
+            Objects.checkFromIndexSize(index, length, limit());
+            Objects.checkFromIndexSize(offset, length, src.length);
+
+
+            long srcOffset = ARRAY_BASE_OFFSET + ((long)offset << $LG_BYTES_PER_VALUE$);
+            try {
+#if[!byte]
+                if (order() != ByteOrder.nativeOrder())
+                    UNSAFE.copySwapMemory(src,
+                                          srcOffset,
+                                          null,
+                                          ix(index),
+                                          (long)length << $LG_BYTES_PER_VALUE$,
+                                          (long)1 << $LG_BYTES_PER_VALUE$);
+                else
+#end[!byte]
+                    UNSAFE.copyMemory(src,
+                                      srcOffset,
+                                      null,
+                                      ix(index),
+                                      (long)length << $LG_BYTES_PER_VALUE$);
+            } finally {
+                Reference.reachabilityFence(this);
+            }
+        } else {
+            super.put(index, src, offset, length);
         }
         return this;
 #else[rw]
@@ -411,8 +519,11 @@ class Direct$Type$Buffer$RW$$BO$
         int lim = limit();
         assert (pos <= lim);
         int rem = (pos <= lim ? lim - pos : 0);
-
-        UNSAFE.copyMemory(ix(pos), ix(0), (long)rem << $LG_BYTES_PER_VALUE$);
+        try {
+            UNSAFE.copyMemory(ix(pos), ix(0), (long)rem << $LG_BYTES_PER_VALUE$);
+        } finally {
+            Reference.reachabilityFence(this);
+        }
         position(rem);
         limit(capacity());
         discardMark();
@@ -434,8 +545,7 @@ class Direct$Type$Buffer$RW$$BO$
 #if[char]
 
     public String toString(int start, int end) {
-        if ((end > limit()) || (start > end))
-            throw new IndexOutOfBoundsException();
+        Objects.checkFromToIndex(start, end, limit());
         try {
             int len = end - start;
             char[] ca = new char[len];
@@ -460,8 +570,7 @@ class Direct$Type$Buffer$RW$$BO$
         pos = (pos <= lim ? pos : lim);
         int len = lim - pos;
 
-        if ((start < 0) || (end > len) || (start > end))
-            throw new IndexOutOfBoundsException();
+        Objects.checkFromToIndex(start, end, len);
         return new DirectCharBuffer$RW$$BO$(this,
                                             -1,
                                             pos + start,
@@ -497,19 +606,6 @@ class Direct$Type$Buffer$RW$$BO$
 
 
 #if[byte]
-
-    byte _get(int i) {                          // package-private
-        return UNSAFE.getByte(address + i);
-    }
-
-    void _put(int i, byte b) {                  // package-private
-#if[rw]
-        UNSAFE.putByte(address + i, b);
-#else[rw]
-        throw new ReadOnlyBufferException();
-#end[rw]
-    }
-
     // #BIN
     //
     // Binary-data access methods  for short, char, int, long, float,

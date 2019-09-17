@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,19 +21,21 @@
  * questions.
  */
 
+/**
+ * @test
+ * @bug 8192985
+ * @summary Test the clhsdb 'inspect' command
+ * @requires vm.hasSA
+ * @library /test/lib
+ * @run main/othervm/timeout=480 ClhsdbInspect
+ */
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
 import jdk.test.lib.apps.LingeredApp;
-
-/*
- * @test
- * @bug 8192985
- * @summary Test the clhsdb 'inspect' command
- * @library /test/lib
- * @run main/othervm ClhsdbInspect
- */
+import jtreg.SkippedException;
 
 public class ClhsdbInspect {
 
@@ -55,19 +57,12 @@ public class ClhsdbInspect {
 
             String jstackOutput = test.run(theApp.getPid(), cmds, null, null);
 
-            if (jstackOutput == null) {
-                // Output could be null due to attach permission issues
-                // and if we are skipping this.
-                LingeredApp.stopApp(theApp);
-                return;
-            }
-
             Map<String, String> tokensMap = new HashMap<>();
             tokensMap.put("(a java.lang.Class for LingeredAppWithLock)",
                           "instance of Oop for java/lang/Class");
             tokensMap.put("Method*=", "Type is Method");
             tokensMap.put("(a java.lang.ref.ReferenceQueue$Lock)",
-                          "instance of Oop for java/lang/ref/ReferenceQueue$Lock");
+                          "instance of Oop for java/lang/ref/ReferenceQueue\\$Lock");
 
             String[] lines = jstackOutput.split("\\R");
 
@@ -99,6 +94,8 @@ public class ClhsdbInspect {
                 expStrMap.put(cmd, List.of(tokensMap.get(key)));
                 test.run(theApp.getPid(), cmds, expStrMap, null);
             }
+        } catch (SkippedException e) {
+            throw e;
         } catch (Exception ex) {
             throw new RuntimeException("Test ERROR " + ex, ex);
         } finally {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -43,16 +43,20 @@ package sun.util.locale.provider;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.SoftReference;
 import java.text.MessageFormat;
+import java.text.NumberFormat;
+import java.util.Arrays;
 import java.util.Calendar;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.ResourceBundle;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import sun.util.calendar.ZoneInfo;
+import sun.security.action.GetPropertyAction;
 import sun.util.resources.LocaleData;
 import sun.util.resources.OpenListResourceBundle;
 import sun.util.resources.ParallelListResourceBundle;
@@ -85,7 +89,11 @@ public class LocaleResources {
     private static final String ZONE_IDS_CACHEKEY = "ZID";
     private static final String CALENDAR_NAMES = "CALN.";
     private static final String NUMBER_PATTERNS_CACHEKEY = "NP";
+    private static final String COMPACT_NUMBER_PATTERNS_CACHEKEY = "CNP";
     private static final String DATE_TIME_PATTERN = "DTP.";
+
+    // TimeZoneNamesBundle exemplar city prefix
+    private static final String TZNB_EXCITY_PREFIX = "timezone.excity.";
 
     // null singleton cache value
     private static final Object NULLOBJECT = new Object();
@@ -254,23 +262,46 @@ public class LocaleResources {
         return (String) localeName;
     }
 
-    String[] getTimeZoneNames(String key) {
-        String[] names = null;
-        String cacheKey = TIME_ZONE_NAMES + '.' + key;
+    public Object getTimeZoneNames(String key) {
+        Object val = null;
+        String cacheKey = TIME_ZONE_NAMES + key;
 
         removeEmptyReferences();
         ResourceReference data = cache.get(cacheKey);
 
-        if (Objects.isNull(data) || Objects.isNull((names = (String[]) data.get()))) {
+        if (Objects.isNull(data) || Objects.isNull(val = data.get())) {
             TimeZoneNamesBundle tznb = localeData.getTimeZoneNames(locale);
-            if (tznb.containsKey(key)) {
-                names = tznb.getStringArray(key);
+            if (key.startsWith(TZNB_EXCITY_PREFIX)) {
+                if (tznb.containsKey(key)) {
+                    val = tznb.getString(key);
+                    assert val instanceof String;
+                    trace("tznb: %s key: %s, val: %s\n", tznb, key, val);
+                }
+            } else {
+                String[] names = null;
+                if (tznb.containsKey(key)) {
+                    names = tznb.getStringArray(key);
+                } else {
+                    var tz = TimeZoneNameUtility.canonicalTZID(key).orElse(key);
+                    if (tznb.containsKey(tz)) {
+                        names = tznb.getStringArray(tz);
+                    }
+                }
+
+                if (names != null) {
+                    names[0] = key;
+                    trace("tznb: %s key: %s, names: %s, %s, %s, %s, %s, %s, %s\n", tznb, key,
+                        names[0], names[1], names[2], names[3], names[4], names[5], names[6]);
+                    val = names;
+                }
+            }
+            if (val != null) {
                 cache.put(cacheKey,
-                          new ResourceReference(cacheKey, (Object) names, referenceQueue));
+                          new ResourceReference(cacheKey, val, referenceQueue));
             }
         }
 
-        return names;
+        return val;
     }
 
     @SuppressWarnings("unchecked")
@@ -295,24 +326,36 @@ public class LocaleResources {
         Set<String> keyset = getZoneIDs();
         // Use a LinkedHashSet to preseve the order
         Set<String[]> value = new LinkedHashSet<>();
+        Set<String> tzIds = new HashSet<>(Arrays.asList(TimeZone.getAvailableIDs()));
         for (String key : keyset) {
-            value.add(rb.getStringArray(key));
+            if (!key.startsWith(TZNB_EXCITY_PREFIX)) {
+                value.add(rb.getStringArray(key));
+                tzIds.remove(key);
+            }
         }
 
-        // Add aliases data for CLDR
         if (type == LocaleProviderAdapter.Type.CLDR) {
             // Note: TimeZoneNamesBundle creates a String[] on each getStringArray call.
-            Map<String, String> aliases = ZoneInfo.getAliasTable();
-            for (String alias : aliases.keySet()) {
-                if (!keyset.contains(alias)) {
-                    String tzid = aliases.get(alias);
-                    if (keyset.contains(tzid)) {
-                        String[] val = rb.getStringArray(tzid);
-                        val[0] = alias;
+
+            // Add timezones which are not present in this keyset,
+            // so that their fallback names will be generated at runtime.
+            tzIds.stream().filter(i -> (!i.startsWith("Etc/GMT")
+                    && !i.startsWith("GMT")
+                    && !i.startsWith("SystemV")))
+                    .forEach(tzid -> {
+                        String[] val = new String[7];
+                        if (keyset.contains(tzid)) {
+                            val = rb.getStringArray(tzid);
+                        } else {
+                            var canonID = TimeZoneNameUtility.canonicalTZID(tzid)
+                                            .orElse(tzid);
+                            if (keyset.contains(canonID)) {
+                                val = rb.getStringArray(canonID);
+                            }
+                        }
+                        val[0] = tzid;
                         value.add(val);
-                    }
-                }
-            }
+                    });
         }
         return value.toArray(new String[0][]);
     }
@@ -451,6 +494,32 @@ public class LocaleResources {
     }
 
     /**
+     * Returns the compact number format patterns.
+     * @param formatStyle the style for formatting a number
+     * @return an array of compact number patterns
+     */
+    @SuppressWarnings("unchecked")
+    public String[] getCNPatterns(NumberFormat.Style formatStyle) {
+
+        Objects.requireNonNull(formatStyle);
+        String[] compactNumberPatterns = null;
+        removeEmptyReferences();
+        String width = (formatStyle == NumberFormat.Style.LONG) ? "long" : "short";
+        String cacheKey = width + "." + COMPACT_NUMBER_PATTERNS_CACHEKEY;
+        ResourceReference data = cache.get(cacheKey);
+        if (data == null || ((compactNumberPatterns
+                = (String[]) data.get()) == null)) {
+            ResourceBundle resource = localeData.getNumberFormatData(locale);
+            compactNumberPatterns = (String[]) resource
+                    .getObject(width + ".CompactNumberPatterns");
+            cache.put(cacheKey, new ResourceReference(cacheKey,
+                    (Object) compactNumberPatterns, referenceQueue));
+        }
+        return compactNumberPatterns;
+    }
+
+
+    /**
      * Returns the FormatData resource bundle of this LocaleResources.
      * The FormatData should be used only for accessing extra
      * resources required by JSR 310.
@@ -512,6 +581,15 @@ public class LocaleResources {
 
         String getCacheKey() {
             return cacheKey;
+        }
+    }
+
+    private static final boolean TRACE_ON = Boolean.valueOf(
+        GetPropertyAction.privilegedGetProperty("locale.resources.debug", "false"));
+
+    public static void trace(String format, Object... params) {
+        if (TRACE_ON) {
+            System.out.format(format, params);
         }
     }
 }

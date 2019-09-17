@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -47,8 +47,9 @@ import java.security.PrivilegedAction;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Properties;
-import jdk.internal.misc.JavaIOFileDescriptorAccess;
-import jdk.internal.misc.SharedSecrets;
+import jdk.internal.access.JavaIOFileDescriptorAccess;
+import jdk.internal.access.SharedSecrets;
+import jdk.internal.util.StaticProperty;
 import sun.security.action.GetPropertyAction;
 
 /**
@@ -88,7 +89,7 @@ final class ProcessImpl extends Process {
 
     private static enum Platform {
 
-        LINUX(LaunchMechanism.VFORK, LaunchMechanism.FORK),
+        LINUX(LaunchMechanism.POSIX_SPAWN, LaunchMechanism.VFORK, LaunchMechanism.FORK),
 
         BSD(LaunchMechanism.POSIX_SPAWN, LaunchMechanism.FORK),
 
@@ -103,27 +104,6 @@ final class ProcessImpl extends Process {
             this.defaultLaunchMechanism = launchMechanisms[0];
             this.validLaunchMechanisms =
                 EnumSet.copyOf(Arrays.asList(launchMechanisms));
-        }
-
-        @SuppressWarnings("fallthrough")
-        private String helperPath(String javahome, String osArch) {
-            switch (this) {
-                case SOLARIS:
-                    // fall through...
-                case LINUX:
-                case AIX:
-                case BSD:
-                    return javahome + "/lib/jspawnhelper";
-
-                default:
-                    throw new AssertionError("Unsupported platform: " + this);
-            }
-        }
-
-        String helperPath() {
-            Properties props = GetPropertyAction.privilegedGetProperties();
-            return helperPath(props.getProperty("java.home"),
-                              props.getProperty("os.arch"));
         }
 
         LaunchMechanism launchMechanism() {
@@ -168,7 +148,7 @@ final class ProcessImpl extends Process {
 
     private static final Platform platform = Platform.get();
     private static final LaunchMechanism launchMechanism = platform.launchMechanism();
-    private static final byte[] helperpath = toCString(platform.helperPath());
+    private static final byte[] helperpath = toCString(StaticProperty.javaHome() + "/lib/jspawnhelper");
 
     private static byte[] toCString(String s) {
         if (s == null)
@@ -411,7 +391,7 @@ final class ProcessImpl extends Process {
                         new BufferedOutputStream(
                             new FileOutputStream(newFileDescriptor(fds[0])));
 
-                stdout = (fds[1] == -1) ?
+                stdout = (fds[1] == -1 || forceNullOutputStream) ?
                          ProcessBuilder.NullInputStream.INSTANCE :
                          new BufferedInputStream(
                              stdout_inner_stream =
@@ -445,7 +425,7 @@ final class ProcessImpl extends Process {
                         ProcessBuilder.NullOutputStream.INSTANCE :
                         new ProcessPipeOutputStream(fds[0]);
 
-                stdout = (fds[1] == -1) ?
+                stdout = (fds[1] == -1 || forceNullOutputStream) ?
                          ProcessBuilder.NullInputStream.INSTANCE :
                          new DeferredCloseProcessPipeInputStream(fds[1]);
 
@@ -506,8 +486,7 @@ final class ProcessImpl extends Process {
 
         long deadline = System.nanoTime() + remainingNanos;
         do {
-            // Round up to next millisecond
-            wait(TimeUnit.NANOSECONDS.toMillis(remainingNanos + 999_999L));
+            TimeUnit.NANOSECONDS.timedWait(this, remainingNanos);
             if (hasExited) {
                 return true;
             }

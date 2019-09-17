@@ -43,6 +43,8 @@ import tests.JImageGenerator;
  * @test
  * @summary Test image creation
  * @bug 8189777
+ * @bug 8194922
+ * @bug 8206962
  * @author Jean-Francois Denise
  * @requires (vm.compMode != "Xcomp" & os.maxMemory >= 2g)
  * @library ../lib
@@ -276,6 +278,15 @@ public class JLinkTest {
             helper.checkImage(imageDir, moduleName, res, null);
         }
 
+        // module-info.class should not be excluded
+        {
+            String[] userOptions = { "--exclude-resources", "/jdk_8194922/module-info.class" };
+            String moduleName = "jdk_8194922";
+            helper.generateDefaultJModule(moduleName);
+            helper.generateDefaultImage(userOptions, moduleName).
+                assertFailure("Cannot exclude /jdk_8194922/module-info.class");
+        }
+
         // default compress
         {
             testCompress(helper, "compresscmdcomposite2", "--compress", "2");
@@ -333,6 +344,16 @@ public class JLinkTest {
             JImageGenerator.getJLinkTask()
                     .option("--help")
                     .call().assertSuccess();
+        }
+
+        {
+            String imageDir = "bug8206962";
+            JImageGenerator.getJLinkTask()
+                    .modulePath(helper.defaultModulePath())
+                    .output(helper.createNewImageDir(imageDir))
+                    .addMods("java.base")
+                    .option("--release-info=del")
+                    .call().assertFailure("Error: No key specified for delete");
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,15 +24,15 @@
 
 #include "precompiled.hpp"
 #include "asm/macroAssembler.inline.hpp"
+#include "interpreter/interp_masm.hpp"
 #include "interpreter/interpreter.hpp"
 #include "interpreter/interpreterRuntime.hpp"
 #include "memory/allocation.inline.hpp"
-#include "memory/universe.inline.hpp"
 #include "oops/method.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/icache.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/signature.hpp"
 
 
@@ -40,6 +40,10 @@
 
 
 // Implementation of SignatureHandlerGenerator
+InterpreterRuntime::SignatureHandlerGenerator::SignatureHandlerGenerator(
+    const methodHandle& method, CodeBuffer* buffer) : NativeSignatureIterator(method) {
+  _masm = new MacroAssembler(buffer);
+}
 
 void InterpreterRuntime::SignatureHandlerGenerator::pass_word(int size_of_arg, int offset_in_arg) {
   Argument  jni_arg(jni_offset() + offset_in_arg, false);
@@ -186,7 +190,7 @@ class SlowSignatureHandler: public NativeSignatureIterator {
 };
 
 
-IRT_ENTRY(address, InterpreterRuntime::slow_signature_handler(
+JRT_ENTRY(address, InterpreterRuntime::slow_signature_handler(
                                                     JavaThread* thread,
                                                     Method* method,
                                                     intptr_t* from,
@@ -199,4 +203,4 @@ IRT_ENTRY(address, InterpreterRuntime::slow_signature_handler(
   SlowSignatureHandler(m, (address)from, m->is_static() ? to+2 : to+1, to).iterate((uint64_t)CONST64(-1));
   // return result handler
   return Interpreter::result_handler(m->result_type());
-IRT_END
+JRT_END

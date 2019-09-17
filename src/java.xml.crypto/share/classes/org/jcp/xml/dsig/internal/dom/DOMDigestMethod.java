@@ -21,10 +21,10 @@
  * under the License.
  */
 /*
- * Copyright (c) 2005, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * $Id: DOMDigestMethod.java 1333415 2012-05-03 12:03:51Z coheigea $
+ * $Id: DOMDigestMethod.java 1854026 2019-02-21 09:30:01Z coheigea $
  */
 package org.jcp.xml.dsig.internal.dom;
 
@@ -42,19 +42,31 @@ import org.w3c.dom.Node;
 /**
  * DOM-based abstract implementation of DigestMethod.
  *
- * @author Sean Mullan
  */
 public abstract class DOMDigestMethod extends DOMStructure
     implements DigestMethod {
 
+    static final String SHA224 =
+        "http://www.w3.org/2001/04/xmldsig-more#sha224"; // see RFC 4051
     static final String SHA384 =
         "http://www.w3.org/2001/04/xmldsig-more#sha384"; // see RFC 4051
+    static final String WHIRLPOOL =
+        "http://www.w3.org/2007/05/xmldsig-more#whirlpool"; // see RFC 6931
+    static final String SHA3_224 =
+        "http://www.w3.org/2007/05/xmldsig-more#sha3-224"; // see RFC 6931
+    static final String SHA3_256 =
+        "http://www.w3.org/2007/05/xmldsig-more#sha3-256"; // see RFC 6931
+    static final String SHA3_384 =
+        "http://www.w3.org/2007/05/xmldsig-more#sha3-384"; // see RFC 6931
+    static final String SHA3_512 =
+        "http://www.w3.org/2007/05/xmldsig-more#sha3-512"; // see RFC 6931
+
     private DigestMethodParameterSpec params;
 
     /**
-     * Creates a <code>DOMDigestMethod</code>.
+     * Creates a {@code DOMDigestMethod}.
      *
-     * @param params the algorithm-specific params (may be <code>null</code>)
+     * @param params the algorithm-specific params (may be {@code null})
      * @throws InvalidAlgorithmParameterException if the parameters are not
      *    appropriate for this digest method
      */
@@ -70,7 +82,7 @@ public abstract class DOMDigestMethod extends DOMStructure
     }
 
     /**
-     * Creates a <code>DOMDigestMethod</code> from an element. This constructor
+     * Creates a {@code DOMDigestMethod} from an element. This constructor
      * invokes the abstract {@link #unmarshalParams unmarshalParams} method to
      * unmarshal any algorithm-specific input parameters.
      *
@@ -92,12 +104,26 @@ public abstract class DOMDigestMethod extends DOMStructure
         String alg = DOMUtils.getAttributeValue(dmElem, "Algorithm");
         if (alg.equals(DigestMethod.SHA1)) {
             return new SHA1(dmElem);
+        } else if (alg.equals(SHA224)) {
+            return new SHA224(dmElem);
         } else if (alg.equals(DigestMethod.SHA256)) {
             return new SHA256(dmElem);
         } else if (alg.equals(SHA384)) {
             return new SHA384(dmElem);
         } else if (alg.equals(DigestMethod.SHA512)) {
             return new SHA512(dmElem);
+        } else if (alg.equals(DigestMethod.RIPEMD160)) {
+            return new RIPEMD160(dmElem);
+        } else if (alg.equals(WHIRLPOOL)) {
+            return new WHIRLPOOL(dmElem);
+        } else if (alg.equals(SHA3_224)) {
+            return new SHA3_224(dmElem);
+        } else if (alg.equals(SHA3_256)) {
+            return new SHA3_256(dmElem);
+        } else if (alg.equals(SHA3_384)) {
+            return new SHA3_384(dmElem);
+        } else if (alg.equals(SHA3_512)) {
+            return new SHA3_512(dmElem);
         } else {
             throw new MarshalException("unsupported DigestMethod algorithm: " +
                                        alg);
@@ -110,7 +136,7 @@ public abstract class DOMDigestMethod extends DOMStructure
      * since most DigestMethod algorithms do not have parameters. Subclasses
      * should override it if they have parameters.
      *
-     * @param params the algorithm-specific params (may be <code>null</code>)
+     * @param params the algorithm-specific params (may be {@code null})
      * @throws InvalidAlgorithmParameterException if the parameters are not
      *    appropriate for this digest method
      */
@@ -129,13 +155,13 @@ public abstract class DOMDigestMethod extends DOMStructure
     }
 
     /**
-     * Unmarshals <code>DigestMethodParameterSpec</code> from the specified
-     * <code>Element</code>.  By default, this method throws an exception since
+     * Unmarshals {@code DigestMethodParameterSpec} from the specified
+     * {@code Element}.  By default, this method throws an exception since
      * most DigestMethod algorithms do not have parameters. Subclasses should
      * override it if they have parameters.
      *
-     * @param paramsElem the <code>Element</code> holding the input params
-     * @return the algorithm-specific <code>DigestMethodParameterSpec</code>
+     * @param paramsElem the {@code Element} holding the input params
+     * @return the algorithm-specific {@code DigestMethodParameterSpec}
      * @throws MarshalException if the parameters cannot be unmarshalled
      */
     DigestMethodParameterSpec unmarshalParams(Element paramsElem)
@@ -151,6 +177,7 @@ public abstract class DOMDigestMethod extends DOMStructure
      * This method invokes the abstract {@link #marshalParams marshalParams}
      * method to marshal any algorithm-specific parameters.
      */
+    @Override
     public void marshal(Node parent, String prefix, DOMCryptoContext context)
         throws MarshalException
     {
@@ -178,10 +205,10 @@ public abstract class DOMDigestMethod extends DOMStructure
         }
         DigestMethod odm = (DigestMethod)o;
 
-        boolean paramsEqual = (params == null ? odm.getParameterSpec() == null :
-            params.equals(odm.getParameterSpec()));
+        boolean paramsEqual = params == null ? odm.getParameterSpec() == null :
+            params.equals(odm.getParameterSpec());
 
-        return (getAlgorithm().equals(odm.getAlgorithm()) && paramsEqual);
+        return getAlgorithm().equals(odm.getAlgorithm()) && paramsEqual;
     }
 
     @Override
@@ -235,6 +262,24 @@ public abstract class DOMDigestMethod extends DOMStructure
         }
     }
 
+    static final class SHA224 extends DOMDigestMethod {
+        SHA224(AlgorithmParameterSpec params)
+            throws InvalidAlgorithmParameterException {
+            super(params);
+        }
+        SHA224(Element dmElem) throws MarshalException {
+            super(dmElem);
+        }
+        @Override
+        public String getAlgorithm() {
+            return SHA224;
+        }
+        @Override
+        String getMessageDigestAlgorithm() {
+            return "SHA-224";
+        }
+    }
+
     static final class SHA256 extends DOMDigestMethod {
         SHA256(AlgorithmParameterSpec params)
             throws InvalidAlgorithmParameterException {
@@ -280,6 +325,114 @@ public abstract class DOMDigestMethod extends DOMStructure
         }
         String getMessageDigestAlgorithm() {
             return "SHA-512";
+        }
+    }
+
+    static final class RIPEMD160 extends DOMDigestMethod {
+        RIPEMD160(AlgorithmParameterSpec params)
+            throws InvalidAlgorithmParameterException {
+            super(params);
+        }
+        RIPEMD160(Element dmElem) throws MarshalException {
+            super(dmElem);
+        }
+        @Override
+        public String getAlgorithm() {
+            return DigestMethod.RIPEMD160;
+        }
+        @Override
+        String getMessageDigestAlgorithm() {
+            return "RIPEMD160";
+        }
+    }
+
+    static final class WHIRLPOOL extends DOMDigestMethod {
+        WHIRLPOOL(AlgorithmParameterSpec params)
+            throws InvalidAlgorithmParameterException {
+            super(params);
+        }
+        WHIRLPOOL(Element dmElem) throws MarshalException {
+            super(dmElem);
+        }
+        @Override
+        public String getAlgorithm() {
+            return WHIRLPOOL;
+        }
+        @Override
+        String getMessageDigestAlgorithm() {
+            return "WHIRLPOOL";
+        }
+    }
+
+    static final class SHA3_224 extends DOMDigestMethod {
+        SHA3_224(AlgorithmParameterSpec params)
+            throws InvalidAlgorithmParameterException {
+            super(params);
+        }
+        SHA3_224(Element dmElem) throws MarshalException {
+            super(dmElem);
+        }
+        @Override
+        public String getAlgorithm() {
+            return SHA3_224;
+        }
+        @Override
+        String getMessageDigestAlgorithm() {
+            return "SHA3-224";
+        }
+    }
+
+    static final class SHA3_256 extends DOMDigestMethod {
+        SHA3_256(AlgorithmParameterSpec params)
+            throws InvalidAlgorithmParameterException {
+            super(params);
+        }
+        SHA3_256(Element dmElem) throws MarshalException {
+            super(dmElem);
+        }
+        @Override
+        public String getAlgorithm() {
+            return SHA3_256;
+        }
+        @Override
+        String getMessageDigestAlgorithm() {
+            return "SHA3-256";
+        }
+    }
+
+    static final class SHA3_384 extends DOMDigestMethod {
+        SHA3_384(AlgorithmParameterSpec params)
+            throws InvalidAlgorithmParameterException {
+            super(params);
+        }
+        SHA3_384(Element dmElem) throws MarshalException {
+            super(dmElem);
+        }
+        @Override
+        public String getAlgorithm() {
+            return SHA3_384;
+        }
+        @Override
+        String getMessageDigestAlgorithm() {
+            return "SHA3-384";
+        }
+    }
+
+    static final class SHA3_512 extends DOMDigestMethod {
+        SHA3_512(AlgorithmParameterSpec params)
+            throws InvalidAlgorithmParameterException {
+            super(params);
+        }
+        SHA3_512(Element dmElem) throws MarshalException {
+            super(dmElem);
+        }
+        @Override
+        public String getAlgorithm() {
+            return SHA3_512;
+        }
+        @Override
+        String getMessageDigestAlgorithm() {
+            return "SHA3-512";
         }
     }
 }

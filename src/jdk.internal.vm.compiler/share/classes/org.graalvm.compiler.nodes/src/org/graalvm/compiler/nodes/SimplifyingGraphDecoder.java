@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes;
 
 import static org.graalvm.compiler.nodeinfo.InputType.Guard;
@@ -30,6 +32,7 @@ import java.util.List;
 
 import org.graalvm.compiler.core.common.spi.ConstantFieldProvider;
 import org.graalvm.compiler.core.common.type.Stamp;
+import org.graalvm.compiler.debug.DebugCloseable;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.NodeClass;
 import org.graalvm.compiler.graph.spi.Canonicalizable;
@@ -41,7 +44,7 @@ import org.graalvm.compiler.nodes.extended.IntegerSwitchNode;
 import org.graalvm.compiler.nodes.java.ArrayLengthNode;
 import org.graalvm.compiler.nodes.java.LoadFieldNode;
 import org.graalvm.compiler.nodes.java.LoadIndexedNode;
-import org.graalvm.compiler.nodes.spi.StampProvider;
+import org.graalvm.compiler.nodes.spi.CoreProviders;
 import org.graalvm.compiler.nodes.util.GraphUtil;
 import org.graalvm.compiler.options.OptionValues;
 
@@ -58,10 +61,7 @@ import jdk.vm.ci.meta.MetaAccessProvider;
  */
 public class SimplifyingGraphDecoder extends GraphDecoder {
 
-    protected final MetaAccessProvider metaAccess;
-    protected final ConstantReflectionProvider constantReflection;
-    protected final ConstantFieldProvider constantFieldProvider;
-    protected final StampProvider stampProvider;
+    protected final CoreProviders providers;
     protected final boolean canonicalizeReads;
     protected final CanonicalizerTool canonicalizerTool;
 
@@ -82,17 +82,17 @@ public class SimplifyingGraphDecoder extends GraphDecoder {
 
         @Override
         public MetaAccessProvider getMetaAccess() {
-            return metaAccess;
+            return providers.getMetaAccess();
         }
 
         @Override
         public ConstantReflectionProvider getConstantReflection() {
-            return constantReflection;
+            return providers.getConstantReflection();
         }
 
         @Override
         public ConstantFieldProvider getConstantFieldProvider() {
-            return constantFieldProvider;
+            return providers.getConstantFieldProvider();
         }
 
         @Override
@@ -132,14 +132,9 @@ public class SimplifyingGraphDecoder extends GraphDecoder {
         }
     }
 
-    public SimplifyingGraphDecoder(Architecture architecture, StructuredGraph graph, MetaAccessProvider metaAccess, ConstantReflectionProvider constantReflection,
-                    ConstantFieldProvider constantFieldProvider, StampProvider stampProvider,
-                    boolean canonicalizeReads) {
+    public SimplifyingGraphDecoder(Architecture architecture, StructuredGraph graph, CoreProviders providers, boolean canonicalizeReads) {
         super(architecture, graph);
-        this.metaAccess = metaAccess;
-        this.constantReflection = constantReflection;
-        this.constantFieldProvider = constantFieldProvider;
-        this.stampProvider = stampProvider;
+        this.providers = providers;
         this.canonicalizeReads = canonicalizeReads;
         this.canonicalizerTool = new PECanonicalizerTool(graph.getAssumptions(), graph.getOptions());
     }
@@ -273,55 +268,60 @@ public class SimplifyingGraphDecoder extends GraphDecoder {
         return new CanonicalizeToNullNode(node.stamp);
     }
 
+    @SuppressWarnings("try")
     private void handleCanonicalization(LoopScope loopScope, int nodeOrderId, FixedNode node, Node c) {
         assert c != node : "unnecessary call";
-        Node canonical = c == null ? canonicalizeFixedNodeToNull(node) : c;
-        if (!canonical.isAlive()) {
-            assert !canonical.isDeleted();
-            canonical = graph.addOrUniqueWithInputs(canonical);
-            if (canonical instanceof FixedWithNextNode) {
-                graph.addBeforeFixed(node, (FixedWithNextNode) canonical);
-            } else if (canonical instanceof ControlSinkNode) {
-                FixedWithNextNode predecessor = (FixedWithNextNode) node.predecessor();
-                predecessor.setNext((ControlSinkNode) canonical);
-                List<Node> successorSnapshot = node.successors().snapshot();
-                node.safeDelete();
-                for (Node successor : successorSnapshot) {
-                    successor.safeDelete();
+        try (DebugCloseable position = graph.withNodeSourcePosition(node)) {
+            Node canonical = c == null ? canonicalizeFixedNodeToNull(node) : c;
+            if (!canonical.isAlive()) {
+                assert !canonical.isDeleted();
+                canonical = graph.addOrUniqueWithInputs(canonical);
+                if (canonical instanceof FixedWithNextNode) {
+                    graph.addBeforeFixed(node, (FixedWithNextNode) canonical);
+                } else if (canonical instanceof ControlSinkNode) {
+                    FixedWithNextNode predecessor = (FixedWithNextNode) node.predecessor();
+                    predecessor.setNext((ControlSinkNode) canonical);
+                    List<Node> successorSnapshot = node.successors().snapshot();
+                    node.safeDelete();
+                    for (Node successor : successorSnapshot) {
+                        successor.safeDelete();
+                    }
+                } else {
+                    assert !(canonical instanceof FixedNode);
                 }
-
-            } else {
-                assert !(canonical instanceof FixedNode);
             }
+            if (!node.isDeleted()) {
+                GraphUtil.unlinkFixedNode((FixedWithNextNode) node);
+                node.replaceAtUsagesAndDelete(canonical);
+            }
+            assert lookupNode(loopScope, nodeOrderId) == node;
+            registerNode(loopScope, nodeOrderId, canonical, true, false);
         }
-        if (!node.isDeleted()) {
-            GraphUtil.unlinkFixedNode((FixedWithNextNode) node);
-            node.replaceAtUsagesAndDelete(canonical);
-        }
-        assert lookupNode(loopScope, nodeOrderId) == node;
-        registerNode(loopScope, nodeOrderId, canonical, true, false);
     }
 
     @Override
+    @SuppressWarnings("try")
     protected Node handleFloatingNodeBeforeAdd(MethodScope methodScope, LoopScope loopScope, Node node) {
         if (node instanceof ValueNode) {
             ((ValueNode) node).inferStamp();
         }
         if (node instanceof Canonicalizable) {
-            Node canonical = ((Canonicalizable) node).canonical(canonicalizerTool);
-            if (canonical == null) {
-                /*
-                 * This is a possible return value of canonicalization. However, we might need to
-                 * add additional usages later on for which we need a node. Therefore, we just do
-                 * nothing and leave the node in place.
-                 */
-            } else if (canonical != node) {
-                if (!canonical.isAlive()) {
-                    assert !canonical.isDeleted();
-                    canonical = graph.addOrUniqueWithInputs(canonical);
+            try (DebugCloseable context = graph.withNodeSourcePosition(node)) {
+                Node canonical = ((Canonicalizable) node).canonical(canonicalizerTool);
+                if (canonical == null) {
+                    /*
+                     * This is a possible return value of canonicalization. However, we might need
+                     * to add additional usages later on for which we need a node. Therefore, we
+                     * just do nothing and leave the node in place.
+                     */
+                } else if (canonical != node) {
+                    if (!canonical.isAlive()) {
+                        assert !canonical.isDeleted();
+                        canonical = graph.addOrUniqueWithInputs(canonical);
+                    }
+                    assert node.hasNoUsages();
+                    return canonical;
                 }
-                assert node.hasNoUsages();
-                return canonical;
             }
         }
         return node;

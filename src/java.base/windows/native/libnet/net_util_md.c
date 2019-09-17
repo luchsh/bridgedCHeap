@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -214,6 +214,12 @@ NET_GetFileDescriptorID(JNIEnv *env)
     return (*env)->GetFieldID(env, cls, "fd", "I");
 }
 
+jint  IPv4_supported()
+{
+    /* TODO: properly check for IPv4 support on Windows */
+    return JNI_TRUE;
+}
+
 jint  IPv6_supported()
 {
     SOCKET s = socket(AF_INET6, SOCK_STREAM, 0) ;
@@ -227,72 +233,8 @@ jint  IPv6_supported()
 
 jint reuseport_supported()
 {
-    /* SO_REUSEPORT is not supported onn Windows */
+    /* SO_REUSEPORT is not supported on Windows */
     return JNI_FALSE;
-}
-/*
- * Return the default TOS value
- */
-int NET_GetDefaultTOS() {
-    static int default_tos = -1;
-    OSVERSIONINFO ver;
-    HKEY hKey;
-    LONG ret;
-
-    /*
-     * If default ToS already determined then return it
-     */
-    if (default_tos >= 0) {
-        return default_tos;
-    }
-
-    /*
-     * Assume default is "normal service"
-     */
-    default_tos = 0;
-
-    /*
-     * Which OS is this?
-     */
-    ver.dwOSVersionInfoSize = sizeof(ver);
-    GetVersionEx(&ver);
-
-    /*
-     * If 2000 or greater then no default ToS in registry
-     */
-    if (ver.dwPlatformId == VER_PLATFORM_WIN32_NT) {
-        if (ver.dwMajorVersion >= 5) {
-            return default_tos;
-        }
-    }
-
-    /*
-     * Query the registry to see if a Default ToS has been set.
-     * Different registry entry for NT vs 95/98/ME.
-     */
-    if (ver.dwPlatformId == VER_PLATFORM_WIN32_NT) {
-        ret = RegOpenKeyEx(HKEY_LOCAL_MACHINE,
-                           "SYSTEM\\CurrentControlSet\\Services\\Tcp\\Parameters",
-                           0, KEY_READ, (PHKEY)&hKey);
-    } else {
-        ret = RegOpenKeyEx(HKEY_LOCAL_MACHINE,
-                           "SYSTEM\\CurrentControlSet\\Services\\VxD\\MSTCP\\Parameters",
-                           0, KEY_READ, (PHKEY)&hKey);
-    }
-    if (ret == ERROR_SUCCESS) {
-        DWORD dwLen;
-        DWORD dwDefaultTOS;
-        ULONG ulType;
-        dwLen = sizeof(dwDefaultTOS);
-
-        ret = RegQueryValueEx(hKey, "DefaultTOS",  NULL, &ulType,
-                             (LPBYTE)&dwDefaultTOS, &dwLen);
-        RegCloseKey(hKey);
-        if (ret == ERROR_SUCCESS) {
-            default_tos = (int)dwDefaultTOS;
-        }
-    }
-    return default_tos;
 }
 
 /* call NET_MapSocketOptionV6 for the IPv6 fd only
@@ -454,15 +396,23 @@ NET_GetSockOpt(int s, int level, int optname, void *optval,
         if (WSAGetLastError() == WSAENOPROTOOPT &&
             level == IPPROTO_IP && optname == IP_TOS) {
 
-            int *tos;
-            tos = (int *)optval;
-            *tos = NET_GetDefaultTOS();
-
+            *((int *)optval) = 0;
             rv = 0;
         }
     }
 
     return rv;
+}
+
+JNIEXPORT int JNICALL
+NET_SocketAvailable(int s, int *pbytes) {
+    u_long arg;
+    if (ioctlsocket((SOCKET)s, FIONREAD, &arg) == SOCKET_ERROR) {
+        return -1;
+    } else {
+        *pbytes = (int) arg;
+        return 0;
+    }
 }
 
 /*
@@ -652,7 +602,7 @@ void dumpAddr (char *str, void *addr) {
  * The more complicated case is when the requested address is ::0 or 0.0.0.0.
  *
  * Two further cases:
- * 2. If the reqeusted port is 0 (ie. any port) then we try to bind in v4 space
+ * 2. If the requested port is 0 (ie. any port) then we try to bind in v4 space
  *    first with a wild-card port argument. We then try to bind in v6 space
  *    using the returned port number. If this fails, we repeat the process
  *    until a free port common to both spaces becomes available.
@@ -802,37 +752,6 @@ NET_BindV6(struct ipv6bind *b, jboolean exclBind) {
     return 0;
 }
 
-/*
- * Determine the default interface for an IPv6 address.
- *
- * Returns :-
- *      0 if error
- *      > 0 interface index to use
- */
-jint getDefaultIPv6Interface(JNIEnv *env, struct sockaddr_in6 *target_addr)
-{
-    int ret;
-    DWORD b;
-    struct sockaddr_in6 route;
-    SOCKET fd = socket(AF_INET6, SOCK_STREAM, 0);
-    if (fd == INVALID_SOCKET) {
-        return 0;
-    }
-
-    ret = WSAIoctl(fd, SIO_ROUTING_INTERFACE_QUERY,
-                   (void *)target_addr, sizeof(struct sockaddr_in6),
-                   (void *)&route, sizeof(struct sockaddr_in6),
-                   &b, 0, 0);
-    if (ret == SOCKET_ERROR) {
-        // error
-        closesocket(fd);
-        return 0;
-    } else {
-        closesocket(fd);
-        return route.sin6_scope_id;
-    }
-}
-
 /**
  * Enables SIO_LOOPBACK_FAST_PATH
  */
@@ -861,6 +780,7 @@ NET_InetAddressToSockaddr(JNIEnv *env, jobject iaObj, int port,
                           jboolean v4MappedAddress)
 {
     jint family = getInetAddress_family(env, iaObj);
+    JNU_CHECK_EXCEPTION_RETURN(env, -1);
     memset((char *)sa, 0, sizeof(SOCKETADDRESS));
 
     if (ipv6_available() &&
@@ -869,12 +789,13 @@ NET_InetAddressToSockaddr(JNIEnv *env, jobject iaObj, int port,
     {
         jbyte caddr[16];
         jint address;
-        unsigned int scopeid = 0, cached_scope_id = 0;
+        unsigned int scopeid = 0;
 
         if (family == java_net_InetAddress_IPv4) {
             // convert to IPv4-mapped address
             memset((char *)caddr, 0, 16);
             address = getInetAddress_addr(env, iaObj);
+            JNU_CHECK_EXCEPTION_RETURN(env, -1);
             if (address == INADDR_ANY) {
                 /* we would always prefer IPv6 wildcard address
                  * caddr[10] = 0xff;
@@ -890,19 +811,11 @@ NET_InetAddressToSockaddr(JNIEnv *env, jobject iaObj, int port,
         } else {
             getInet6Address_ipaddress(env, iaObj, (char *)caddr);
             scopeid = getInet6Address_scopeid(env, iaObj);
-            cached_scope_id = (unsigned int)(*env)->GetIntField(env, iaObj, ia6_cachedscopeidID);
         }
         sa->sa6.sin6_port = (u_short)htons((u_short)port);
         memcpy((void *)&sa->sa6.sin6_addr, caddr, sizeof(struct in6_addr));
         sa->sa6.sin6_family = AF_INET6;
-        if ((family == java_net_InetAddress_IPv6) &&
-            IN6_IS_ADDR_LINKLOCAL(&sa->sa6.sin6_addr) &&
-            (!scopeid && !cached_scope_id))
-        {
-            cached_scope_id = getDefaultIPv6Interface(env, &sa->sa6);
-            (*env)->SetIntField(env, iaObj, ia6_cachedscopeidID, cached_scope_id);
-        }
-        sa->sa6.sin6_scope_id = scopeid == 0 ? cached_scope_id : scopeid;
+        sa->sa6.sin6_scope_id = scopeid;
         if (len != NULL) {
             *len = sizeof(struct sockaddr_in6);
         }
@@ -913,6 +826,7 @@ NET_InetAddressToSockaddr(JNIEnv *env, jobject iaObj, int port,
             return -1;
         }
         address = getInetAddress_addr(env, iaObj);
+        JNU_CHECK_EXCEPTION_RETURN(env, -1);
         sa->sa4.sin_port = htons((short)port);
         sa->sa4.sin_addr.s_addr = (u_long)htonl(address);
         sa->sa4.sin_family = AF_INET;

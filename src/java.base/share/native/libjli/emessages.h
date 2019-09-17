@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,6 +38,7 @@
 
 #define ARG_INFO_ENVVAR "NOTE: Picked up %s: %s"
 #define ARG_WARN        "Warning: %s option is no longer supported."
+#define ARG_DEPRECATED  "Warning: %s option is deprecated and may be removed in a future release."
 
 #define ARG_ERROR1      "Error: %s requires class path specification"
 #define ARG_ERROR2      "Error: %s requires jar file specification"
@@ -51,6 +52,11 @@
 #define ARG_ERROR10     "Error: Option %s in %s is not allowed in environment variable %s"
 #define ARG_ERROR11     "Error: Cannot specify main class in environment variable %s"
 #define ARG_ERROR12     "Error: %s requires module name"
+#define ARG_ERROR13     "Error: %s requires source version"
+#define ARG_ERROR14     "Error: Option %s is not allowed with --source"
+#define ARG_ERROR15     "Error: Option %s is not allowed in this context"
+#define ARG_ERROR16     "Error: Option %s in %s is not allowed in this context"
+#define ARG_ERROR17     "Error: Cannot specify main class in this context"
 
 #define JVM_ERROR1      "Error: Could not create the Java Virtual Machine.\n" GEN_ERROR
 #define JVM_ERROR2      "Error: Could not detach main thread.\n" JNI_ERROR

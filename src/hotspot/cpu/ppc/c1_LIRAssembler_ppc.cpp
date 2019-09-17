@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2017, SAP SE. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
  */
 
 #include "precompiled.hpp"
+#include "asm/macroAssembler.inline.hpp"
 #include "c1/c1_Compilation.hpp"
 #include "c1/c1_LIRAssembler.hpp"
 #include "c1/c1_MacroAssembler.hpp"
@@ -33,9 +34,12 @@
 #include "ci/ciInstance.hpp"
 #include "gc/shared/collectedHeap.hpp"
 #include "gc/shared/barrierSet.hpp"
-#include "gc/shared/cardTableModRefBS.hpp"
+#include "gc/shared/cardTableBarrierSet.hpp"
+#include "memory/universe.hpp"
 #include "nativeInst_ppc.hpp"
+#include "oops/compressedOops.hpp"
 #include "oops/objArrayKlass.hpp"
+#include "runtime/frame.inline.hpp"
 #include "runtime/safepointMechanism.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
 
@@ -75,6 +79,21 @@ int LIR_Assembler::check_icache() {
   return offset;
 }
 
+void LIR_Assembler::clinit_barrier(ciMethod* method) {
+  assert(!method->holder()->is_not_initialized(), "initialization should have been started");
+
+  Label L_skip_barrier;
+  Register klass = R20;
+
+  metadata2reg(method->holder()->constant_encoding(), klass);
+  __ clinit_barrier(klass, R16_thread, &L_skip_barrier /*L_fast_path*/);
+
+  __ load_const_optimized(klass, SharedRuntime::get_handle_wrong_method_stub(), R0);
+  __ mtctr(klass);
+  __ bctr();
+
+  __ bind(L_skip_barrier);
+}
 
 void LIR_Assembler::osr_entry() {
   // On-stack-replacement entry sequence:
@@ -1235,7 +1254,7 @@ void LIR_Assembler::reg2mem(LIR_Opr from_reg, LIR_Opr dest, BasicType type,
   int disp_value = addr->disp();
   bool needs_patching = (patch_code != lir_patch_none);
   bool compress_oop = (type == T_ARRAY || type == T_OBJECT) && UseCompressedOops && !wide &&
-                      Universe::narrow_oop_mode() != Universe::UnscaledNarrowOop;
+                      CompressedOops::mode() != CompressedOops::UnscaledNarrowOop;
   bool load_disp = addr->index()->is_illegal() && !Assembler::is_simm16(disp_value);
   bool use_R29 = compress_oop && load_disp; // Avoid register conflict, also do null check before killing R29.
   // Null check for large offsets in LIRGenerator::do_StoreField.
@@ -1453,13 +1472,11 @@ void LIR_Assembler::comp_op(LIR_Condition condition, LIR_Opr opr1, LIR_Opr opr2,
           break;
       }
     } else {
-      if (opr2->is_address()) {
-        DEBUG_ONLY( Unimplemented(); ) // Seems to be unused at the moment.
-        LIR_Address *addr = opr2->as_address_ptr();
-        BasicType type = addr->type();
-        if (type == T_OBJECT) { __ ld(R0, index_or_disp(addr), addr->base()->as_register()); }
-        else                  { __ lwa(R0, index_or_disp(addr), addr->base()->as_register()); }
-        __ cmpd(BOOL_RESULT, opr1->as_register(), R0);
+      assert(opr1->type() != T_ADDRESS && opr2->type() != T_ADDRESS, "currently unsupported");
+      if (opr1->type() == T_OBJECT || opr1->type() == T_ARRAY) {
+        // There are only equal/notequal comparisons on objects.
+        assert(condition == lir_cond_equal || condition == lir_cond_notEqual, "oops");
+        __ cmpd(BOOL_RESULT, opr1->as_register(), opr2->as_register());
       } else {
         if (unsigned_comp) {
           __ cmplw(BOOL_RESULT, opr1->as_register(), opr2->as_register());
@@ -1495,14 +1512,6 @@ void LIR_Assembler::comp_op(LIR_Condition condition, LIR_Opr opr1, LIR_Opr opr2,
     } else {
       ShouldNotReachHere();
     }
-  } else if (opr1->is_address()) {
-    DEBUG_ONLY( Unimplemented(); ) // Seems to be unused at the moment.
-    LIR_Address * addr = opr1->as_address_ptr();
-    BasicType type = addr->type();
-    assert (opr2->is_constant(), "Checking");
-    if (type == T_OBJECT) { __ ld(R0, index_or_disp(addr), addr->base()->as_register()); }
-    else                  { __ lwa(R0, index_or_disp(addr), addr->base()->as_register()); }
-    __ cmpdi(BOOL_RESULT, R0, opr2->as_constant_ptr()->as_jint());
   } else {
     ShouldNotReachHere();
   }
@@ -1858,34 +1867,31 @@ void LIR_Assembler::emit_arraycopy(LIR_OpArrayCopy* op) {
   if (op->expected_type() == NULL) {
     assert(src->is_nonvolatile() && src_pos->is_nonvolatile() && dst->is_nonvolatile() && dst_pos->is_nonvolatile() &&
            length->is_nonvolatile(), "must preserve");
+    address copyfunc_addr = StubRoutines::generic_arraycopy();
+    assert(copyfunc_addr != NULL, "generic arraycopy stub required");
+
     // 3 parms are int. Convert to long.
     __ mr(R3_ARG1, src);
     __ extsw(R4_ARG2, src_pos);
     __ mr(R5_ARG3, dst);
     __ extsw(R6_ARG4, dst_pos);
     __ extsw(R7_ARG5, length);
-    address copyfunc_addr = StubRoutines::generic_arraycopy();
 
-    if (copyfunc_addr == NULL) { // Use C version if stub was not generated.
-      address entry = CAST_FROM_FN_PTR(address, Runtime1::arraycopy);
-      __ call_c_with_frame_resize(entry, frame_resize);
-    } else {
 #ifndef PRODUCT
-      if (PrintC1Statistics) {
-        address counter = (address)&Runtime1::_generic_arraycopystub_cnt;
-        int simm16_offs = __ load_const_optimized(tmp, counter, tmp2, true);
-        __ lwz(R11_scratch1, simm16_offs, tmp);
-        __ addi(R11_scratch1, R11_scratch1, 1);
-        __ stw(R11_scratch1, simm16_offs, tmp);
-      }
-#endif
-      __ call_c_with_frame_resize(copyfunc_addr, /*stub does not need resized frame*/ 0);
-
-      __ nand(tmp, R3_RET, R3_RET);
-      __ subf(length, tmp, length);
-      __ add(src_pos, tmp, src_pos);
-      __ add(dst_pos, tmp, dst_pos);
+    if (PrintC1Statistics) {
+      address counter = (address)&Runtime1::_generic_arraycopystub_cnt;
+      int simm16_offs = __ load_const_optimized(tmp, counter, tmp2, true);
+      __ lwz(R11_scratch1, simm16_offs, tmp);
+      __ addi(R11_scratch1, R11_scratch1, 1);
+      __ stw(R11_scratch1, simm16_offs, tmp);
     }
+#endif
+    __ call_c_with_frame_resize(copyfunc_addr, /*stub does not need resized frame*/ 0);
+
+    __ nand(tmp, R3_RET, R3_RET);
+    __ subf(length, tmp, length);
+    __ add(src_pos, tmp, src_pos);
+    __ add(dst_pos, tmp, dst_pos);
 
     __ cmpwi(CCR0, R3_RET, 0);
     __ bc_far_optimized(Assembler::bcondCRbiIs1, __ bi0(CCR0, Assembler::less), *stub->entry());
@@ -2379,26 +2385,31 @@ void LIR_Assembler::setup_md_access(ciMethod* method, int bci,
 
 
 void LIR_Assembler::emit_typecheck_helper(LIR_OpTypeCheck *op, Label* success, Label* failure, Label* obj_is_null) {
-  Register obj = op->object()->as_register();
+  const Register obj = op->object()->as_register(); // Needs to live in this register at safepoint (patching stub).
   Register k_RInfo = op->tmp1()->as_register();
   Register klass_RInfo = op->tmp2()->as_register();
   Register Rtmp1 = op->tmp3()->as_register();
   Register dst = op->result_opr()->as_register();
   ciKlass* k = op->klass();
   bool should_profile = op->should_profile();
-  bool move_obj_to_dst = (op->code() == lir_checkcast);
   // Attention: do_temp(opTypeCheck->_object) is not used, i.e. obj may be same as one of the temps.
-  bool reg_conflict = (obj == k_RInfo || obj == klass_RInfo || obj == Rtmp1);
-  bool restore_obj = move_obj_to_dst && reg_conflict;
+  bool reg_conflict = false;
+  if (obj == k_RInfo) {
+    k_RInfo = dst;
+    reg_conflict = true;
+  } else if (obj == klass_RInfo) {
+    klass_RInfo = dst;
+    reg_conflict = true;
+  } else if (obj == Rtmp1) {
+    Rtmp1 = dst;
+    reg_conflict = true;
+  }
+  assert_different_registers(obj, k_RInfo, klass_RInfo, Rtmp1);
 
   __ cmpdi(CCR0, obj, 0);
-  if (move_obj_to_dst || reg_conflict) {
-    __ mr_if_needed(dst, obj);
-    if (reg_conflict) { obj = dst; }
-  }
 
-  ciMethodData* md;
-  ciProfileData* data;
+  ciMethodData* md = NULL;
+  ciProfileData* data = NULL;
   int mdo_offset_bias = 0;
   if (should_profile) {
     ciMethod* method = op->profiled_method();
@@ -2461,12 +2472,27 @@ void LIR_Assembler::emit_typecheck_helper(LIR_OpTypeCheck *op, Label* success, L
     } else {
       // Call out-of-line instance of __ check_klass_subtype_slow_path(...):
       address entry = Runtime1::entry_for(Runtime1::slow_subtype_check_id);
-      //__ load_const_optimized(Rtmp1, entry, R0);
-      __ calculate_address_from_global_toc(Rtmp1, entry, true, true, false);
-      __ mtctr(Rtmp1);
+      // Stub needs fixed registers (tmp1-3).
+      Register original_k_RInfo = op->tmp1()->as_register();
+      Register original_klass_RInfo = op->tmp2()->as_register();
+      Register original_Rtmp1 = op->tmp3()->as_register();
+      bool keep_obj_alive = reg_conflict && (op->code() == lir_checkcast);
+      bool keep_klass_RInfo_alive = (obj == original_klass_RInfo) && should_profile;
+      if (keep_obj_alive && (obj != original_Rtmp1)) { __ mr(R0, obj); }
+      __ mr_if_needed(original_k_RInfo, k_RInfo);
+      __ mr_if_needed(original_klass_RInfo, klass_RInfo);
+      if (keep_obj_alive) { __ mr(dst, (obj == original_Rtmp1) ? obj : R0); }
+      //__ load_const_optimized(original_Rtmp1, entry, R0);
+      __ calculate_address_from_global_toc(original_Rtmp1, entry, true, true, false);
+      __ mtctr(original_Rtmp1);
       __ bctrl(); // sets CR0
+      if (keep_obj_alive) {
+        if (keep_klass_RInfo_alive) { __ mr(R0, obj); }
+        __ mr(obj, dst);
+      }
       if (should_profile) {
         __ bne(CCR0, *failure_target);
+        if (keep_klass_RInfo_alive) { __ mr(klass_RInfo, keep_obj_alive ? R0 : obj); }
         // Fall through to success case.
       } else {
         __ beq(CCR0, *success);
@@ -2494,11 +2520,6 @@ void LIR_Assembler::emit_typecheck_helper(LIR_OpTypeCheck *op, Label* success, L
   }
 
   __ bind(*failure);
-
-  if (restore_obj) {
-    __ mr(op->object()->as_register(), dst);
-    // Fall through to failure case.
-  }
 }
 
 
@@ -2515,8 +2536,8 @@ void LIR_Assembler::emit_opTypeCheck(LIR_OpTypeCheck* op) {
     __ verify_oop(value);
     CodeStub* stub = op->stub();
     // Check if it needs to be profiled.
-    ciMethodData* md;
-    ciProfileData* data;
+    ciMethodData* md = NULL;
+    ciProfileData* data = NULL;
     int mdo_offset_bias = 0;
     if (should_profile) {
       ciMethod* method = op->profiled_method();
@@ -2591,10 +2612,11 @@ void LIR_Assembler::emit_opTypeCheck(LIR_OpTypeCheck* op) {
 
   } else if (code == lir_checkcast) {
     Label success, failure;
-    emit_typecheck_helper(op, &success, /*fallthru*/&failure, &success); // Moves obj to dst.
+    emit_typecheck_helper(op, &success, /*fallthru*/&failure, &success);
     __ b(*op->stub()->entry());
     __ align(32, 12);
     __ bind(success);
+    __ mr_if_needed(op->result_opr()->as_register(), op->object()->as_register());
   } else if (code == lir_instanceof) {
     Register dst = op->result_opr()->as_register();
     Label success, failure, done;
@@ -2841,7 +2863,9 @@ void LIR_Assembler::emit_delay(LIR_OpDelay* op) {
 }
 
 
-void LIR_Assembler::negate(LIR_Opr left, LIR_Opr dest) {
+void LIR_Assembler::negate(LIR_Opr left, LIR_Opr dest, LIR_Opr tmp) {
+  // tmp must be unused
+  assert(tmp->is_illegal(), "wasting a register if tmp is allocated");
   assert(left->is_register(), "can only handle registers");
 
   if (left->is_single_cpu()) {
@@ -2927,7 +2951,8 @@ void LIR_Assembler::on_spin_wait() {
   Unimplemented();
 }
 
-void LIR_Assembler::leal(LIR_Opr addr_opr, LIR_Opr dest) {
+void LIR_Assembler::leal(LIR_Opr addr_opr, LIR_Opr dest, LIR_PatchCode patch_code, CodeEmitInfo* info) {
+  assert(patch_code == lir_patch_none, "Patch code not supported");
   LIR_Address* addr = addr_opr->as_address_ptr();
   assert(addr->scale() == LIR_Address::times_1, "no scaling on this platform");
   if (addr->index()->is_illegal()) {
@@ -2980,7 +3005,9 @@ void LIR_Assembler::peephole(LIR_List* lir) {
 
 
 void LIR_Assembler::atomic_op(LIR_Code code, LIR_Opr src, LIR_Opr data, LIR_Opr dest, LIR_Opr tmp) {
-  const Register Rptr = src->as_pointer_register(),
+  const LIR_Address *addr = src->as_address_ptr();
+  assert(addr->disp() == 0 && addr->index()->is_illegal(), "use leal!");
+  const Register Rptr = addr->base()->as_pointer_register(),
                  Rtmp = tmp->as_register();
   Register Rco = noreg;
   if (UseCompressedOops && data->is_oop()) {

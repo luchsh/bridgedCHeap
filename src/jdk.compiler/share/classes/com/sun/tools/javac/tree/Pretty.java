@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,6 +27,7 @@ package com.sun.tools.javac.tree;
 
 import java.io.*;
 
+import com.sun.source.tree.CaseTree.CaseKind;
 import com.sun.source.tree.MemberReferenceTree.ReferenceMode;
 import com.sun.source.tree.ModuleTree.ModuleKind;
 import com.sun.tools.javac.code.*;
@@ -835,18 +836,43 @@ public class Pretty extends JCTree.Visitor {
 
     public void visitCase(JCCase tree) {
         try {
-            if (tree.pat == null) {
+            if (tree.pats.isEmpty()) {
                 print("default");
             } else {
                 print("case ");
-                printExpr(tree.pat);
+                printExprs(tree.pats);
             }
-            print(": ");
+            if (tree.caseKind == JCCase.STATEMENT) {
+                print(":");
+                println();
+                indent();
+                printStats(tree.stats);
+                undent();
+                align();
+            } else {
+                print(" -> ");
+                printStat(tree.stats.head);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public void visitSwitchExpression(JCSwitchExpression tree) {
+        try {
+            print("switch ");
+            if (tree.selector.hasTag(PARENS)) {
+                printExpr(tree.selector);
+            } else {
+                print("(");
+                printExpr(tree.selector);
+                print(")");
+            }
+            print(" {");
             println();
-            indent();
-            printStats(tree.stats);
-            undent();
+            printStats(tree.cases);
             align();
+            print("}");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -957,6 +983,17 @@ public class Pretty extends JCTree.Visitor {
         try {
             print("break");
             if (tree.label != null) print(" " + tree.label);
+            print(";");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public void visitYield(JCYield tree) {
+        try {
+            print("yield");
+            print(" ");
+            printExpr(tree.value);
             print(";");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -1499,9 +1536,11 @@ public class Pretty extends JCTree.Visitor {
         try {
             print("@");
             printExpr(tree.annotationType);
-            print("(");
-            printExprs(tree.args);
-            print(")");
+            if (!tree.args.isEmpty()) {
+                print("(");
+                printExprs(tree.args);
+                print(")");
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

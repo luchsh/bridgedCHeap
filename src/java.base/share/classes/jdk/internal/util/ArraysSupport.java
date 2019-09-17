@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,7 +28,9 @@ import jdk.internal.HotSpotIntrinsicCandidate;
 import jdk.internal.misc.Unsafe;
 
 /**
- * Utility methods to find a mismatch between two primitive arrays.
+ * Utility methods to work with arrays.  This includes a set of methods
+ * to find a mismatch between two primitive arrays.  Also included is
+ * a method to calculate the new length of an array to be reallocated.
  *
  * <p>Array equality and lexicographical comparison can be built on top of
  * array mismatch functionality.
@@ -166,6 +168,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 7) {
+            if (a[0] != b[0])
+                return 0;
             i = vectorizedMismatch(
                     a, Unsafe.ARRAY_BOOLEAN_BASE_OFFSET,
                     b, Unsafe.ARRAY_BOOLEAN_BASE_OFFSET,
@@ -186,6 +190,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 7) {
+            if (a[aFromIndex] != b[bFromIndex])
+                return 0;
             int aOffset = Unsafe.ARRAY_BOOLEAN_BASE_OFFSET + aFromIndex;
             int bOffset = Unsafe.ARRAY_BOOLEAN_BASE_OFFSET + bFromIndex;
             i = vectorizedMismatch(
@@ -228,6 +234,8 @@ public class ArraysSupport {
 
         int i = 0;
         if (length > 7) {
+            if (a[0] != b[0])
+                return 0;
             i = vectorizedMismatch(
                     a, Unsafe.ARRAY_BYTE_BASE_OFFSET,
                     b, Unsafe.ARRAY_BYTE_BASE_OFFSET,
@@ -275,6 +283,8 @@ public class ArraysSupport {
 
         int i = 0;
         if (length > 7) {
+            if (a[aFromIndex] != b[bFromIndex])
+                return 0;
             int aOffset = Unsafe.ARRAY_BYTE_BASE_OFFSET + aFromIndex;
             int bOffset = Unsafe.ARRAY_BYTE_BASE_OFFSET + bFromIndex;
             i = vectorizedMismatch(
@@ -300,6 +310,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 3) {
+            if (a[0] != b[0])
+                return 0;
             i = vectorizedMismatch(
                     a, Unsafe.ARRAY_CHAR_BASE_OFFSET,
                     b, Unsafe.ARRAY_CHAR_BASE_OFFSET,
@@ -320,6 +332,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 3) {
+            if (a[aFromIndex] != b[bFromIndex])
+                return 0;
             int aOffset = Unsafe.ARRAY_CHAR_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_CHAR_INDEX_SCALE);
             int bOffset = Unsafe.ARRAY_CHAR_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_CHAR_INDEX_SCALE);
             i = vectorizedMismatch(
@@ -345,6 +359,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 3) {
+            if (a[0] != b[0])
+                return 0;
             i = vectorizedMismatch(
                     a, Unsafe.ARRAY_SHORT_BASE_OFFSET,
                     b, Unsafe.ARRAY_SHORT_BASE_OFFSET,
@@ -365,6 +381,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 3) {
+            if (a[aFromIndex] != b[bFromIndex])
+                return 0;
             int aOffset = Unsafe.ARRAY_SHORT_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_SHORT_INDEX_SCALE);
             int bOffset = Unsafe.ARRAY_SHORT_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_SHORT_INDEX_SCALE);
             i = vectorizedMismatch(
@@ -390,6 +408,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 1) {
+            if (a[0] != b[0])
+                return 0;
             i = vectorizedMismatch(
                     a, Unsafe.ARRAY_INT_BASE_OFFSET,
                     b, Unsafe.ARRAY_INT_BASE_OFFSET,
@@ -410,6 +430,8 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 1) {
+            if (a[aFromIndex] != b[bFromIndex])
+                return 0;
             int aOffset = Unsafe.ARRAY_INT_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_INT_INDEX_SCALE);
             int bOffset = Unsafe.ARRAY_INT_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_INT_INDEX_SCALE);
             i = vectorizedMismatch(
@@ -441,12 +463,14 @@ public class ArraysSupport {
                                int length) {
         int i = 0;
         if (length > 1) {
-            int aOffset = Unsafe.ARRAY_FLOAT_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_FLOAT_INDEX_SCALE);
-            int bOffset = Unsafe.ARRAY_FLOAT_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_FLOAT_INDEX_SCALE);
-            i = vectorizedMismatch(
-                    a, aOffset,
-                    b, bOffset,
-                    length, LOG2_ARRAY_FLOAT_INDEX_SCALE);
+            if (Float.floatToRawIntBits(a[aFromIndex]) == Float.floatToRawIntBits(b[bFromIndex])) {
+                int aOffset = Unsafe.ARRAY_FLOAT_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_FLOAT_INDEX_SCALE);
+                int bOffset = Unsafe.ARRAY_FLOAT_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_FLOAT_INDEX_SCALE);
+                i = vectorizedMismatch(
+                        a, aOffset,
+                        b, bOffset,
+                        length, LOG2_ARRAY_FLOAT_INDEX_SCALE);
+            }
             // Mismatched
             if (i >= 0) {
                 // Check if mismatch is not associated with two NaN values
@@ -481,6 +505,8 @@ public class ArraysSupport {
         if (length == 0) {
             return -1;
         }
+        if (a[0] != b[0])
+            return 0;
         int i = vectorizedMismatch(
                 a, Unsafe.ARRAY_LONG_BASE_OFFSET,
                 b, Unsafe.ARRAY_LONG_BASE_OFFSET,
@@ -494,6 +520,8 @@ public class ArraysSupport {
         if (length == 0) {
             return -1;
         }
+        if (a[aFromIndex] != b[bFromIndex])
+            return 0;
         int aOffset = Unsafe.ARRAY_LONG_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_LONG_INDEX_SCALE);
         int bOffset = Unsafe.ARRAY_LONG_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_LONG_INDEX_SCALE);
         int i = vectorizedMismatch(
@@ -518,12 +546,15 @@ public class ArraysSupport {
         if (length == 0) {
             return -1;
         }
-        int aOffset = Unsafe.ARRAY_DOUBLE_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_DOUBLE_INDEX_SCALE);
-        int bOffset = Unsafe.ARRAY_DOUBLE_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_DOUBLE_INDEX_SCALE);
-        int i = vectorizedMismatch(
-                a, aOffset,
-                b, bOffset,
-                length, LOG2_ARRAY_DOUBLE_INDEX_SCALE);
+        int i = 0;
+        if (Double.doubleToRawLongBits(a[aFromIndex]) == Double.doubleToRawLongBits(b[bFromIndex])) {
+            int aOffset = Unsafe.ARRAY_DOUBLE_BASE_OFFSET + (aFromIndex << LOG2_ARRAY_DOUBLE_INDEX_SCALE);
+            int bOffset = Unsafe.ARRAY_DOUBLE_BASE_OFFSET + (bFromIndex << LOG2_ARRAY_DOUBLE_INDEX_SCALE);
+            i = vectorizedMismatch(
+                    a, aOffset,
+                    b, bOffset,
+                    length, LOG2_ARRAY_DOUBLE_INDEX_SCALE);
+        }
         if (i >= 0) {
             // Check if mismatch is not associated with two NaN values
             if (!Double.isNaN(a[aFromIndex + i]) || !Double.isNaN(b[bFromIndex + i]))
@@ -541,5 +572,55 @@ public class ArraysSupport {
         }
 
         return -1;
+    }
+
+    /**
+     * The maximum length of array to allocate (unless necessary).
+     * Some VMs reserve some header words in an array.
+     * Attempts to allocate larger arrays may result in
+     * {@code OutOfMemoryError: Requested array size exceeds VM limit}
+     */
+    public static final int MAX_ARRAY_LENGTH = Integer.MAX_VALUE - 8;
+
+    /**
+     * Calculates a new array length given an array's current length, a preferred
+     * growth value, and a minimum growth value.  If the preferred growth value
+     * is less than the minimum growth value, the minimum growth value is used in
+     * its place.  If the sum of the current length and the preferred growth
+     * value does not exceed {@link #MAX_ARRAY_LENGTH}, that sum is returned.
+     * If the sum of the current length and the minimum growth value does not
+     * exceed {@code MAX_ARRAY_LENGTH}, then {@code MAX_ARRAY_LENGTH} is returned.
+     * If the sum does not overflow an int, then {@code Integer.MAX_VALUE} is
+     * returned.  Otherwise, {@code OutOfMemoryError} is thrown.
+     *
+     * @param oldLength   current length of the array (must be non negative)
+     * @param minGrowth   minimum required growth of the array length (must be
+     *                    positive)
+     * @param prefGrowth  preferred growth of the array length (ignored, if less
+     *                    then {@code minGrowth})
+     * @return the new length of the array
+     * @throws OutOfMemoryError if increasing {@code oldLength} by
+     *                    {@code minGrowth} overflows.
+     */
+    public static int newLength(int oldLength, int minGrowth, int prefGrowth) {
+        // assert oldLength >= 0
+        // assert minGrowth > 0
+
+        int newLength = Math.max(minGrowth, prefGrowth) + oldLength;
+        if (newLength - MAX_ARRAY_LENGTH <= 0) {
+            return newLength;
+        }
+        return hugeLength(oldLength, minGrowth);
+    }
+
+    private static int hugeLength(int oldLength, int minGrowth) {
+        int minLength = oldLength + minGrowth;
+        if (minLength < 0) { // overflow
+            throw new OutOfMemoryError("Required array length too large");
+        }
+        if (minLength <= MAX_ARRAY_LENGTH) {
+            return MAX_ARRAY_LENGTH;
+        }
+        return Integer.MAX_VALUE;
     }
 }

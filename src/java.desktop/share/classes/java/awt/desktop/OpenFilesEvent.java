@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,25 +25,41 @@
 
 package java.awt.desktop;
 
+import java.awt.Desktop;
+import java.awt.GraphicsEnvironment;
+import java.awt.HeadlessException;
 import java.io.File;
 import java.util.List;
-
 
 /**
  * Event sent when the app is asked to open a list of files.
  *
  * @see OpenFilesHandler#openFiles
- *
  * @since 9
  */
 public final class OpenFilesEvent extends FilesEvent {
+
+    /**
+     * Use serialVersionUID from JDK 9 for interoperability.
+     */
     private static final long serialVersionUID = -3982871005867718956L;
+
+    /**
+     * The search term used to find the files.
+     */
     final String searchTerm;
 
     /**
-     * Constructs an {@code OpenFilesEvent}
-     * @param files files
-     * @param searchTerm searchTerm
+     * Constructs an {@code OpenFilesEvent}.
+     *
+     * @param  files the list of files
+     * @param  searchTerm the search term
+     * @throws HeadlessException if {@link GraphicsEnvironment#isHeadless()}
+     *         returns {@code true}
+     * @throws UnsupportedOperationException if Desktop API is not supported on
+     *         the current platform
+     * @see Desktop#isDesktopSupported()
+     * @see java.awt.GraphicsEnvironment#isHeadless
      */
     public OpenFilesEvent(final List<File> files, final String searchTerm) {
         super(files);
@@ -53,11 +69,11 @@ public final class OpenFilesEvent extends FilesEvent {
     }
 
     /**
-     * Gets the search term. The platform may optionally provide the search
-     * term that was used to find the files. This is for example the case
-     * on Mac OS X, when the files were opened using the Spotlight search
-     * menu or a Finder search window.
-     *
+     * Gets the search term. The platform may optionally provide the search term
+     * that was used to find the files. This is for example the case on MacOS,
+     * when the files were opened using the Spotlight search menu or a Finder
+     * search window.
+     * <p>
      * This is useful for highlighting the search term in the documents when
      * they are opened.
      *
@@ -66,5 +82,4 @@ public final class OpenFilesEvent extends FilesEvent {
     public String getSearchTerm() {
         return searchTerm;
     }
-
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.core.test;
 
 import static org.graalvm.compiler.graph.test.matchers.NodeIterableCount.hasCount;
@@ -33,6 +35,7 @@ import java.util.Iterator;
 import org.graalvm.compiler.api.directives.GraalDirectives;
 import org.graalvm.compiler.core.common.GraalOptions;
 import org.graalvm.compiler.graph.iterators.NodeIterable;
+import org.graalvm.compiler.loop.phases.ConvertDeoptimizeToGuardPhase;
 import org.graalvm.compiler.nodes.GuardNode;
 import org.graalvm.compiler.nodes.ParameterNode;
 import org.graalvm.compiler.nodes.StructuredGraph;
@@ -40,12 +43,13 @@ import org.graalvm.compiler.nodes.calc.IntegerLowerThanNode;
 import org.graalvm.compiler.nodes.calc.IsNullNode;
 import org.graalvm.compiler.nodes.spi.LoweringTool;
 import org.graalvm.compiler.phases.common.CanonicalizerPhase;
-import org.graalvm.compiler.phases.common.ConvertDeoptimizeToGuardPhase;
 import org.graalvm.compiler.phases.common.FloatingReadPhase;
 import org.graalvm.compiler.phases.common.LoweringPhase;
 import org.graalvm.compiler.phases.schedule.SchedulePhase;
 import org.graalvm.compiler.phases.tiers.HighTierContext;
 import org.junit.Test;
+
+import jdk.vm.ci.meta.SpeculationLog;
 
 public class GuardPrioritiesTest extends GraphScheduleTest {
     private int[] array;
@@ -71,9 +75,10 @@ public class GuardPrioritiesTest extends GraphScheduleTest {
         Iterator<GuardNode> iterator = guards.iterator();
         GuardNode g1 = iterator.next();
         GuardNode g2 = iterator.next();
-        assertTrue("There should be one guard with speculation, the other one without", g1.getSpeculation().isNull() ^ g2.getSpeculation().isNull());
-        GuardNode withSpeculation = g1.getSpeculation().isNull() ? g2 : g1;
-        GuardNode withoutSpeculation = g1.getSpeculation().isNull() ? g1 : g2;
+        assertTrue("There should be one guard with speculation, the other one without",
+                        (g1.getSpeculation().equals(SpeculationLog.NO_SPECULATION)) ^ (g2.getSpeculation().equals(SpeculationLog.NO_SPECULATION)));
+        GuardNode withSpeculation = g1.getSpeculation().equals(SpeculationLog.NO_SPECULATION) ? g2 : g1;
+        GuardNode withoutSpeculation = g1.getSpeculation().equals(SpeculationLog.NO_SPECULATION) ? g1 : g2;
 
         assertOrderedAfterSchedule(graph, SchedulePhase.SchedulingStrategy.EARLIEST_WITH_GUARD_ORDER, withSpeculation, withoutSpeculation);
     }
@@ -109,9 +114,9 @@ public class GuardPrioritiesTest extends GraphScheduleTest {
         new SchedulePhase(SchedulePhase.SchedulingStrategy.EARLIEST_WITH_GUARD_ORDER).apply(graph);
         for (GuardNode g1 : graph.getNodes(GuardNode.TYPE)) {
             for (GuardNode g2 : graph.getNodes(GuardNode.TYPE)) {
-                if (g1.getSpeculation().isNull() ^ g2.getSpeculation().isNull()) {
-                    GuardNode withSpeculation = g1.getSpeculation().isNull() ? g2 : g1;
-                    GuardNode withoutSpeculation = g1.getSpeculation().isNull() ? g1 : g2;
+                if (g1.getSpeculation().equals(SpeculationLog.NO_SPECULATION) ^ g2.getSpeculation().equals(SpeculationLog.NO_SPECULATION)) {
+                    GuardNode withSpeculation = g1.getSpeculation().equals(SpeculationLog.NO_SPECULATION) ? g2 : g1;
+                    GuardNode withoutSpeculation = g1.getSpeculation().equals(SpeculationLog.NO_SPECULATION) ? g1 : g2;
 
                     if (withoutSpeculation.isNegated() && withoutSpeculation.getCondition() instanceof IsNullNode) {
                         IsNullNode isNullNode = (IsNullNode) withoutSpeculation.getCondition();

@@ -47,7 +47,7 @@ class CE_Eliminator: public BlockClosure {
   int _has_substitution;
 
  public:
-  CE_Eliminator(IR* hir) : _cee_count(0), _ifop_count(0), _hir(hir) {
+  CE_Eliminator(IR* hir) : _hir(hir), _cee_count(0), _ifop_count(0) {
     _has_substitution = false;
     _hir->iterate_preorder(this);
     if (_has_substitution) {
@@ -174,6 +174,12 @@ void CE_Eliminator::block_do(BlockBegin* block) {
   for_each_phi_fun(t_block, phi, return; );
   for_each_phi_fun(f_block, phi, return; );
 
+  // Only replace safepoint gotos if state_before information is available (if is a safepoint)
+  bool is_safepoint = if_->is_safepoint();
+  if (!is_safepoint && (t_goto->is_safepoint() || f_goto->is_safepoint())) {
+    return;
+  }
+
   // 2) substitute conditional expression
   //    with an IfOp followed by a Goto
   // cut if_ away and get node before
@@ -202,7 +208,7 @@ void CE_Eliminator::block_do(BlockBegin* block) {
 
   // append Goto to successor
   ValueStack* state_before = if_->state_before();
-  Goto* goto_ = new Goto(sux, state_before, if_->is_safepoint() || t_goto->is_safepoint() || f_goto->is_safepoint());
+  Goto* goto_ = new Goto(sux, state_before, is_safepoint);
 
   // prepare state for Goto
   ValueStack* goto_state = if_state;
@@ -592,10 +598,10 @@ class NullCheckEliminator: public ValueVisitor {
   // constructor
   NullCheckEliminator(Optimizer* opt)
     : _opt(opt)
+    , _work_list(new BlockList())
     , _set(new ValueSet())
-    , _last_explicit_null_check(NULL)
     , _block_states(BlockBegin::number_of_blocks(), BlockBegin::number_of_blocks(), NULL)
-    , _work_list(new BlockList()) {
+    , _last_explicit_null_check(NULL) {
     _visitable_instructions = new ValueSet();
     _visitor.set_eliminator(this);
     CompileLog* log = _opt->ir()->compilation()->log();

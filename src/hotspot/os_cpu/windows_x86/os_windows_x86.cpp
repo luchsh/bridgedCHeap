@@ -40,7 +40,7 @@
 #include "runtime/arguments.hpp"
 #include "runtime/extendedPC.hpp"
 #include "runtime/frame.inline.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/mutexLocker.hpp"
@@ -210,10 +210,6 @@ bool os::register_code_area(char *low, char *high) {
 
 #endif // AMD64
   return true;
-}
-
-void os::initialize_thread(Thread* thr) {
-// Nothing to do.
 }
 
 // Atomics and Stub Functions
@@ -469,6 +465,9 @@ frame os::get_sender_for_C_frame(frame* fr) {
 }
 
 #ifndef AMD64
+// Ignore "C4172: returning address of local variable or temporary" on 32bit
+PRAGMA_DIAG_PUSH
+PRAGMA_DISABLE_MSVC_WARNING(4172)
 // Returns an estimate of the current stack pointer. Result must be guaranteed
 // to point into the calling threads stack, and be no lower than the current
 // stack pointer.
@@ -477,6 +476,7 @@ address os::current_stack_pointer() {
   address sp = (address)&dummy;
   return sp;
 }
+PRAGMA_DIAG_POP
 #else
 // Returns the current stack pointer. Accurate value needed for
 // os::verify_stack_alignment().
@@ -589,8 +589,7 @@ void os::print_context(outputStream *st, const void *context) {
   // point to garbage if entry point in an nmethod is corrupted. Leave
   // this at the end, and hope for the best.
   address pc = (address)uc->REG_PC;
-  st->print_cr("Instructions: (pc=" PTR_FORMAT ")", pc);
-  print_hex_dump(st, pc - 32, pc + 32, sizeof(char));
+  print_instructions(st, pc, sizeof(char));
   st->cr();
 }
 

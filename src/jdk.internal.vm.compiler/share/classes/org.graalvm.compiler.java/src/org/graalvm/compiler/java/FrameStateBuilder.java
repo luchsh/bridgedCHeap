@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.java;
 
 import static org.graalvm.compiler.bytecode.Bytecodes.DUP;
@@ -32,7 +34,6 @@ import static org.graalvm.compiler.bytecode.Bytecodes.POP;
 import static org.graalvm.compiler.bytecode.Bytecodes.POP2;
 import static org.graalvm.compiler.bytecode.Bytecodes.SWAP;
 import static org.graalvm.compiler.debug.GraalError.shouldNotReachHere;
-import static org.graalvm.compiler.java.BytecodeParserOptions.HideSubstitutionStates;
 import static org.graalvm.compiler.nodes.FrameState.TWO_SLOT_MARKER;
 
 import java.util.ArrayList;
@@ -47,7 +48,7 @@ import org.graalvm.compiler.core.common.PermanentBailoutException;
 import org.graalvm.compiler.core.common.type.StampFactory;
 import org.graalvm.compiler.core.common.type.StampPair;
 import org.graalvm.compiler.debug.DebugContext;
-import org.graalvm.compiler.debug.TTY;
+import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.graph.NodeSourcePosition;
 import org.graalvm.compiler.java.BciBlockMapping.BciBlock;
 import org.graalvm.compiler.nodeinfo.Verbosity;
@@ -74,7 +75,6 @@ import org.graalvm.compiler.nodes.util.GraphUtil;
 
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.meta.Assumptions;
-import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -112,8 +112,6 @@ public final class FrameStateBuilder implements SideEffectsState {
      */
     private List<StateSplit> sideEffects;
 
-    private JavaConstant constantReceiver;
-
     /**
      * Creates a new frame state builder for the given method and the given target graph.
      *
@@ -121,17 +119,18 @@ public final class FrameStateBuilder implements SideEffectsState {
      * @param graph the target graph of Graal nodes created by the builder
      */
     public FrameStateBuilder(GraphBuilderTool tool, ResolvedJavaMethod method, StructuredGraph graph) {
-        this(tool, new ResolvedJavaMethodBytecode(method), graph);
+        this(tool, new ResolvedJavaMethodBytecode(method), graph, false);
     }
 
     /**
      * Creates a new frame state builder for the given code attribute, method and the given target
-     * graph.
+     * graph. Additionally specifies if nonLiveLocals should be retained.
      *
      * @param code the bytecode in which the frame exists
      * @param graph the target graph of Graal nodes created by the builder
+     * @param shouldRetainLocalVariables specifies if nonLiveLocals should be retained in state.
      */
-    public FrameStateBuilder(GraphBuilderTool tool, Bytecode code, StructuredGraph graph) {
+    public FrameStateBuilder(GraphBuilderTool tool, Bytecode code, StructuredGraph graph, boolean shouldRetainLocalVariables) {
         this.tool = tool;
         if (tool instanceof BytecodeParser) {
             this.parser = (BytecodeParser) tool;
@@ -147,7 +146,7 @@ public final class FrameStateBuilder implements SideEffectsState {
 
         this.monitorIds = EMPTY_MONITOR_ARRAY;
         this.graph = graph;
-        this.clearNonLiveLocals = GraalOptions.OptClearNonLiveLocals.getValue(graph.getOptions());
+        this.clearNonLiveLocals = GraalOptions.OptClearNonLiveLocals.getValue(graph.getOptions()) && !shouldRetainLocalVariables;
         this.canVerifyKind = true;
     }
 
@@ -164,7 +163,6 @@ public final class FrameStateBuilder implements SideEffectsState {
             locals[javaIndex] = arguments[index];
             javaIndex = 1;
             index = 1;
-            constantReceiver = locals[0].asJavaConstant();
         }
         Signature sig = getMethod().getSignature();
         int max = sig.getParameterCount(false);
@@ -227,7 +225,12 @@ public final class FrameStateBuilder implements SideEffectsState {
                 stamp = plugins.getOverridingStamp(tool, type, false);
             }
             if (stamp == null) {
-                stamp = StampFactory.forDeclaredType(assumptions, type, false);
+                // GR-714: subword inputs cannot be trusted
+                if (kind.getStackKind() != kind) {
+                    stamp = StampPair.createSingle(StampFactory.forKind(JavaKind.Int));
+                } else {
+                    stamp = StampFactory.forDeclaredType(assumptions, type, false);
+                }
             }
 
             FloatingNode param = null;
@@ -272,8 +275,6 @@ public final class FrameStateBuilder implements SideEffectsState {
         clearNonLiveLocals = other.clearNonLiveLocals;
         monitorIds = other.monitorIds.length == 0 ? other.monitorIds : other.monitorIds.clone();
 
-        assert locals.length == code.getMaxLocals();
-        assert stack.length == Math.max(1, code.getMaxStackSize());
         assert lockedObjects.length == monitorIds.length;
     }
 
@@ -310,7 +311,7 @@ public final class FrameStateBuilder implements SideEffectsState {
 
     public FrameState create(int bci, StateSplit forStateSplit) {
         if (parser != null && parser.parsingIntrinsic()) {
-            NodeSourcePosition sourcePosition = createBytecodePosition(bci, false);
+            NodeSourcePosition sourcePosition = parser.getGraph().trackNodeSourcePosition() ? createBytecodePosition(bci) : null;
             return parser.intrinsicContext.createFrameState(parser.getGraph(), this, forStateSplit, sourcePosition);
         }
 
@@ -354,25 +355,14 @@ public final class FrameStateBuilder implements SideEffectsState {
     }
 
     public NodeSourcePosition createBytecodePosition(int bci) {
-        return createBytecodePosition(bci, HideSubstitutionStates.getValue(parser.graph.getOptions()));
-    }
-
-    private NodeSourcePosition createBytecodePosition(int bci, boolean hideSubstitutionStates) {
         BytecodeParser parent = parser.getParent();
-        if (hideSubstitutionStates) {
-            if (parser.parsingIntrinsic()) {
-                // Attribute to the method being replaced
-                return new NodeSourcePosition(constantReceiver, parent.getFrameStateBuilder().createBytecodePosition(parent.bci()), parser.intrinsicContext.getOriginalMethod(), -1);
-            }
-            // Skip intrinsic frames
-            parent = parser.getNonIntrinsicAncestor();
-        }
-        return create(constantReceiver, bci, parent, hideSubstitutionStates);
+        NodeSourcePosition position = create(bci, parent);
+        return position;
     }
 
-    private NodeSourcePosition create(JavaConstant receiver, int bci, BytecodeParser parent, boolean hideSubstitutionStates) {
+    private NodeSourcePosition create(int bci, BytecodeParser parent) {
         if (outerSourcePosition == null && parent != null) {
-            outerSourcePosition = parent.getFrameStateBuilder().createBytecodePosition(parent.bci(), hideSubstitutionStates);
+            outerSourcePosition = parent.getFrameStateBuilder().createBytecodePosition(parent.bci());
         }
         if (bci == BytecodeFrame.AFTER_EXCEPTION_BCI && parent != null) {
             return FrameState.toSourcePosition(outerFrameState);
@@ -380,7 +370,15 @@ public final class FrameStateBuilder implements SideEffectsState {
         if (bci == BytecodeFrame.INVALID_FRAMESTATE_BCI) {
             throw shouldNotReachHere();
         }
-        return new NodeSourcePosition(receiver, outerSourcePosition, code.getMethod(), bci);
+        if (parser.intrinsicContext != null && (parent == null || parent.intrinsicContext != parser.intrinsicContext)) {
+            // When parsing an intrinsic put in a substitution marker showing the original method as
+            // the caller. This keeps the relationship between the method and the method
+            // substitution clear in resulting NodeSourcePosition.
+            NodeSourcePosition original = new NodeSourcePosition(outerSourcePosition, parser.intrinsicContext.getOriginalMethod(), -1);
+            return NodeSourcePosition.substitution(original, code.getMethod(), bci);
+        } else {
+            return new NodeSourcePosition(outerSourcePosition, code.getMethod(), bci);
+        }
     }
 
     public FrameStateBuilder copy() {
@@ -390,6 +388,10 @@ public final class FrameStateBuilder implements SideEffectsState {
     public boolean isCompatibleWith(FrameStateBuilder other) {
         assert code.equals(other.code) && graph == other.graph && localsSize() == other.localsSize() : "Can only compare frame states of the same method";
         assert lockedObjects.length == monitorIds.length && other.lockedObjects.length == other.monitorIds.length : "mismatch between lockedObjects and monitorIds";
+
+        if (rethrowException != other.rethrowException) {
+            return false;
+        }
 
         if (stackSize() != other.stackSize()) {
             return false;
@@ -414,7 +416,7 @@ public final class FrameStateBuilder implements SideEffectsState {
     }
 
     public void merge(AbstractMergeNode block, FrameStateBuilder other) {
-        assert isCompatibleWith(other);
+        GraalError.guarantee(isCompatibleWith(other), "stacks do not match on merge; bytecodes would not verify:%nexpect: %s%nactual: %s", block, other);
 
         for (int i = 0; i < localsSize(); i++) {
             locals[i] = merge(locals[i], other.locals[i], block);
@@ -632,12 +634,12 @@ public final class FrameStateBuilder implements SideEffectsState {
 
     public void clearNonLiveLocals(BciBlock block, LocalLiveness liveness, boolean liveIn) {
         /*
-         * (lstadler) if somebody is tempted to remove/disable this clearing code: it's possible to
-         * remove it for normal compilations, but not for OSR compilations - otherwise dead object
-         * slots at the OSR entry aren't cleared. it is also not enough to rely on PiNodes with
-         * Kind.Illegal, because the conflicting branch might not have been parsed.
+         * Non-live local clearing is mandatory for the entry block of an OSR compilation so that
+         * dead object slots at the OSR entry are cleared. It's not sufficient to rely on PiNodes
+         * with Kind.Illegal, because the conflicting branch might not have been parsed.
          */
-        if (!clearNonLiveLocals) {
+        boolean isOSREntryBlock = graph.isOSR() && getMethod().equals(graph.method()) && graph.getEntryBCI() == block.startBci;
+        if (!clearNonLiveLocals && !isOSREntryBlock) {
             return;
         }
         if (liveIn) {
@@ -739,6 +741,13 @@ public final class FrameStateBuilder implements SideEffectsState {
         }
         locals[i] = x;
         if (slotKind.needsTwoSlots()) {
+            if (i < locals.length - 2 && locals[i + 2] == TWO_SLOT_MARKER) {
+                /*
+                 * Writing a two-slot marker to an index previously occupied by a two-slot value:
+                 * clear the old marker of the second slot.
+                 */
+                locals[i + 2] = null;
+            }
             /* Writing a two-slot value: mark the second slot. */
             locals[i + 1] = TWO_SLOT_MARKER;
         } else if (i < locals.length - 1 && locals[i + 1] == TWO_SLOT_MARKER) {
@@ -780,7 +789,7 @@ public final class FrameStateBuilder implements SideEffectsState {
     public ValueNode pop(JavaKind slotKind) {
         if (slotKind.needsTwoSlots()) {
             ValueNode s = xpop();
-            assert s == TWO_SLOT_MARKER;
+            assert s == TWO_SLOT_MARKER : s;
         }
         ValueNode x = xpop();
         assert verifyKind(slotKind, x);
@@ -804,6 +813,12 @@ public final class FrameStateBuilder implements SideEffectsState {
         return result;
     }
 
+    public ValueNode peekObject() {
+        ValueNode x = xpeek();
+        assert verifyKind(JavaKind.Object, x);
+        return x;
+    }
+
     /**
      * Pop the specified number of slots off of this stack and return them as an array of
      * instructions.
@@ -818,7 +833,7 @@ public final class FrameStateBuilder implements SideEffectsState {
                 /* Ignore second slot of two-slot value. */
                 x = xpop();
             }
-            assert x != null && x != TWO_SLOT_MARKER;
+            assert x != null && x != TWO_SLOT_MARKER : x;
             result[i] = x;
         }
         return result;
@@ -997,17 +1012,5 @@ public final class FrameStateBuilder implements SideEffectsState {
             sideEffects = new ArrayList<>(4);
         }
         sideEffects.add(sideEffect);
-    }
-
-    public void traceState() {
-        TTY.println("|   state [nr locals = %d, stack depth = %d, method = %s]", localsSize(), stackSize(), getMethod());
-        for (int i = 0; i < localsSize(); ++i) {
-            ValueNode value = locals[i];
-            TTY.println("|   local[%d] = %-8s : %s", i, value == null ? "bogus" : value == TWO_SLOT_MARKER ? "second" : value.getStackKind().getJavaName(), value);
-        }
-        for (int i = 0; i < stackSize(); ++i) {
-            ValueNode value = stack[i];
-            TTY.println("|   stack[%d] = %-8s : %s", i, value == null ? "bogus" : value == TWO_SLOT_MARKER ? "second" : value.getStackKind().getJavaName(), value);
-        }
     }
 }

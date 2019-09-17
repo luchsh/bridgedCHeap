@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -48,6 +48,8 @@ import com.sun.tools.javac.comp.AttrContext;
 import com.sun.tools.javac.comp.Check;
 import com.sun.tools.javac.comp.Enter;
 import com.sun.tools.javac.comp.Env;
+import com.sun.tools.javac.comp.LambdaToMethod;
+import com.sun.tools.javac.jvm.ClassFile;
 import com.sun.tools.javac.util.*;
 
 import static com.sun.tools.javac.code.BoundKind.*;
@@ -89,7 +91,6 @@ public class Types {
     final Symtab syms;
     final JavacMessages messages;
     final Names names;
-    final boolean allowObjectToPrimitiveCast;
     final boolean allowDefaultMethods;
     final boolean mapCapturesToBounds;
     final Check chk;
@@ -97,7 +98,6 @@ public class Types {
     JCDiagnostic.Factory diags;
     List<Warner> warnStack = List.nil();
     final Name capturedName;
-    private final FunctionDescriptorLookupError functionDescriptorLookupError;
 
     public final Warner noWarnings;
 
@@ -114,7 +114,6 @@ public class Types {
         syms = Symtab.instance(context);
         names = Names.instance(context);
         Source source = Source.instance(context);
-        allowObjectToPrimitiveCast = Feature.OBJECT_TO_PRIMITIVE_CAST.allowedInSource(source);
         allowDefaultMethods = Feature.DEFAULT_METHODS.allowedInSource(source);
         mapCapturesToBounds = Feature.MAP_CAPTURES_TO_BOUNDS.allowedInSource(source);
         chk = Check.instance(context);
@@ -122,7 +121,6 @@ public class Types {
         capturedName = names.fromString("<captured wildcard>");
         messages = JavacMessages.instance(context);
         diags = JCDiagnostic.Factory.instance(context);
-        functionDescriptorLookupError = new FunctionDescriptorLookupError();
         noWarnings = new Warner(null);
     }
     // </editor-fold>
@@ -136,7 +134,7 @@ public class Types {
         if (t.hasTag(WILDCARD)) {
             WildcardType w = (WildcardType) t;
             if (w.isSuperBound())
-                return w.bound == null ? syms.objectType : w.bound.bound;
+                return w.bound == null ? syms.objectType : w.bound.getUpperBound();
             else
                 return wildUpperBound(w.type);
         }
@@ -150,7 +148,7 @@ public class Types {
     public Type cvarUpperBound(Type t) {
         if (t.hasTag(TYPEVAR)) {
             TypeVar v = (TypeVar) t;
-            return v.isCaptured() ? cvarUpperBound(v.bound) : v;
+            return v.isCaptured() ? cvarUpperBound(v.getUpperBound()) : v;
         }
         else return t;
     }
@@ -678,10 +676,21 @@ public class Types {
 
             public Type getType(Type site) {
                 site = removeWildcards(site);
-                if (!chk.checkValidGenericType(site)) {
-                    //if the inferred functional interface type is not well-formed,
-                    //or if it's not a subtype of the original target, issue an error
-                    throw failure(diags.fragment(Fragments.NoSuitableFunctionalIntfInst(site)));
+                if (site.isIntersection()) {
+                    IntersectionClassType ict = (IntersectionClassType)site;
+                    for (Type component : ict.getExplicitComponents()) {
+                        if (!chk.checkValidGenericType(component)) {
+                            //if the inferred functional interface type is not well-formed,
+                            //or if it's not a subtype of the original target, issue an error
+                            throw failure(diags.fragment(Fragments.NoSuitableFunctionalIntfInst(site)));
+                        }
+                    }
+                } else {
+                    if (!chk.checkValidGenericType(site)) {
+                        //if the inferred functional interface type is not well-formed,
+                        //or if it's not a subtype of the original target, issue an error
+                        throw failure(diags.fragment(Fragments.NoSuitableFunctionalIntfInst(site)));
+                    }
                 }
                 return memberType(site, descSym);
             }
@@ -796,7 +805,7 @@ public class Types {
         }
 
         FunctionDescriptorLookupError failure(JCDiagnostic diag) {
-            return functionDescriptorLookupError.setMessage(diag);
+            return new FunctionDescriptorLookupError().setMessage(diag);
         }
     }
 
@@ -887,12 +896,12 @@ public class Types {
      * main purposes: (i) checking well-formedness of a functional interface;
      * (ii) perform functional interface bridge calculation.
      */
-    public ClassSymbol makeFunctionalInterfaceClass(Env<AttrContext> env, Name name, List<Type> targets, long cflags) {
-        if (targets.isEmpty()) {
+    public ClassSymbol makeFunctionalInterfaceClass(Env<AttrContext> env, Name name, Type target, long cflags) {
+        if (target == null || target == syms.unknownType) {
             return null;
         }
-        Symbol descSym = findDescriptorSymbol(targets.head.tsym);
-        Type descType = findDescriptorType(targets.head);
+        Symbol descSym = findDescriptorSymbol(target.tsym);
+        Type descType = findDescriptorType(target);
         ClassSymbol csym = new ClassSymbol(cflags, name, env.enclClass.sym.outermostClass());
         csym.completer = Completer.NULL_COMPLETER;
         csym.members_field = WriteableScope.create(csym);
@@ -900,7 +909,9 @@ public class Types {
         csym.members_field.enter(instDescSym);
         Type.ClassType ctype = new Type.ClassType(Type.noType, List.nil(), csym);
         ctype.supertype_field = syms.objectType;
-        ctype.interfaces_field = targets;
+        ctype.interfaces_field = target.isIntersection() ?
+                directSupertypes(target) :
+                List.of(target);
         csym.type = ctype;
         csym.sourcefile = ((ClassSymbol)csym.owner).sourcefile;
         return csym;
@@ -1628,8 +1639,7 @@ public class Types {
         if (t.isPrimitive() != s.isPrimitive()) {
             t = skipTypeVars(t, false);
             return (isConvertible(t, s, warn)
-                    || (allowObjectToPrimitiveCast &&
-                        s.isPrimitive() &&
+                    || (s.isPrimitive() &&
                         isSubtype(boxedClass(s).type, t)));
         }
         if (warn != warnStack.head) {
@@ -1648,7 +1658,7 @@ public class Types {
         private TypeRelation isCastable = new TypeRelation() {
 
             public Boolean visitType(Type t, Type s) {
-                if (s.hasTag(ERROR))
+                if (s.hasTag(ERROR) || t.hasTag(NONE))
                     return true;
 
                 switch (t.getTag()) {
@@ -1813,14 +1823,14 @@ public class Types {
                 case TYPEVAR:
                     if (isSubtype(t, s)) {
                         return true;
-                    } else if (isCastable(t.bound, s, noWarnings)) {
+                    } else if (isCastable(t.getUpperBound(), s, noWarnings)) {
                         warnStack.head.warn(LintCategory.UNCHECKED);
                         return true;
                     } else {
                         return false;
                     }
                 default:
-                    return isCastable(t.bound, s, warnStack.head);
+                    return isCastable(t.getUpperBound(), s, warnStack.head);
                 }
             }
 
@@ -1946,7 +1956,7 @@ public class Types {
         if (t == s) return false;
         if (t.hasTag(TYPEVAR)) {
             TypeVar tv = (TypeVar) t;
-            return !isCastable(tv.bound,
+            return !isCastable(tv.getUpperBound(),
                                relaxBound(s),
                                noWarnings);
         }
@@ -2142,7 +2152,7 @@ public class Types {
                 if (t.tsym == sym)
                     return t;
                 else
-                    return asSuper(t.bound, sym);
+                    return asSuper(t.getUpperBound(), sym);
             }
 
             @Override
@@ -2261,7 +2271,7 @@ public class Types {
 
             @Override
             public Type visitTypeVar(TypeVar t, Symbol sym) {
-                return memberType(t.bound, sym);
+                return memberType(t.getUpperBound(), sym);
             }
 
             @Override
@@ -2384,7 +2394,7 @@ public class Types {
 
             @Override
             public Type visitTypeVar(TypeVar t, Boolean recurse) {
-                Type erased = erasure(t.bound, recurse);
+                Type erased = erasure(t.getUpperBound(), recurse);
                 return combineMetadata(erased, t);
             }
         };
@@ -2490,11 +2500,11 @@ public class Types {
              */
             @Override
             public Type visitTypeVar(TypeVar t, Void ignored) {
-                if (t.bound.hasTag(TYPEVAR) ||
-                    (!t.bound.isCompound() && !t.bound.isInterface())) {
-                    return t.bound;
+                if (t.getUpperBound().hasTag(TYPEVAR) ||
+                    (!t.getUpperBound().isCompound() && !t.getUpperBound().isInterface())) {
+                    return t.getUpperBound();
                 } else {
-                    return supertype(t.bound);
+                    return supertype(t.getUpperBound());
                 }
             }
 
@@ -2565,11 +2575,11 @@ public class Types {
 
             @Override
             public List<Type> visitTypeVar(TypeVar t, Void ignored) {
-                if (t.bound.isCompound())
-                    return interfaces(t.bound);
+                if (t.getUpperBound().isCompound())
+                    return interfaces(t.getUpperBound());
 
-                if (t.bound.isInterface())
-                    return List.of(t.bound);
+                if (t.getUpperBound().isInterface())
+                    return List.of(t.getUpperBound());
 
                 return List.nil();
             }
@@ -2654,9 +2664,9 @@ public class Types {
      * @param allInterfaces are all bounds interface types?
      */
     public void setBounds(TypeVar t, List<Type> bounds, boolean allInterfaces) {
-        t.bound = bounds.tail.isEmpty() ?
+        t.setUpperBound( bounds.tail.isEmpty() ?
                 bounds.head :
-                makeIntersectionType(bounds, allInterfaces);
+                makeIntersectionType(bounds, allInterfaces) );
         t.rank_field = -1;
     }
     // </editor-fold>
@@ -2666,10 +2676,10 @@ public class Types {
      * Return list of bounds of the given type variable.
      */
     public List<Type> getBounds(TypeVar t) {
-        if (t.bound.hasTag(NONE))
+        if (t.getUpperBound().hasTag(NONE))
             return List.nil();
-        else if (t.bound.isErroneous() || !t.bound.isCompound())
-            return List.of(t.bound);
+        else if (t.getUpperBound().isErroneous() || !t.getUpperBound().isCompound())
+            return List.of(t.getUpperBound());
         else if ((erasure(t).tsym.flags() & INTERFACE) == 0)
             return interfaces(t).prepend(supertype(t));
         else
@@ -2723,7 +2733,7 @@ public class Types {
      * signature</em> of the other.  This is <b>not</b> an equivalence
      * relation.
      *
-     * @jls section 8.4.2.
+     * @jls 8.4.2 Method Signature
      * @see #overrideEquivalent(Type t, Type s)
      * @param t first signature (possibly raw).
      * @param s second signature (could be subjected to erasure).
@@ -2742,7 +2752,7 @@ public class Types {
      * equivalence</em>.  This is the natural extension of
      * isSubSignature to an equivalence relation.
      *
-     * @jls section 8.4.2.
+     * @jls 8.4.2 Method Signature
      * @see #isSubSignature(Type t, Type s)
      * @param t a signature (possible raw, could be subjected to
      * erasure).
@@ -3353,8 +3363,8 @@ public class Types {
         // calculate new bounds
         for (Type t : tvars) {
             TypeVar tv = (TypeVar) t;
-            Type bound = subst(tv.bound, from, to);
-            if (bound != tv.bound)
+            Type bound = subst(tv.getUpperBound(), from, to);
+            if (bound != tv.getUpperBound())
                 changed = true;
             newBoundsBuf.append(bound);
         }
@@ -3378,15 +3388,15 @@ public class Types {
         // set the bounds of new type variables to the new bounds
         for (Type t : newTvars.toList()) {
             TypeVar tv = (TypeVar) t;
-            tv.bound = newBounds.head;
+            tv.setUpperBound( newBounds.head );
             newBounds = newBounds.tail;
         }
         return newTvars.toList();
     }
 
     public TypeVar substBound(TypeVar t, List<Type> from, List<Type> to) {
-        Type bound1 = subst(t.bound, from, to);
-        if (bound1 == t.bound)
+        Type bound1 = subst(t.getUpperBound(), from, to);
+        if (bound1 == t.getUpperBound())
             return t;
         else {
             // create new type variable without bounds
@@ -3394,7 +3404,7 @@ public class Types {
                                      t.getMetadata());
             // the new bound should use the new type variable in place
             // of the old
-            tv.bound = subst(bound1, List.of(t), List.of(tv));
+            tv.setUpperBound( subst(bound1, List.of(t), List.of(tv)) );
             return tv;
         }
     }
@@ -3427,7 +3437,7 @@ public class Types {
         List<Type> tvars1 = tvars.map(newInstanceFun);
         for (List<Type> l = tvars1; l.nonEmpty(); l = l.tail) {
             TypeVar tv = (TypeVar) l.head;
-            tv.bound = subst(tv.bound, tvars, tvars1);
+            tv.setUpperBound( subst(tv.getUpperBound(), tvars, tvars1) );
         }
         return tvars1;
     }
@@ -3606,11 +3616,11 @@ public class Types {
         }
         private void appendTyparamString(TypeVar t, StringBuilder buf) {
             buf.append(t);
-            if (t.bound == null ||
-                t.bound.tsym.getQualifiedName() == names.java_lang_Object)
+            if (t.getUpperBound() == null ||
+                t.getUpperBound().tsym.getQualifiedName() == names.java_lang_Object)
                 return;
             buf.append(" extends "); // Java syntax; no need for i18n
-            Type bound = t.bound;
+            Type bound = t.getUpperBound();
             if (!bound.isCompound()) {
                 buf.append(bound);
             } else if ((erasure(t).tsym.flags() & INTERFACE) == 0) {
@@ -4204,7 +4214,7 @@ public class Types {
 
     /**
      * Return-Type-Substitutable.
-     * @jls section 8.4.5
+     * @jls 8.4.5 Method Result
      */
     public boolean returnTypeSubstitutable(Type r1, Type r2) {
         if (hasSameArgs(r1, r2))
@@ -4367,24 +4377,24 @@ public class Types {
                     Ui = syms.objectType;
                 switch (Ti.kind) {
                 case UNBOUND:
-                    Si.bound = subst(Ui, A, S);
+                    Si.setUpperBound( subst(Ui, A, S) );
                     Si.lower = syms.botType;
                     break;
                 case EXTENDS:
-                    Si.bound = glb(Ti.getExtendsBound(), subst(Ui, A, S));
+                    Si.setUpperBound( glb(Ti.getExtendsBound(), subst(Ui, A, S)) );
                     Si.lower = syms.botType;
                     break;
                 case SUPER:
-                    Si.bound = subst(Ui, A, S);
+                    Si.setUpperBound( subst(Ui, A, S) );
                     Si.lower = Ti.getSuperBound();
                     break;
                 }
-                Type tmpBound = Si.bound.hasTag(UNDETVAR) ? ((UndetVar)Si.bound).qtype : Si.bound;
+                Type tmpBound = Si.getUpperBound().hasTag(UNDETVAR) ? ((UndetVar)Si.getUpperBound()).qtype : Si.getUpperBound();
                 Type tmpLower = Si.lower.hasTag(UNDETVAR) ? ((UndetVar)Si.lower).qtype : Si.lower;
-                if (!Si.bound.hasTag(ERROR) &&
+                if (!Si.getUpperBound().hasTag(ERROR) &&
                     !Si.lower.hasTag(ERROR) &&
                     isSameType(tmpBound, tmpLower)) {
-                    currentS.head = Si.bound;
+                    currentS.head = Si.getUpperBound();
                 }
             }
             currentA = currentA.tail;
@@ -4712,9 +4722,9 @@ public class Types {
         @Override
         public Type visitTypeVar(TypeVar t, Void s) {
             if (rewriteTypeVars) {
-                Type bound = t.bound.contains(t) ?
-                        erasure(t.bound) :
-                        visit(t.bound);
+                Type bound = t.getUpperBound().contains(t) ?
+                        erasure(t.getUpperBound()) :
+                        visit(t.getUpperBound());
                 return rewriteAsWildcardType(bound, t, EXTENDS);
             } else {
                 return t;
@@ -4989,6 +4999,20 @@ public class Types {
 
     public static abstract class SignatureGenerator {
 
+        public static class InvalidSignatureException extends RuntimeException {
+            private static final long serialVersionUID = 0;
+
+            private final Type type;
+
+            InvalidSignatureException(Type type) {
+                this.type = type;
+            }
+
+            public Type type() {
+                return type;
+            }
+        }
+
         private final Types types;
 
         protected abstract void append(char ch);
@@ -4998,6 +5022,10 @@ public class Types {
 
         protected SignatureGenerator(Types types) {
             this.types = types;
+        }
+
+        protected void reportIllegalSignature(Type t) {
+            throw new InvalidSignatureException(t);
         }
 
         /**
@@ -5033,6 +5061,9 @@ public class Types {
                     append('V');
                     break;
                 case CLASS:
+                    if (type.isCompound()) {
+                        reportIllegalSignature(type);
+                    }
                     append('L');
                     assembleClassSig(type);
                     append(';');
@@ -5075,6 +5106,9 @@ public class Types {
                     break;
                 }
                 case TYPEVAR:
+                    if (((TypeVar)type).isCaptured()) {
+                        reportIllegalSignature(type);
+                    }
                     append('T');
                     append(type.tsym.name);
                     append(';');
@@ -5147,6 +5181,31 @@ public class Types {
             for (List<Type> ts = types; ts.nonEmpty(); ts = ts.tail) {
                 assembleSig(ts.head);
             }
+        }
+    }
+
+    public Type constantType(LoadableConstant c) {
+        switch (c.poolTag()) {
+            case ClassFile.CONSTANT_Class:
+                return syms.classType;
+            case ClassFile.CONSTANT_String:
+                return syms.stringType;
+            case ClassFile.CONSTANT_Integer:
+                return syms.intType;
+            case ClassFile.CONSTANT_Float:
+                return syms.floatType;
+            case ClassFile.CONSTANT_Long:
+                return syms.longType;
+            case ClassFile.CONSTANT_Double:
+                return syms.doubleType;
+            case ClassFile.CONSTANT_MethodHandle:
+                return syms.methodHandleType;
+            case ClassFile.CONSTANT_MethodType:
+                return syms.methodTypeType;
+            case ClassFile.CONSTANT_Dynamic:
+                return ((DynamicVarSymbol)c).type;
+            default:
+                throw new AssertionError("Not a loadable constant: " + c.poolTag());
         }
     }
     // </editor-fold>

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -144,11 +144,20 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     }
 
     @DefinedBy(Api.COMPILER_TREE)
+    @SuppressWarnings("removal")
+    public JCTree visitYield(YieldTree node, P p) {
+        JCYield t = (JCYield) node;
+        JCExpression value = copy(t.value, p);
+        return M.at(t.pos).Yield(value);
+    }
+
+    @DefinedBy(Api.COMPILER_TREE)
     public JCTree visitCase(CaseTree node, P p) {
         JCCase t = (JCCase) node;
-        JCExpression pat = copy(t.pat, p);
+        List<JCExpression> pats = copy(t.pats, p);
         List<JCStatement> stats = copy(t.stats, p);
-        return M.at(t.pos).Case(pat, stats);
+        JCTree body = copy(t.body, p);
+        return M.at(t.pos).Case(t.caseKind, pats, stats, body);
     }
 
     @DefinedBy(Api.COMPILER_TREE)
@@ -371,6 +380,15 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     }
 
     @DefinedBy(Api.COMPILER_TREE)
+    @SuppressWarnings("removal")
+    public JCTree visitSwitchExpression(SwitchExpressionTree node, P p) {
+        JCSwitchExpression t = (JCSwitchExpression) node;
+        JCExpression selector = copy(t.selector, p);
+        List<JCCase> cases = copy(t.cases, p);
+        return M.at(t.pos).SwitchExpression(selector, cases);
+    }
+
+    @DefinedBy(Api.COMPILER_TREE)
     public JCTree visitSynchronized(SynchronizedTree node, P p) {
         JCSynchronized t = (JCSynchronized) node;
         JCExpression lock = copy(t.lock, p);
@@ -559,7 +577,7 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
         switch (tree.getTag()) {
             case LETEXPR: {
                 LetExpr t = (LetExpr) node;
-                List<JCVariableDecl> defs = copy(t.defs, p);
+                List<JCStatement> defs = copy(t.defs, p);
                 JCExpression expr = copy(t.expr, p);
                 return M.at(t.pos).LetExpr(defs, expr);
             }

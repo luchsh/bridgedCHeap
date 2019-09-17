@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,7 @@
 package sun.management;
 
 import java.lang.management.LockInfo;
+import java.util.Map;
 import javax.management.openmbean.CompositeType;
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.CompositeDataSupport;
@@ -57,27 +58,23 @@ public class LockInfoCompositeData extends LazyCompositeData {
     }
 
     protected CompositeData getCompositeData() {
-        // CONTENTS OF THIS ARRAY MUST BE SYNCHRONIZED WITH
-        // lockInfoItemNames!
-        final Object[] lockInfoItemValues = {
-            new String(lock.getClassName()),
-            lock.getIdentityHashCode(),
-        };
+        Map<String,Object> items = Map.of(
+            CLASS_NAME,         lock.getClassName(),
+            IDENTITY_HASH_CODE, lock.getIdentityHashCode()
+        );
 
         try {
-            return new CompositeDataSupport(lockInfoCompositeType,
-                                            lockInfoItemNames,
-                                            lockInfoItemValues);
+            return new CompositeDataSupport(LOCK_INFO_COMPOSITE_TYPE, items);
         } catch (OpenDataException e) {
             // Should never reach here
             throw Util.newException(e);
         }
     }
 
-    private static final CompositeType lockInfoCompositeType;
+    private static final CompositeType LOCK_INFO_COMPOSITE_TYPE;
     static {
         try {
-            lockInfoCompositeType = (CompositeType)
+            LOCK_INFO_COMPOSITE_TYPE = (CompositeType)
                 MappedMXBeanType.toOpenType(LockInfo.class);
         } catch (OpenDataException e) {
             // Should never reach here
@@ -85,16 +82,12 @@ public class LockInfoCompositeData extends LazyCompositeData {
         }
     }
 
-    static CompositeType getLockInfoCompositeType() {
-        return lockInfoCompositeType;
+    static CompositeType compositeType() {
+        return LOCK_INFO_COMPOSITE_TYPE;
     }
 
     private static final String CLASS_NAME         = "className";
     private static final String IDENTITY_HASH_CODE = "identityHashCode";
-    private static final String[] lockInfoItemNames = {
-        CLASS_NAME,
-        IDENTITY_HASH_CODE,
-    };
 
     /*
      * Returns a LockInfo object mapped from the given CompositeData.
@@ -104,7 +97,7 @@ public class LockInfoCompositeData extends LazyCompositeData {
             throw new NullPointerException("Null CompositeData");
         }
 
-        if (!isTypeMatched(lockInfoCompositeType, cd.getCompositeType())) {
+        if (!isTypeMatched(LOCK_INFO_COMPOSITE_TYPE, cd.getCompositeType())) {
             throw new IllegalArgumentException(
                 "Unexpected composite type for LockInfo");
         }

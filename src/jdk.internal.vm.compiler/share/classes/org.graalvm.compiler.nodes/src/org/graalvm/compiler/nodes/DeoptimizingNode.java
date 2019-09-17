@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,12 +20,20 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes;
 
 import org.graalvm.compiler.nodes.spi.NodeWithState;
 
 /**
  * Interface implemented by nodes which may need {@linkplain FrameState deoptimization information}.
+ * <p>
+ * Sub-interfaces are used to specify exactly when the deoptimization can take place:
+ * {@linkplain DeoptBefore before}, {@linkplain DeoptAfter after}, and/or {@linkplain DeoptDuring
+ * during}. <br>
+ * Note that these sub-interfaces are not mutually exclusive so that nodes that may deoptimize at
+ * multiple times can be modeled.
  */
 public interface DeoptimizingNode extends NodeWithState {
 

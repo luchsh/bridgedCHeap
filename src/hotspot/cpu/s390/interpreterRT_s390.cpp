@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2016 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -25,14 +25,14 @@
 
 #include "precompiled.hpp"
 #include "asm/macroAssembler.inline.hpp"
+#include "interpreter/interp_masm.hpp"
 #include "interpreter/interpreter.hpp"
 #include "interpreter/interpreterRuntime.hpp"
 #include "memory/allocation.inline.hpp"
-#include "memory/universe.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/icache.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/signature.hpp"
 
 // Access macros for Java and C arguments.
@@ -64,6 +64,11 @@ static int sp_c_fp_arg_offset(int arg_nr, int fp_arg_nr) {
 }
 
 // Implementation of SignatureHandlerGenerator
+InterpreterRuntime::SignatureHandlerGenerator::SignatureHandlerGenerator(
+    const methodHandle& method, CodeBuffer* buffer) : NativeSignatureIterator(method) {
+  _masm = new MacroAssembler(buffer);
+  _fp_arg_nr = 0;
+}
 
 void InterpreterRuntime::SignatureHandlerGenerator::pass_int() {
   int int_arg_nr = jni_offset() - _fp_arg_nr;
@@ -145,15 +150,15 @@ void InterpreterRuntime::SignatureHandlerGenerator::generate(uint64_t fingerprin
 
 void SignatureHandlerLibrary::pd_set_handler(address handler) {}
 
-IRT_ENTRY(address, InterpreterRuntime::get_signature(JavaThread* thread, Method* method))
+JRT_ENTRY(address, InterpreterRuntime::get_signature(JavaThread* thread, Method* method))
   methodHandle m(thread, method);
   assert(m->is_native(), "sanity check");
   Symbol *s = m->signature();
   return (address) s->base();
-IRT_END
+JRT_END
 
-IRT_ENTRY(address, InterpreterRuntime::get_result_handler(JavaThread* thread, Method* method))
+JRT_ENTRY(address, InterpreterRuntime::get_result_handler(JavaThread* thread, Method* method))
   methodHandle m(thread, method);
   assert(m->is_native(), "sanity check");
   return AbstractInterpreter::result_handler(m->result_type());
-IRT_END
+JRT_END

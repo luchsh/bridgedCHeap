@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,7 +34,7 @@
  *          java.management
  *          jdk.jartool/sun.tools.jar
  * @compile test-classes/Hello.java
- * @run main CommandLineFlagComboNegative
+ * @run driver CommandLineFlagComboNegative
  */
 
 import java.util.ArrayList;
@@ -65,8 +65,10 @@ public class CommandLineFlagComboNegative {
         if (Platform.is64bit()) {
             testTable.add( new TestVector("-XX:ObjectAlignmentInBytes=8", "-XX:ObjectAlignmentInBytes=16",
                 "An error has occurred while processing the shared archive file", 1) );
-            testTable.add( new TestVector("-XX:ObjectAlignmentInBytes=64", "-XX:ObjectAlignmentInBytes=32",
-                "An error has occurred while processing the shared archive file", 1) );
+            if (!TestCommon.isDynamicArchive()) {
+                testTable.add( new TestVector("-XX:ObjectAlignmentInBytes=64", "-XX:ObjectAlignmentInBytes=32",
+                    "An error has occurred while processing the shared archive file", 1) );
+            }
             testTable.add( new TestVector("-XX:+UseCompressedOops", "-XX:-UseCompressedOops",
                 "Class data sharing is inconsistent with other specified options", 1) );
             testTable.add( new TestVector("-XX:+UseCompressedClassPointers", "-XX:-UseCompressedClassPointers",

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,13 +23,14 @@
 
 /**
  * @test CdsSameObjectAlignment
- * @requires vm.cds
  * @summary Testing CDS (class data sharing) using varying object alignment.
  *          Using same object alignment for each dump/load pair
  * @requires vm.cds
+ * @requires vm.bits == 64
  * @library /test/lib
  * @modules java.base/jdk.internal.misc
  *          java.management
+ * @run driver CdsSameObjectAlignment
  */
 
 import jdk.test.lib.Platform;
@@ -38,18 +39,10 @@ import jdk.test.lib.process.OutputAnalyzer;
 
 public class CdsSameObjectAlignment {
     public static void main(String[] args) throws Exception {
-        String nativeWordSize = System.getProperty("sun.arch.data.model");
-        if (!Platform.is64bit()) {
-            System.out.println("ObjectAlignmentInBytes for CDS is only " +
-                "supported on 64bit platforms; this plaform is " +
-                nativeWordSize);
-            System.out.println("Skipping the test");
-        } else {
-            dumpAndLoadSharedArchive(8);
-            dumpAndLoadSharedArchive(16);
-            dumpAndLoadSharedArchive(32);
-            dumpAndLoadSharedArchive(64);
-        }
+        dumpAndLoadSharedArchive(8);
+        dumpAndLoadSharedArchive(16);
+        dumpAndLoadSharedArchive(32);
+        dumpAndLoadSharedArchive(64);
     }
 
     private static void

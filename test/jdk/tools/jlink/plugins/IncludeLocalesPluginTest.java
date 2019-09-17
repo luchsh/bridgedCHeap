@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,6 +41,7 @@ import tests.Result;
 /*
  * @test
  * @bug 8152143 8152704 8155649 8165804 8185841 8176841 8190918
+ *      8179071 8202537 8221432
  * @summary IncludeLocalesPlugin tests
  * @author Naoto Sato
  * @requires (vm.compMode != "Xcomp" & os.maxMemory >= 2g)
@@ -157,7 +158,7 @@ public class IncludeLocalesPluginTest {
                 "en_PW", "en_RW", "en_SB", "en_SC", "en_SD", "en_SE", "en_SG", "en_SH",
                 "en_SI", "en_SL", "en_SS", "en_SX", "en_SZ", "en_TC", "en_TK", "en_TO",
                 "en_TT", "en_TV", "en_TZ", "en_UG", "en_VC", "en_VG", "en_VU", "en_WS",
-                "en_ZA", "en_ZM", "en_ZW", "es", "es_419", "es_AR", "es_BO", "es_BR",
+                "en_ZA", "en_ZM", "en_ZW", "es", "es_419", "es_AR", "es_BO", "es_BR", "es_BZ",
                 "es_CL", "es_CO", "es_CR", "es_CU", "es_DO", "es_EC", "es_GT", "es_HN",
                 "es_MX", "es_NI", "es_PA", "es_PE", "es_PR", "es_PY", "es_SV", "es_US",
                 "es_UY", "es_VE"),
@@ -183,7 +184,7 @@ public class IncludeLocalesPluginTest {
                 "/jdk.localedata/sun/text/resources/cldr/ext/FormatData_th.class",
                 "/jdk.localedata/sun/text/resources/cldr/ext/FormatData_zh.class"),
             List.of(
-                "(root)", "en", "en_001", "en_150", "en_AG", "en_AI", "en_AS", "en_AT",
+                "(root)", "en", "en_001", "en_150", "en_AE", "en_AG", "en_AI", "en_AS", "en_AT",
                 "en_AU", "en_BB", "en_BE", "en_BI", "en_BM", "en_BS", "en_BW", "en_BZ",
                 "en_CA", "en_CC", "en_CH", "en_CK", "en_CM", "en_CX", "en_CY", "en_DE",
                 "en_DG", "en_DK", "en_DM", "en_ER", "en_FI", "en_FJ", "en_FK", "en_FM",
@@ -254,9 +255,9 @@ public class IncludeLocalesPluginTest {
                 "/jdk.localedata/sun/text/resources/cldr/ext/FormatData_zh.class"),
             List.of(
                 "(root)", "as_IN", "as", "bn_IN", "bn", "bo_IN", "bo", "brx_IN", "brx",
-                "en", "en_001", "en_IN", "en_US", "en_US_POSIX", "gu_IN", "gu", "hi_IN",
-                "hi", "kn_IN", "kn", "kok_IN", "kok", "ks_IN", "ks", "ml_IN", "ml",
-                "mr_IN", "mr", "ne_IN", "ne", "or_IN", "or", "pa_IN", "pa", "pa_IN_#Guru",
+                "ccp", "ccp_IN","en", "en_001", "en_IN", "en_US", "en_US_POSIX", "gu_IN",
+                "gu", "hi_IN", "hi", "kn_IN", "kn", "kok_IN", "kok", "ks_IN", "ks", "ml_IN",
+                "ml", "mr_IN", "mr", "ne_IN", "ne", "or_IN", "or", "pa", "pa_IN_#Guru",
                 "pa__#Guru", "ta_IN", "ta", "te_IN", "te", "ur_IN", "ur"),
             "",
         },
@@ -405,7 +406,7 @@ public class IncludeLocalesPluginTest {
                 "/jdk.localedata/sun/text/resources/cldr/ext/FormatData_ja.class",
                 "/jdk.localedata/sun/text/resources/ext/FormatData_th.class"),
             List.of(
-                "(root)", "en", "en_001", "en_150", "en_AG", "en_AI", "en_AS", "en_AT",
+                "(root)", "en", "en_001", "en_150", "en_AE", "en_AG", "en_AI", "en_AS", "en_AT",
                 "en_AU", "en_BB", "en_BE", "en_BI", "en_BM", "en_BS", "en_BW", "en_BZ",
                 "en_CA", "en_CC", "en_CH", "en_CK", "en_CM", "en_CX", "en_CY", "en_DE",
                 "en_DG", "en_DK", "en_DM", "en_ER", "en_FI", "en_FJ", "en_FK", "en_FM",

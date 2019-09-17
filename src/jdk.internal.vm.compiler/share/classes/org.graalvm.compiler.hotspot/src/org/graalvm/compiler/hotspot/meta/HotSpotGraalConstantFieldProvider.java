@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,8 +20,12 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.meta;
 
+import static jdk.vm.ci.services.Services.IS_BUILDING_NATIVE_IMAGE;
+import static jdk.vm.ci.services.Services.IS_IN_NATIVE_IMAGE;
 import static org.graalvm.compiler.core.common.GraalOptions.ImmutableCode;
 
 import java.util.ArrayList;
@@ -61,7 +65,7 @@ public class HotSpotGraalConstantFieldProvider extends HotSpotConstantFieldProvi
     private volatile List<ResolvedJavaField> nonEmbeddableFields;
 
     protected boolean isEmbeddableField(ResolvedJavaField field) {
-        if (nonEmbeddableFields == null) {
+        if (!IS_IN_NATIVE_IMAGE && (IS_BUILDING_NATIVE_IMAGE || nonEmbeddableFields == null)) {
             synchronized (this) {
                 if (nonEmbeddableFields == null) {
                     List<ResolvedJavaField> fields = new ArrayList<>();

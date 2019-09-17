@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
- Copyright (c) 2002, 2016, Oracle and/or its affiliates. All rights reserved.
+ Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
  DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 
  This code is free software; you can redistribute it and/or modify it
@@ -20,7 +20,7 @@
  Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
  or visit www.oracle.com if you need additional information or have any
  questions.
-  
+
 -->
 
 <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
@@ -47,7 +47,7 @@
     /* Constants */
 </xsl:text>
     <xsl:apply-templates select="//constants"/>
-    
+
     <xsl:text>
 
     /* Errors */
@@ -91,7 +91,7 @@ typedef enum {
     <xsl:apply-templates select="functionsection"/>
 
     <xsl:call-template name="outro"/>
-      
+
   </xsl:template>
 
   <xsl:template name="intro">
@@ -114,12 +114,13 @@ enum {
     JVMTI_VERSION_1_1 = 0x30010100,
     JVMTI_VERSION_1_2 = 0x30010200,
     JVMTI_VERSION_9   = 0x30090000,
+    JVMTI_VERSION_11  = 0x300B0000,
 
     JVMTI_VERSION = 0x30000000 + (</xsl:text>
-  <xsl:value-of select="//specification/@majorversion"/>
+  <xsl:value-of select="$majorversion"/>
   <xsl:text> * 0x10000) + (</xsl:text>
-  <xsl:value-of select="//specification/@minorversion"/>
-  <xsl:text> * 0x100)</xsl:text>
+  <!-- Now minorversion is always 0 -->
+  <xsl:text> 0 * 0x100)</xsl:text>
   <xsl:variable name="micro">
     <xsl:call-template name="microversion"/>
   </xsl:variable>
@@ -298,7 +299,7 @@ struct _jvmtiEnv {
     </xsl:when>
     <xsl:otherwise>
       <xsl:text> RESERVED */
-  void *reserved</xsl:text>        
+  void *reserved</xsl:text>
       <xsl:value-of select="$index"/>
     </xsl:otherwise>
   </xsl:choose>

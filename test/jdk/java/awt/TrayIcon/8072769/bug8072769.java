@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,14 +23,16 @@
 
 /* @test
    @bug 8072769
+   @key headful
+   @requires (os.family == "windows")
    @summary System tray icon title freezes java
    @author Semyon Sadetsky
-   @library ../../../../lib/testlibrary
-   @build jdk.testlibrary.OSInfo
+   @library /test/lib
+   @build jdk.test.lib.Platform
    @run main bug8072769
   */
 
-import jdk.testlibrary.OSInfo;
+import jdk.test.lib.Platform;
 
 import javax.swing.*;
 import java.awt.*;
@@ -39,7 +41,7 @@ import java.util.Arrays;
 public class bug8072769 {
 
     public static void main(String[] args) throws Exception {
-        if (OSInfo.getOSType() == OSInfo.OSType.WINDOWS) {
+        if (Platform.isWindows()) {
             if (SystemTray.isSupported()) {
                 test();
             } else {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,12 +24,16 @@
 /*
  * @test
  * @bug 4511783
+ * @library /test/lib
  * @summary Test that setTrafficClass/getTraffiClass don't
  *          throw an exception
+ * @run main TrafficClass
+ * @run main/othervm -Djava.net.preferIPv4Stack=true TrafficClass
  */
 import java.net.*;
 import java.nio.*;
 import java.nio.channels.*;
+import jdk.test.lib.net.IPSupport;
 
 public class TrafficClass {
 
@@ -59,6 +63,7 @@ public class TrafficClass {
     }
 
     public static void main(String args[]) throws Exception {
+        IPSupport.throwSkippedExceptionIfNonOperational();
 
         DatagramSocket ds = new DatagramSocket();
         testDatagramSocket(ds);

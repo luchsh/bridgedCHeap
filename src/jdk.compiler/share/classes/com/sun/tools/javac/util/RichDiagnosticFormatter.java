@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -506,11 +506,11 @@ public class RichDiagnosticFormatter extends
         public Void visitCapturedType(CapturedType t, Void ignored) {
             if (indexOf(t, WhereClauseKind.CAPTURED) == -1) {
                 String suffix = t.lower == syms.botType ? ".1" : "";
-                JCDiagnostic d = diags.fragment("where.captured"+ suffix, t, t.bound, t.lower, t.wildcard);
+                JCDiagnostic d = diags.fragment("where.captured"+ suffix, t, t.getUpperBound(), t.lower, t.wildcard);
                 whereClauses.get(WhereClauseKind.CAPTURED).put(t, d);
                 visit(t.wildcard);
                 visit(t.lower);
-                visit(t.bound);
+                visit(t.getUpperBound());
             }
             return null;
         }
@@ -539,7 +539,13 @@ public class RichDiagnosticFormatter extends
             }
             nameSimplifier.addUsage(t.tsym);
             visit(t.getTypeArguments());
-            if (t.getEnclosingType() != Type.noType)
+            Type enclosingType;
+            try {
+                enclosingType = t.getEnclosingType();
+            } catch (CompletionFailure cf) {
+                return null;
+            }
+            if (enclosingType != Type.noType)
                 visit(t.getEnclosingType());
             return null;
         }
@@ -549,14 +555,14 @@ public class RichDiagnosticFormatter extends
             t = (TypeVar)t.stripMetadataIfNeeded();
             if (indexOf(t, WhereClauseKind.TYPEVAR) == -1) {
                 //access the bound type and skip error types
-                Type bound = t.bound;
+                Type bound = t.getUpperBound();
                 while ((bound instanceof ErrorType))
                     bound = ((ErrorType)bound).getOriginalType();
                 //retrieve the bound list - if the type variable
                 //has not been attributed the bound is not set
                 List<Type> bounds = (bound != null) &&
                         (bound.hasTag(CLASS) || bound.hasTag(TYPEVAR)) ?
-                    types.getBounds(t) :
+                    getBounds(bound) :
                     List.nil();
 
                 nameSimplifier.addUsage(t.tsym);
@@ -584,6 +590,10 @@ public class RichDiagnosticFormatter extends
             }
             return null;
         }
+        //where:
+            private List<Type> getBounds(Type bound) {
+                return bound.isCompound() ? types.directSupertypes(bound) : List.of(bound);
+            }
     };
     // </editor-fold>
 

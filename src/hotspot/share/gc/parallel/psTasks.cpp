@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,15 +24,18 @@
 
 #include "precompiled.hpp"
 #include "aot/aotLoader.hpp"
+#include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "code/codeCache.hpp"
-#include "gc/parallel/cardTableExtension.hpp"
 #include "gc/parallel/gcTaskManager.hpp"
-#include "gc/parallel/psMarkSweep.hpp"
+#include "gc/parallel/parallelScavengeHeap.inline.hpp"
+#include "gc/parallel/psCardTable.hpp"
+#include "gc/parallel/psClosure.inline.hpp"
 #include "gc/parallel/psPromotionManager.hpp"
 #include "gc/parallel/psPromotionManager.inline.hpp"
 #include "gc/parallel/psScavenge.inline.hpp"
 #include "gc/parallel/psTasks.hpp"
+#include "gc/shared/scavengableNMethods.hpp"
 #include "gc/shared/taskqueue.inline.hpp"
 #include "memory/iterator.hpp"
 #include "memory/resourceArea.hpp"
@@ -41,6 +44,9 @@
 #include "runtime/thread.hpp"
 #include "runtime/vmThread.hpp"
 #include "services/management.hpp"
+#if INCLUDE_JVMCI
+#include "jvmci/jvmci.hpp"
+#endif
 
 //
 // ScavengeRootsTask
@@ -92,14 +98,19 @@ void ScavengeRootsTask::do_it(GCTaskManager* manager, uint which) {
       JvmtiExport::oops_do(&roots_closure);
       break;
 
-
     case code_cache:
       {
-        MarkingCodeBlobClosure each_scavengable_code_blob(&roots_to_old_closure, CodeBlobToOopClosure::FixRelocations);
-        CodeCache::scavenge_root_nmethods_do(&each_scavengable_code_blob);
+        MarkingCodeBlobClosure code_closure(&roots_to_old_closure, CodeBlobToOopClosure::FixRelocations);
+        ScavengableNMethods::nmethods_do(&code_closure);
         AOTLoader::oops_do(&roots_closure);
       }
       break;
+
+#if INCLUDE_JVMCI
+    case jvmci:
+      JVMCI::oops_do(&roots_closure);
+      break;
+#endif
 
     default:
       fatal("Unknown root type");
@@ -120,11 +131,7 @@ void ThreadRootsTask::do_it(GCTaskManager* manager, uint which) {
   PSScavengeRootsClosure roots_closure(pm);
   MarkingCodeBlobClosure roots_in_blobs(&roots_closure, CodeBlobToOopClosure::FixRelocations);
 
-  if (_java_thread != NULL)
-    _java_thread->oops_do(&roots_closure, &roots_in_blobs);
-
-  if (_vm_thread != NULL)
-    _vm_thread->oops_do(&roots_closure, &roots_in_blobs);
+  _thread->oops_do(&roots_closure, &roots_in_blobs);
 
   // Do the real work
   pm->drain_stacks(false);
@@ -146,10 +153,9 @@ void StealTask::do_it(GCTaskManager* manager, uint which) {
   guarantee(pm->stacks_empty(),
             "stacks should be empty at this point");
 
-  int random_seed = 17;
   while(true) {
     StarTask p;
-    if (PSPromotionManager::steal_depth(which, &random_seed, p)) {
+    if (PSPromotionManager::steal_depth(which, p)) {
       TASKQUEUE_STATS_ONLY(pm->record_steal(p));
       pm->process_popped_location_depth(p);
       pm->drain_stacks_depth(true);
@@ -176,8 +182,7 @@ void OldToYoungRootsTask::do_it(GCTaskManager* manager, uint which) {
 
   {
     PSPromotionManager* pm = PSPromotionManager::gc_thread_promotion_manager(which);
-    CardTableExtension* card_table =
-      barrier_set_cast<CardTableExtension>(ParallelScavengeHeap::heap()->barrier_set());
+    PSCardTable* card_table = ParallelScavengeHeap::heap()->card_table();
 
     card_table->scavenge_contents_parallel(_old_gen->start_array(),
                                            _old_gen->object_space(),

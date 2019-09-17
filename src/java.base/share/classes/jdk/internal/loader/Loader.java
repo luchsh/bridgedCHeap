@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -60,9 +60,8 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
-import jdk.internal.misc.SharedSecrets;
+import jdk.internal.access.SharedSecrets;
 import jdk.internal.module.Resources;
-
 
 /**
  * A class loader that loads classes and resources from a collection of
@@ -91,7 +90,7 @@ public final class Loader extends SecureClassLoader {
         ClassLoader.registerAsParallelCapable();
     }
 
-    // the loader pool is in a pool, can be null
+    // the pool this loader is a member of; can be null
     private final LoaderPool pool;
 
     // parent ClassLoader, can be null
@@ -111,7 +110,7 @@ public final class Loader extends SecureClassLoader {
     private final Map<ModuleReference, ModuleReader> moduleToReader
         = new ConcurrentHashMap<>();
 
-    // ACC used when loading classes and resources */
+    // ACC used when loading classes and resources
     private final AccessControlContext acc;
 
     /**
@@ -199,7 +198,6 @@ public final class Loader extends SecureClassLoader {
         this.acc = AccessController.getContext();
     }
 
-
     /**
      * Completes initialization of this Loader. This method populates
      * remotePackageToLoader with the packages of the remote modules, where
@@ -254,25 +252,25 @@ public final class Loader extends SecureClassLoader {
                 }
 
                 // find the packages that are exported to the target module
-                String target = resolvedModule.name();
                 ModuleDescriptor descriptor = other.reference().descriptor();
-                for (ModuleDescriptor.Exports e : descriptor.exports()) {
-                    boolean delegate;
-                    if (e.isQualified()) {
-                        // qualified export in same configuration
-                        delegate = (other.configuration() == cf)
-                                && e.targets().contains(target);
-                    } else {
-                        // unqualified
-                        delegate = true;
-                    }
+                if (descriptor.isAutomatic()) {
+                    ClassLoader l = loader;
+                    descriptor.packages().forEach(pn -> remotePackage(pn, l));
+                } else {
+                    String target = resolvedModule.name();
+                    for (ModuleDescriptor.Exports e : descriptor.exports()) {
+                        boolean delegate;
+                        if (e.isQualified()) {
+                            // qualified export in same configuration
+                            delegate = (other.configuration() == cf)
+                                    && e.targets().contains(target);
+                        } else {
+                            // unqualified
+                            delegate = true;
+                        }
 
-                    if (delegate) {
-                        String pn = e.source();
-                        ClassLoader l = remotePackageToLoader.putIfAbsent(pn, loader);
-                        if (l != null && l != loader) {
-                            throw new IllegalArgumentException("Package "
-                                + pn + " cannot be imported from multiple loaders");
+                        if (delegate) {
+                            remotePackage(e.source(), loader);
                         }
                     }
                 }
@@ -282,6 +280,22 @@ public final class Loader extends SecureClassLoader {
 
         return this;
     }
+
+    /**
+     * Adds to remotePackageToLoader so that an attempt to load a class in
+     * the package delegates to the given class loader.
+     *
+     * @throws IllegalStateException
+     *         if the package is already mapped to a different class loader
+     */
+    private void remotePackage(String pn, ClassLoader loader) {
+        ClassLoader l = remotePackageToLoader.putIfAbsent(pn, loader);
+        if (l != null && l != loader) {
+            throw new IllegalStateException("Package "
+                + pn + " cannot be imported from multiple loaders");
+        }
+    }
+
 
     /**
      * Find the layer corresponding to the given configuration in the tree
@@ -488,7 +502,7 @@ public final class Loader extends SecureClassLoader {
     }
 
     /**
-     * Finds the class with the specified binary name in a given module.
+     * Finds the class with the specified binary name in the given module.
      * This method returns {@code null} if the class cannot be found.
      */
     @Override

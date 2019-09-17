@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,8 +31,8 @@
  * @modules java.base/jdk.internal.misc
  *          java.management
  *          jdk.jartool/sun.tools.jar
- * @compile ClassListFormatBase.java test-classes/Hello.java test-classes/InProhibitedPkg.java
- * @run main ProhibitedPackageNamesTest
+ * @compile ClassListFormatBase.java ../test-classes/Hello.java test-classes/InProhibitedPkg.java
+ * @run driver ProhibitedPackageNamesTest
  */
 
 public class ProhibitedPackageNamesTest extends ClassListFormatBase {

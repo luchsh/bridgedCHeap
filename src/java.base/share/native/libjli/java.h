@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -86,7 +86,7 @@ typedef struct {
     GetCreatedJavaVMs_t GetCreatedJavaVMs;
 } InvocationFunctions;
 
-int
+JNIEXPORT int JNICALL
 JLI_Launch(int argc, char ** argv,              /* main argc, argc */
         int jargc, const char** jargv,          /* java args */
         int appclassc, const char** appclassv,  /* app classpath */
@@ -133,13 +133,16 @@ void CreateExecutionEnvironment(int *argc, char ***argv,
                                 char *jvmcfg,  jint so_jvmcfg);
 
 /* Reports an error message to stderr or a window as appropriate. */
-void JLI_ReportErrorMessage(const char * message, ...);
+JNIEXPORT void JNICALL
+JLI_ReportErrorMessage(const char * message, ...);
 
 /* Reports a system error message to stderr or a window */
-void JLI_ReportErrorMessageSys(const char * message, ...);
+JNIEXPORT void JNICALL
+JLI_ReportErrorMessageSys(const char * message, ...);
 
 /* Reports an error message only to stderr. */
-void JLI_ReportMessage(const char * message, ...);
+JNIEXPORT void JNICALL
+JLI_ReportMessage(const char * message, ...);
 
 /* Reports a message only to stdout. */
 void JLI_ShowMessage(const char * message, ...);
@@ -148,14 +151,14 @@ void JLI_ShowMessage(const char * message, ...);
  * Reports an exception which terminates the vm to stderr or a window
  * as appropriate.
  */
-void JLI_ReportExceptionDescription(JNIEnv * env);
+JNIEXPORT void JNICALL
+JLI_ReportExceptionDescription(JNIEnv * env);
 void PrintMachineDependentOptions();
 
 /*
- * Block current thread and continue execution in new thread
+ * Block current thread and continue execution in new thread.
  */
-int ContinueInNewThread0(int (JNICALL *continuation)(void *),
-                        jlong stack_size, void * args);
+int CallJavaMainInNewThread(jlong stack_size, void* args);
 
 /* sun.java.launcher.* platform properties. */
 void SetJavaLauncherPlatformProps(void);
@@ -220,17 +223,21 @@ jobjectArray CreateApplicationArgs(JNIEnv *env, char **strv, int argc);
 jobjectArray NewPlatformStringArray(JNIEnv *env, char **strv, int strc);
 jclass GetLauncherHelperClass(JNIEnv *env);
 
-int JNICALL JavaMain(void * args); /* entry point                  */
+/*
+ * Entry point.
+ */
+int JavaMain(void* args);
 
 enum LaunchMode {               // cf. sun.launcher.LauncherHelper
     LM_UNKNOWN = 0,
     LM_CLASS,
     LM_JAR,
-    LM_MODULE
+    LM_MODULE,
+    LM_SOURCE
 };
 
 static const char *launchModeNames[]
-    = { "Unknown", "Main class", "JAR file", "Module" };
+    = { "Unknown", "Main class", "JAR file", "Module", "Source" };
 
 typedef struct {
     int    argc;

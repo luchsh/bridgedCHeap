@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,11 +20,17 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.graphio;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
+import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -32,11 +38,12 @@ import java.util.Map;
  *
  * @param <G> the type of graph this instance handles
  * @param <M> the type of methods this instance handles
+ * @since 1.0 a {@link WritableByteChannel} is implemented
  */
-public final class GraphOutput<G, M> implements Closeable {
-    private final GraphProtocol<G, ?, ?, ?, ?, M, ?, ?, ?> printer;
+public final class GraphOutput<G, M> implements Closeable, WritableByteChannel {
+    private final GraphProtocol<G, ?, ?, ?, ?, M, ?, ?, ?, ?> printer;
 
-    private GraphOutput(GraphProtocol<G, ?, ?, ?, ?, M, ?, ?, ?> p) {
+    private GraphOutput(GraphProtocol<G, ?, ?, ?, ?, M, ?, ?, ?, ?> p) {
         this.printer = p;
     }
 
@@ -102,6 +109,30 @@ public final class GraphOutput<G, M> implements Closeable {
     }
 
     /**
+     * Checks if the {@link GraphOutput} is open.
+     *
+     * @return true if the {@link GraphOutput} is open.
+     * @since 1.0
+     */
+    @Override
+    public boolean isOpen() {
+        return printer.isOpen();
+    }
+
+    /**
+     * Writes raw bytes into {@link GraphOutput}.
+     *
+     * @param src the bytes to write
+     * @return the number of bytes written, possibly zero
+     * @throws IOException in case of IO error
+     * @since 1.0
+     */
+    @Override
+    public int write(ByteBuffer src) throws IOException {
+        return printer.write(src);
+    }
+
+    /**
      * Builder to configure and create an instance of {@link GraphOutput}.
      *
      * @param <G> the type of the (root element of) graph
@@ -110,11 +141,13 @@ public final class GraphOutput<G, M> implements Closeable {
      */
     public static final class Builder<G, N, M> {
         private final GraphStructure<G, N, ?, ?> structure;
-        private GraphElements<M, ?, ?, ?> elements = null;
+        private ElementsAndLocations<M, ?, ?> elementsAndLocations;
+
         private GraphTypes types = DefaultGraphTypes.DEFAULT;
         private GraphBlocks<G, ?, N> blocks = DefaultGraphBlocks.empty();
         private int major = 4;
         private int minor = 0;
+        private boolean embeddedGraphOutput;
 
         Builder(GraphStructure<G, N, ?, ?> structure) {
             this.structure = structure;
@@ -133,6 +166,22 @@ public final class GraphOutput<G, M> implements Closeable {
         public Builder<G, N, M> protocolVersion(int majorVersion, int minorVersion) {
             this.major = majorVersion;
             this.minor = minorVersion;
+            return this;
+        }
+
+        /**
+         * Sets {@link GraphOutput} as embedded. The embedded {@link GraphOutput} shares
+         * {@link WritableByteChannel channel} with another already open non parent
+         * {@link GraphOutput}. The embedded {@link GraphOutput} flushes data after each
+         * {@link GraphOutput#print print}, {@link GraphOutput#beginGroup beginGroup} and
+         * {@link GraphOutput#endGroup endGroup} call.
+         *
+         * @param embedded if {@code true} the builder creates an embedded {@link GraphOutput}
+         * @return this builder
+         * @since 1.0
+         */
+        public Builder<G, N, M> embedded(boolean embedded) {
+            this.embeddedGraphOutput = embedded;
             return this;
         }
 
@@ -164,9 +213,24 @@ public final class GraphOutput<G, M> implements Closeable {
          * @param graphElements the elements implementation
          * @return this builder
          */
+        public <E, P> Builder<G, N, E> elements(GraphElements<E, ?, ?, P> graphElements) {
+            StackLocations<E, P> loc = new StackLocations<>(graphElements);
+            return elementsAndLocations(graphElements, loc);
+        }
+
+        /**
+         * Associates implementation of graph elements and an advanced way to interpret their
+         * locations.
+         *
+         * @param graphElements the elements implementation
+         * @param graphLocations the locations for the elements
+         * @return this builder
+         * @since 0.33 GraalVM 0.33
+         */
         @SuppressWarnings({"unchecked", "rawtypes"})
-        public <E> Builder<G, N, E> elements(GraphElements<E, ?, ?, ?> graphElements) {
-            this.elements = (GraphElements) graphElements;
+        public <E, P> Builder<G, N, E> elementsAndLocations(GraphElements<E, ?, ?, P> graphElements, GraphLocations<E, P, ?> graphLocations) {
+            ElementsAndLocations both = new ElementsAndLocations<>(graphElements, graphLocations);
+            this.elementsAndLocations = both;
             return (Builder<G, N, E>) this;
         }
 
@@ -179,8 +243,7 @@ public final class GraphOutput<G, M> implements Closeable {
          * @throws IOException if something goes wrong when writing to the channel
          */
         public GraphOutput<G, M> build(WritableByteChannel channel) throws IOException {
-            ProtocolImpl<G, N, ?, ?, ?, M, ?, ?, ?> p = new ProtocolImpl<>(major, minor, structure, types, blocks, elements, channel);
-            return new GraphOutput<>(p);
+            return buildImpl(elementsAndLocations, channel);
         }
 
         /**
@@ -191,17 +254,94 @@ public final class GraphOutput<G, M> implements Closeable {
          * <p>
          * Both GraphOutput (the {@code parent} and the returned one) has to be used in
          * synchronization - e.g. only one
-         * {@link #beginGroup(java.lang.Object, java.lang.String, java.lang.String, java.lang.Object, int, java.util.Map)
-         * begin}, {@link #endGroup() end} of group or
-         * {@link #print(java.lang.Object, java.util.Map, int, java.lang.String, java.lang.Object...)
+         * {@link GraphOutput#beginGroup(java.lang.Object, java.lang.String, java.lang.String, java.lang.Object, int, java.util.Map)
+         * begin}, {@link GraphOutput#endGroup() end} of group or
+         * {@link GraphOutput#print(java.lang.Object, java.util.Map, int, java.lang.String, java.lang.Object...)
          * printing} can be on at a given moment.
          *
          * @param parent the output to inherit {@code channel} and protocol version from
          * @return new output sharing {@code channel} and other internals with {@code parent}
          */
         public GraphOutput<G, M> build(GraphOutput<?, ?> parent) {
-            ProtocolImpl<G, N, ?, ?, ?, M, ?, ?, ?> p = new ProtocolImpl<>(parent.printer, structure, types, blocks, elements);
+            return buildImpl(elementsAndLocations, parent);
+        }
+
+        private <L, P> GraphOutput<G, M> buildImpl(ElementsAndLocations<M, L, P> e, WritableByteChannel channel) throws IOException {
+            // @formatter:off
+            ProtocolImpl<G, N, ?, ?, ?, M, ?, ?, ?, ?> p = new ProtocolImpl<>(
+                major, minor, embeddedGraphOutput, structure, types, blocks,
+                e == null ? null : e.elements,
+                e == null ? null : e.locations, channel
+            );
+            // @formatter:on
             return new GraphOutput<>(p);
+        }
+
+        private <L, P> GraphOutput<G, M> buildImpl(ElementsAndLocations<M, L, P> e, GraphOutput<?, ?> parent) {
+            // @formatter:off
+            ProtocolImpl<G, N, ?, ?, ?, M, ?, ?, ?, ?> p = new ProtocolImpl<>(
+                parent.printer, structure, types, blocks,
+                e == null ? null : e.elements,
+                e == null ? null : e.locations
+            );
+            // @formatter:on
+            return new GraphOutput<>(p);
+        }
+    }
+
+    private static final class ElementsAndLocations<M, P, L> {
+        final GraphElements<M, ?, ?, P> elements;
+        final GraphLocations<M, P, L> locations;
+
+        ElementsAndLocations(GraphElements<M, ?, ?, P> elements, GraphLocations<M, P, L> locations) {
+            elements.getClass();
+            locations.getClass();
+            this.elements = elements;
+            this.locations = locations;
+        }
+    }
+
+    private static final class StackLocations<M, P> implements GraphLocations<M, P, StackTraceElement> {
+        private final GraphElements<M, ?, ?, P> graphElements;
+
+        StackLocations(GraphElements<M, ?, ?, P> graphElements) {
+            this.graphElements = graphElements;
+        }
+
+        @Override
+        public Iterable<StackTraceElement> methodLocation(M method, int bci, P pos) {
+            StackTraceElement ste = this.graphElements.methodStackTraceElement(method, bci, pos);
+            return Collections.singleton(ste);
+        }
+
+        @Override
+        public URI locationURI(StackTraceElement location) {
+            String path = location.getFileName();
+            try {
+                return path == null ? null : new URI(null, null, path, null);
+            } catch (URISyntaxException ex) {
+                throw new IllegalArgumentException(ex);
+            }
+        }
+
+        @Override
+        public int locationLineNumber(StackTraceElement location) {
+            return location.getLineNumber();
+        }
+
+        @Override
+        public String locationLanguage(StackTraceElement location) {
+            return "Java";
+        }
+
+        @Override
+        public int locationOffsetStart(StackTraceElement location) {
+            return -1;
+        }
+
+        @Override
+        public int locationOffsetEnd(StackTraceElement location) {
+            return -1;
         }
     }
 }

@@ -32,13 +32,6 @@
 extern "C" {
 #endif
 
-#define kPosInfinity16          (32767)
-#define kNegInfinity16          (-32768)
-
-#define kPosInfinity32          (0x7fffffff)
-#define kNegInfinity32          (0x80000000)
-
-
 #ifdef _LP64
 typedef unsigned int            UInt32;
 typedef int                     Int32;
@@ -64,27 +57,6 @@ typedef UInt32                  Bool32;
         #define true            1
 #endif
 #endif
-
-#define kPosInfinity32          (0x7fffffff)
-#define kNegInfinity32          (0x80000000)
-
-#define F26Dot6ToFixed(n)  ((n) << 10)
-#define F26Dot6ToScalar(n) (((t2kScalar)(n)) / (t2kScalar)64)
-
-  /* t2kFixed is the same as F16Dot16 format although T2K also uses 26.6 */
-typedef Int32 t2kFixed;
-typedef float t2kScalar;
-
-#define t2kIntToFixed(x) ((t2kFixed)(x) << 16)
-#define t2kFixedToInt(x) ((x) >> 16)
-
-#define t2kFixedRound(x) (((x) + 0x8000) >> 16)
-#define t2kFixed1 t2kIntToFixed(1)
-
-#define t2kFloatToFixed(f) (t2kFixed)((f) * (float)(t2kFixed1))
-#define t2kFixedToFloat(x) ((x) / (float)(65536))
-
-#define t2kScalarAverage(a, b) (((a) + (b)) / (t2kScalar)(2))
 
   /* managed: 1 means the glyph has a hardware cached
    * copy, and its freeing is managed by the usual
@@ -116,31 +88,7 @@ typedef struct GlyphInfo {
    */
 #define INVISIBLE_GLYPHS 0xfffe
 
-#define GSUB_TAG 0x47535542 /* 'GSUB' */
-#define GPOS_TAG 0x47504F53 /* 'GPOS' */
-#define GDEF_TAG 0x47444546 /* 'GDEF' */
-#define HEAD_TAG 0x68656164 /* 'head' */
-#define MORT_TAG 0x6D6F7274 /* 'mort' */
-#define MORX_TAG 0x6D6F7278 /* 'morx' */
-#define KERN_TAG 0x6B65726E /* 'kern' */
-
-typedef struct TTLayoutTableCacheEntry {
-  const void* ptr;
-  int   len;
-  int   tag;
-} TTLayoutTableCacheEntry;
-
-#define LAYOUTCACHE_ENTRIES 7
-
-typedef struct TTLayoutTableCache {
-  TTLayoutTableCacheEntry entries[LAYOUTCACHE_ENTRIES];
-  void* kernPairs;
-} TTLayoutTableCache;
-
 #include "sunfontids.h"
-
-JNIEXPORT extern TTLayoutTableCache* newLayoutTableCache();
-JNIEXPORT extern void freeLayoutTableCache(TTLayoutTableCache* ltc);
 
 /* If font is malformed then scaler context created by particular scaler
  * will be replaced by null scaler context.

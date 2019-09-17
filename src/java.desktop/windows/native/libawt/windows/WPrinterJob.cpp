@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -118,10 +118,7 @@ Java_sun_print_PrintServiceLookupProvider_getDefaultPrinterName(JNIEnv *env,
 }
 
 
-JNIEXPORT jobjectArray JNICALL
-Java_sun_print_PrintServiceLookupProvider_getAllPrinterNames(JNIEnv *env,
-                                                          jobject peer)
-{
+static jobjectArray getPrinterNames(JNIEnv *env, DWORD flags) {
     TRY;
 
     DWORD cbNeeded = 0;
@@ -136,10 +133,10 @@ Java_sun_print_PrintServiceLookupProvider_getAllPrinterNames(JNIEnv *env,
     jobjectArray nameArray;
 
     try {
-        ::EnumPrinters(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
+        ::EnumPrinters(flags,
                        NULL, 4, NULL, 0, &cbNeeded, &cReturned);
         pPrinterEnum = new BYTE[cbNeeded];
-        ::EnumPrinters(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS,
+        ::EnumPrinters(flags,
                        NULL, 4, pPrinterEnum, cbNeeded, &cbNeeded,
                        &cReturned);
 
@@ -172,6 +169,20 @@ Java_sun_print_PrintServiceLookupProvider_getAllPrinterNames(JNIEnv *env,
     return nameArray;
 
     CATCH_BAD_ALLOC_RET(NULL);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_sun_print_PrintServiceLookupProvider_getAllPrinterNames(JNIEnv *env,
+                                                             jobject peer)
+{
+    return getPrinterNames(env, PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS);
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_sun_print_PrintServiceLookupProvider_getRemotePrintersNames(JNIEnv *env,
+                                                                 jobject peer)
+{
+    return getPrinterNames(env, PRINTER_ENUM_CONNECTIONS);
 }
 
 
@@ -873,7 +884,13 @@ Java_sun_print_Win32PrintService_getDefaultSettings(JNIEnv *env,
       int numSizes = ::DeviceCapabilities(printerName, printerPort,
                                           DC_PAPERS, NULL, NULL);
       if (numSizes > 0) {
-          LPTSTR papers = (LPTSTR)SAFE_SIZE_ARRAY_ALLOC(safe_Malloc, numSizes, sizeof(WORD));
+          LPTSTR papers;
+          try {
+              papers = (LPTSTR)SAFE_SIZE_ARRAY_ALLOC(safe_Malloc, numSizes, sizeof(WORD));
+          } catch (const std::bad_alloc&) {
+              papers = NULL;
+          }
+
           if (papers != NULL &&
               ::DeviceCapabilities(printerName, printerPort,
                                    DC_PAPERS, papers, NULL) != -1) {
@@ -886,9 +903,10 @@ Java_sun_print_Win32PrintService_getDefaultSettings(JNIEnv *env,
               if (!present) {
                   defIndices[0] = papers[0];
               }
-              if (papers != NULL) {
-                  free((char*)papers);
-              }
+          }
+          // If DeviceCapabilities fails, then also free paper allocation
+          if (papers != NULL) {
+              free((char*)papers);
           }
       }
       RESTORE_CONTROLWORD

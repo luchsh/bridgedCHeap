@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  */
 
 /*
@@ -21,6 +21,7 @@
 
 package com.sun.org.apache.xerces.internal.impl;
 
+import com.sun.org.apache.xerces.internal.impl.io.MalformedByteSequenceException;
 import com.sun.org.apache.xerces.internal.impl.msg.XMLMessageFormatter;
 import com.sun.org.apache.xerces.internal.util.AugmentationsImpl;
 import com.sun.org.apache.xerces.internal.util.XMLAttributesIteratorImpl;
@@ -45,6 +46,7 @@ import com.sun.org.apache.xerces.internal.xni.parser.XMLInputSource;
 import com.sun.xml.internal.stream.XMLBufferListener;
 import com.sun.xml.internal.stream.XMLEntityStorage;
 import com.sun.xml.internal.stream.dtd.DTDGrammarUtil;
+import java.io.CharConversionException;
 import java.io.EOFException;
 import java.io.IOException;
 import javax.xml.XMLConstants;
@@ -71,7 +73,7 @@ import jdk.xml.internal.SecuritySupport;
  * @author Eric Ye, IBM
  * @author Sunitha Reddy, SUN Microsystems
  *
- * @LastModified: Sep 2017
+ * @LastModified: Jan 2019
  */
 public class XMLDocumentFragmentScannerImpl
         extends XMLScanner
@@ -160,6 +162,10 @@ public class XMLDocumentFragmentScannerImpl
     /** Feature identifier: standard uri conformant */
     protected static final String STANDARD_URI_CONFORMANT =
             Constants.XERCES_FEATURE_PREFIX +Constants.STANDARD_URI_CONFORMANT_FEATURE;
+
+    /** Feature id: create entity ref nodes. */
+    protected static final String CREATE_ENTITY_REF_NODES =
+            Constants.XERCES_FEATURE_PREFIX + Constants.CREATE_ENTITY_REF_NODES_FEATURE;
 
     /** Property identifier: Security property manager. */
     private static final String XML_SECURITY_PROPERTY_MANAGER =
@@ -319,6 +325,9 @@ public class XMLDocumentFragmentScannerImpl
     protected String fDeclaredEncoding =  null;
     /** Xerces Feature: Disallow doctype declaration. */
     protected boolean fDisallowDoctype = false;
+
+    /** Create entity reference nodes. */
+    protected boolean fCreateEntityRefNodes = false;
 
     /**
      * CDATA chunk size limit
@@ -593,6 +602,8 @@ public class XMLDocumentFragmentScannerImpl
         fReportCdataEvent = componentManager.getFeature(Constants.STAX_REPORT_CDATA_EVENT, true);
         fSecurityManager = (XMLSecurityManager)componentManager.getProperty(Constants.SECURITY_MANAGER, null);
         fNotifyBuiltInRefs = componentManager.getFeature(NOTIFY_BUILTIN_REFS, false);
+
+        fCreateEntityRefNodes = componentManager.getFeature(CREATE_ENTITY_REF_NODES, fCreateEntityRefNodes);
 
         Object resolver = componentManager.getProperty(ENTITY_RESOLVER, null);
         fExternalSubsetResolver = (resolver instanceof ExternalSubsetResolver) ?
@@ -1632,6 +1643,8 @@ public class XMLDocumentFragmentScannerImpl
                     }
                 } else {
                     //CData partially returned due to the size limit
+                    fInCData = true;
+                    fCDataEnd = false;
                     break;
                 }
                 //by this time we have also read surrogate contents if any...
@@ -1833,14 +1846,20 @@ public class XMLDocumentFragmentScannerImpl
             } else
                 reportFatalError("EntityNotDeclared", new Object[]{name});
         }
-        //we are starting the entity even if the entity was not declared
-        //if that was the case it its taken care in XMLEntityManager.startEntity()
-        //we immediately call the endEntity. Application gets to know if there was
-        //any entity that was not declared.
-        fEntityManager.startEntity(true, name, false);
-        //set the scaner state to content.. parser will automatically revive itself at any point of time.
-        //setScannerState(SCANNER_STATE_CONTENT);
-        //return true ;
+
+        // create EntityReference only
+        if (fCreateEntityRefNodes) {
+            fDocumentHandler.startGeneralEntity(name, null, null, null);
+        } else {
+            //we are starting the entity even if the entity was not declared
+            //if that was the case it its taken care in XMLEntityManager.startEntity()
+            //we immediately call the endEntity. Application gets to know if there was
+            //any entity that was not declared.
+            fEntityManager.startEntity(true, name, false);
+            //set the scaner state to content.. parser will automatically revive itself at any point of time.
+            //setScannerState(SCANNER_STATE_CONTENT);
+            //return true ;
+        }
     } // scanEntityReference()
 
     // utility methods
@@ -2926,7 +2945,11 @@ public class XMLDocumentFragmentScannerImpl
                         fUsebuffer = true;
                         //CDATA section is read up to the chunk size limit
                         scanCDATASection(fContentBuffer , true);
-                        setScannerState(SCANNER_STATE_CONTENT);
+                        if (!fCDataEnd) {
+                            setScannerState(SCANNER_STATE_CDATA);
+                        } else {
+                            setScannerState(SCANNER_STATE_CONTENT);
+                        }
                         //1. if fIsCoalesce is set to true we set the variable fLastSectionWasCData to true
                         //and just call fDispatche.next(). Since we have set the scanner state to
                         //SCANNER_STATE_CONTENT (super state) parser will automatically recover and
@@ -2939,9 +2962,6 @@ public class XMLDocumentFragmentScannerImpl
                             //there might be more data to coalesce.
                             continue;
                         } else if(fReportCdataEvent) {
-                            if (!fCDataEnd) {
-                                setScannerState(SCANNER_STATE_CDATA);
-                            }
                             return XMLEvent.CDATA;
                         } else {
                             return XMLEvent.CHARACTERS;
@@ -3075,6 +3095,20 @@ public class XMLDocumentFragmentScannerImpl
 
                 }//switch
             }
+             // encoding errors
+             catch (MalformedByteSequenceException e) {
+                 fErrorReporter.reportError(e.getDomain(), e.getKey(),
+                    e.getArguments(), XMLErrorReporter.SEVERITY_FATAL_ERROR, e);
+                 return -1;
+             }
+             catch (CharConversionException e) {
+                fErrorReporter.reportError(
+                        XMLMessageFormatter.XML_DOMAIN,
+                        "CharConversionFailure",
+                        null,
+                        XMLErrorReporter.SEVERITY_FATAL_ERROR, e);
+                 return -1;
+             }
             // premature end of file
             catch (EOFException e) {
                 endOfFileHook(e);

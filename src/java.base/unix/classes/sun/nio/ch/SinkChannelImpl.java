@@ -28,30 +28,25 @@ package sun.nio.ch;
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousCloseException;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NotYetConnectedException;
 import java.nio.channels.Pipe;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.spi.SelectorProvider;
+import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
-
 
 class SinkChannelImpl
     extends Pipe.SinkChannel
     implements SelChImpl
 {
-
     // Used to make native read and write calls
     private static final NativeDispatcher nd = new FileDispatcherImpl();
 
     // The file descriptor associated with this channel
     private final FileDescriptor fd;
-
-    // fd value needed for dev/poll. This value will remain valid
-    // even after the value in the file descriptor object has been set to -1
     private final int fdVal;
-
-    // ID of native thread doing write, for signalling
-    private volatile long thread;
 
     // Lock held by current writing thread
     private final ReentrantLock writeLock = new ReentrantLock();
@@ -63,10 +58,13 @@ class SinkChannelImpl
     // -- The following fields are protected by stateLock
 
     // Channel state
-    private static final int ST_UNINITIALIZED = -1;
     private static final int ST_INUSE = 0;
-    private static final int ST_KILLED = 1;
-    private volatile int state = ST_UNINITIALIZED;
+    private static final int ST_CLOSING = 1;
+    private static final int ST_CLOSED = 2;
+    private int state;
+
+    // ID of native thread doing write, for signalling
+    private long thread;
 
     // -- End of fields protected by stateLock
 
@@ -83,43 +81,115 @@ class SinkChannelImpl
         super(sp);
         this.fd = fd;
         this.fdVal = IOUtil.fdVal(fd);
-        this.state = ST_INUSE;
     }
 
-    protected void implCloseSelectableChannel() throws IOException {
-        synchronized (stateLock) {
-            if (state != ST_KILLED)
-                nd.preClose(fd);
-            long th = thread;
-            if (th != 0)
-                NativeThread.signal(th);
-            if (!isRegistered())
-                kill();
-        }
-    }
-
-    public void kill() throws IOException {
-        synchronized (stateLock) {
-            if (state == ST_KILLED)
-                return;
-            if (state == ST_UNINITIALIZED) {
-                state = ST_KILLED;
-                return;
-            }
-            assert !isOpen() && !isRegistered();
+    /**
+     * Closes the write end of the pipe if there are no write operation in
+     * progress and the channel is not registered with a Selector.
+     */
+    private boolean tryClose() throws IOException {
+        assert Thread.holdsLock(stateLock) && state == ST_CLOSING;
+        if (thread == 0 && !isRegistered()) {
+            state = ST_CLOSED;
             nd.close(fd);
-            state = ST_KILLED;
+            return true;
+        } else {
+            return false;
         }
     }
 
-    protected void implConfigureBlocking(boolean block) throws IOException {
-        IOUtil.configureBlocking(fd, block);
+    /**
+     * Invokes tryClose to attempt to close the write end of the pipe.
+     *
+     * This method is used for deferred closing by I/O and Selector operations.
+     */
+    private void tryFinishClose() {
+        try {
+            tryClose();
+        } catch (IOException ignore) { }
     }
 
-    public boolean translateReadyOps(int ops, int initialOps,
-                                     SelectionKeyImpl sk) {
-        int intOps = sk.nioInterestOps();// Do this just once, it synchronizes
-        int oldOps = sk.nioReadyOps();
+    /**
+     * Closes this channel when configured in blocking mode.
+     *
+     * If there is a write operation in progress then the write-end of the pipe
+     * is pre-closed and the writer is signalled, in which case the final close
+     * is deferred until the writer aborts.
+     */
+    private void implCloseBlockingMode() throws IOException {
+        synchronized (stateLock) {
+            assert state < ST_CLOSING;
+            state = ST_CLOSING;
+            if (!tryClose()) {
+                long th = thread;
+                if (th != 0) {
+                    nd.preClose(fd);
+                    NativeThread.signal(th);
+                }
+            }
+        }
+    }
+
+    /**
+     * Closes this channel when configured in non-blocking mode.
+     *
+     * If the channel is registered with a Selector then the close is deferred
+     * until the channel is flushed from all Selectors.
+     */
+    private void implCloseNonBlockingMode() throws IOException {
+        synchronized (stateLock) {
+            assert state < ST_CLOSING;
+            state = ST_CLOSING;
+        }
+        // wait for any write operation to complete before trying to close
+        writeLock.lock();
+        writeLock.unlock();
+        synchronized (stateLock) {
+            if (state == ST_CLOSING) {
+                tryClose();
+            }
+        }
+    }
+
+    /**
+     * Invoked by implCloseChannel to close the channel.
+     */
+    @Override
+    protected void implCloseSelectableChannel() throws IOException {
+        assert !isOpen();
+        if (isBlocking()) {
+            implCloseBlockingMode();
+        } else {
+            implCloseNonBlockingMode();
+        }
+    }
+
+    @Override
+    public void kill() {
+        synchronized (stateLock) {
+            if (state == ST_CLOSING) {
+                tryFinishClose();
+            }
+        }
+    }
+
+    @Override
+    protected void implConfigureBlocking(boolean block) throws IOException {
+        writeLock.lock();
+        try {
+            synchronized (stateLock) {
+                if (!isOpen())
+                    throw new ClosedChannelException();
+                IOUtil.configureBlocking(fd, block);
+            }
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public boolean translateReadyOps(int ops, int initialOps, SelectionKeyImpl ski) {
+        int intOps = ski.nioInterestOps();
+        int oldOps = ski.nioReadyOps();
         int newOps = initialOps;
 
         if ((ops & Net.POLLNVAL) != 0)
@@ -127,7 +197,7 @@ class SinkChannelImpl
 
         if ((ops & (Net.POLLERR | Net.POLLHUP)) != 0) {
             newOps = intOps;
-            sk.nioReadyOps(newOps);
+            ski.nioReadyOps(newOps);
             return (newOps & ~oldOps) != 0;
         }
 
@@ -135,85 +205,121 @@ class SinkChannelImpl
             ((intOps & SelectionKey.OP_WRITE) != 0))
             newOps |= SelectionKey.OP_WRITE;
 
-        sk.nioReadyOps(newOps);
+        ski.nioReadyOps(newOps);
         return (newOps & ~oldOps) != 0;
     }
 
-    public boolean translateAndUpdateReadyOps(int ops, SelectionKeyImpl sk) {
-        return translateReadyOps(ops, sk.nioReadyOps(), sk);
+    public boolean translateAndUpdateReadyOps(int ops, SelectionKeyImpl ski) {
+        return translateReadyOps(ops, ski.nioReadyOps(), ski);
     }
 
-    public boolean translateAndSetReadyOps(int ops, SelectionKeyImpl sk) {
-        return translateReadyOps(ops, 0, sk);
+    public boolean translateAndSetReadyOps(int ops, SelectionKeyImpl ski) {
+        return translateReadyOps(ops, 0, ski);
     }
 
-    public void translateAndSetInterestOps(int ops, SelectionKeyImpl sk) {
+    public int translateInterestOps(int ops) {
+        int newOps = 0;
         if (ops == SelectionKey.OP_WRITE)
-            ops = Net.POLLOUT;
-        sk.selector.putEventOps(sk, ops);
+            newOps |= Net.POLLOUT;
+        return newOps;
     }
 
-    private void ensureOpen() throws IOException {
-        if (!isOpen())
-            throw new ClosedChannelException();
+    /**
+     * Marks the beginning of a write operation that might block.
+     *
+     * @throws ClosedChannelException if the channel is closed
+     * @throws NotYetConnectedException if the channel is not yet connected
+     */
+    private void beginWrite(boolean blocking) throws ClosedChannelException {
+        if (blocking) {
+            // set hook for Thread.interrupt
+            begin();
+        }
+        synchronized (stateLock) {
+            if (!isOpen())
+                throw new ClosedChannelException();
+            if (blocking)
+                thread = NativeThread.current();
+        }
     }
 
+    /**
+     * Marks the end of a write operation that may have blocked.
+     *
+     * @throws AsynchronousCloseException if the channel was closed due to this
+     * thread being interrupted on a blocking write operation.
+     */
+    private void endWrite(boolean blocking, boolean completed)
+        throws AsynchronousCloseException
+    {
+        if (blocking) {
+            synchronized (stateLock) {
+                thread = 0;
+                if (state == ST_CLOSING) {
+                    tryFinishClose();
+                }
+            }
+            // remove hook for Thread.interrupt
+            end(completed);
+        }
+    }
+
+    @Override
     public int write(ByteBuffer src) throws IOException {
+        Objects.requireNonNull(src);
+
         writeLock.lock();
         try {
-            ensureOpen();
+            boolean blocking = isBlocking();
             int n = 0;
             try {
-                begin();
-                if (!isOpen())
-                    return 0;
-                thread = NativeThread.current();
-                do {
-                    n = IOUtil.write(fd, src, -1, nd);
-                } while ((n == IOStatus.INTERRUPTED) && isOpen());
-                return IOStatus.normalize(n);
+                beginWrite(blocking);
+                n = IOUtil.write(fd, src, -1, nd);
+                if (blocking) {
+                    while (IOStatus.okayToRetry(n) && isOpen()) {
+                        park(Net.POLLOUT);
+                        n = IOUtil.write(fd, src, -1, nd);
+                    }
+                }
             } finally {
-                thread = 0;
-                end((n > 0) || (n == IOStatus.UNAVAILABLE));
+                endWrite(blocking, n > 0);
                 assert IOStatus.check(n);
             }
+            return IOStatus.normalize(n);
         } finally {
             writeLock.unlock();
         }
     }
 
-    public long write(ByteBuffer[] srcs) throws IOException {
-        if (srcs == null)
-            throw new NullPointerException();
+    @Override
+    public long write(ByteBuffer[] srcs, int offset, int length) throws IOException {
+        Objects.checkFromIndexSize(offset, length, srcs.length);
 
         writeLock.lock();
         try {
-            ensureOpen();
+            boolean blocking = isBlocking();
             long n = 0;
             try {
-                begin();
-                if (!isOpen())
-                    return 0;
-                thread = NativeThread.current();
-                do {
-                    n = IOUtil.write(fd, srcs, nd);
-                } while ((n == IOStatus.INTERRUPTED) && isOpen());
-                return IOStatus.normalize(n);
+                beginWrite(blocking);
+                n = IOUtil.write(fd, srcs, offset, length, nd);
+                if (blocking) {
+                    while (IOStatus.okayToRetry(n) && isOpen()) {
+                        park(Net.POLLOUT);
+                        n = IOUtil.write(fd, srcs, offset, length, nd);
+                    }
+                }
             } finally {
-                thread = 0;
-                end((n > 0) || (n == IOStatus.UNAVAILABLE));
+                endWrite(blocking, n > 0);
                 assert IOStatus.check(n);
             }
+            return IOStatus.normalize(n);
         } finally {
             writeLock.unlock();
         }
     }
 
-    public long write(ByteBuffer[] srcs, int offset, int length)
-        throws IOException
-    {
-        if ((offset < 0) || (length < 0) || (offset > srcs.length - length))
-           throw new IndexOutOfBoundsException();
-        return write(Util.subsequence(srcs, offset, length));
+    @Override
+    public long write(ByteBuffer[] srcs) throws IOException {
+        return write(srcs, 0, srcs.length);
     }
 }

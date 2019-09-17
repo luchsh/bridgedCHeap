@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,7 @@
 package java.lang.reflect;
 
 import jdk.internal.HotSpotIntrinsicCandidate;
-import jdk.internal.misc.SharedSecrets;
+import jdk.internal.access.SharedSecrets;
 import jdk.internal.reflect.CallerSensitive;
 import jdk.internal.reflect.MethodAccessor;
 import jdk.internal.reflect.Reflection;
@@ -198,11 +198,8 @@ public final class Method extends Executable {
         checkCanSetAccessible(caller, clazz);
     }
 
-    /**
-     * Used by Excecutable for annotation sharing.
-     */
     @Override
-    Executable getRoot() {
+    Method getRoot() {
         return root;
     }
 
@@ -272,7 +269,7 @@ public final class Method extends Executable {
      *
      * <p>If the return type is a parameterized type,
      * the {@code Type} object returned must accurately reflect
-     * the actual type parameters used in the source code.
+     * the actual type arguments used in the source code.
      *
      * <p>If the return type is a type variable or a parameterized type, it
      * is created. Otherwise, it is resolved.
@@ -299,6 +296,11 @@ public final class Method extends Executable {
     @Override
     Class<?>[] getSharedParameterTypes() {
         return parameterTypes;
+    }
+
+    @Override
+    Class<?>[] getSharedExceptionTypes() {
+        return exceptionTypes;
     }
 
     /**
@@ -401,7 +403,7 @@ public final class Method extends Executable {
      * @return a string describing this {@code Method}
      *
      * @jls 8.4.3 Method Modifiers
-     * @jls 9.4   Method Declarations
+     * @jls 9.4 Method Declarations
      * @jls 9.6.1 Annotation Type Elements
      */
     public String toString() {
@@ -434,10 +436,11 @@ public final class Method extends Executable {
     }
 
     /**
-     * Returns a string describing this {@code Method}, including
-     * type parameters.  The string is formatted as the method access
+     * Returns a string describing this {@code Method}, including type
+     * parameters.  The string is formatted as the method access
      * modifiers, if any, followed by an angle-bracketed
      * comma-separated list of the method's type parameters, if any,
+     * including informative bounds of the type parameters, if any,
      * followed by the method's generic return type, followed by a
      * space, followed by the class declaring the method, followed by
      * a period, followed by the method name, followed by a
@@ -471,7 +474,7 @@ public final class Method extends Executable {
      * @since 1.5
      *
      * @jls 8.4.3 Method Modifiers
-     * @jls 9.4   Method Declarations
+     * @jls 9.4 Method Declarations
      * @jls 9.6.1 Annotation Type Elements
      */
     @Override
@@ -503,8 +506,8 @@ public final class Method extends Executable {
      *
      * <p>If the underlying method is an instance method, it is invoked
      * using dynamic method lookup as documented in The Java Language
-     * Specification, Second Edition, section 15.12.4.4; in particular,
-     * overriding based on the runtime type of the target object will occur.
+     * Specification, section 15.12.4.4; in particular,
+     * overriding based on the runtime type of the target object may occur.
      *
      * <p>If the underlying method is static, the class that declared
      * the method is initialized if it has not already been initialized.

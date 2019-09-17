@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes;
 
 import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_0;
@@ -41,21 +43,24 @@ import org.graalvm.compiler.lir.ConstantValue;
 import org.graalvm.compiler.nodeinfo.NodeInfo;
 import org.graalvm.compiler.nodeinfo.Verbosity;
 import org.graalvm.compiler.nodes.calc.FloatingNode;
+import org.graalvm.compiler.nodes.spi.ArrayLengthProvider;
 import org.graalvm.compiler.nodes.spi.LIRLowerable;
 import org.graalvm.compiler.nodes.spi.NodeLIRBuilderTool;
 
 import jdk.vm.ci.code.CodeUtil;
 import jdk.vm.ci.meta.Constant;
+import jdk.vm.ci.meta.ConstantReflectionProvider;
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.PrimitiveConstant;
+import jdk.vm.ci.meta.ResolvedJavaType;
 
 /**
  * The {@code ConstantNode} represents a {@link Constant constant}.
  */
 @NodeInfo(nameTemplate = "C({p#rawvalue}) {p#stampKind}", cycles = CYCLES_0, size = SIZE_1)
-public final class ConstantNode extends FloatingNode implements LIRLowerable {
+public final class ConstantNode extends FloatingNode implements LIRLowerable, ArrayLengthProvider {
 
     public static final NodeClass<ConstantNode> TYPE = NodeClass.create(ConstantNode.class);
 
@@ -93,6 +98,10 @@ public final class ConstantNode extends FloatingNode implements LIRLowerable {
         } else {
             this.isDefaultStable = isDefaultStable;
         }
+    }
+
+    public ConstantNode(@InjectedNodeParameter Stamp stamp, @InjectedNodeParameter ConstantReflectionProvider constantReflection, @ConstantNodeParameter ResolvedJavaType type) {
+        this(constantReflection.asJavaClass(type), stamp);
     }
 
     /**
@@ -530,4 +539,19 @@ public final class ConstantNode extends FloatingNode implements LIRLowerable {
             return super.toString(verbosity);
         }
     }
+
+    @Override
+    public ValueNode findLength(FindLengthMode mode, ConstantReflectionProvider constantReflection) {
+        if (constantReflection == null || !(value instanceof JavaConstant) || ((JavaConstant) value).isNull()) {
+            return null;
+        }
+        Integer length = constantReflection.readArrayLength((JavaConstant) value);
+        if (length == null) {
+            return null;
+        }
+        return ConstantNode.forInt(length);
+    }
+
+    @NodeIntrinsic
+    public static native Class<?> forClass(@ConstantNodeParameter ResolvedJavaType type);
 }

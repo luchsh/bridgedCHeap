@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.test;
 
 import static org.graalvm.compiler.debug.MemUseTrackerKey.getCurrentThreadAllocatedBytes;
@@ -33,7 +35,6 @@ import org.graalvm.compiler.options.OptionValues;
 
 import jdk.vm.ci.hotspot.HotSpotCompilationRequest;
 import jdk.vm.ci.hotspot.HotSpotJVMCIRuntime;
-import jdk.vm.ci.hotspot.HotSpotJVMCIRuntimeProvider;
 import jdk.vm.ci.hotspot.HotSpotResolvedJavaMethod;
 import jdk.vm.ci.runtime.JVMCICompiler;
 
@@ -133,11 +134,11 @@ public class MemoryUsageBenchmark extends HotSpotGraalCompilerTest {
         long jvmciEnv = 0L;
 
         try (MemoryUsageCloseable c = label == null ? null : new MemoryUsageCloseable(label)) {
-            HotSpotJVMCIRuntimeProvider runtime = HotSpotJVMCIRuntime.runtime();
+            HotSpotJVMCIRuntime runtime = HotSpotJVMCIRuntime.runtime();
             int entryBCI = JVMCICompiler.INVOCATION_ENTRY_BCI;
             HotSpotCompilationRequest request = new HotSpotCompilationRequest(method, entryBCI, jvmciEnv);
-            CompilationTask task = new CompilationTask(runtime, (HotSpotGraalCompiler) runtime.getCompiler(), request, true, false, getInitialOptions());
-            task.runCompilation();
+            CompilationTask task = new CompilationTask(runtime, (HotSpotGraalCompiler) runtime.getCompiler(), request, true, false);
+            task.runCompilation(getInitialOptions());
         }
     }
 
@@ -151,12 +152,12 @@ public class MemoryUsageBenchmark extends HotSpotGraalCompilerTest {
 
             long jvmciEnv = 0L;
             try (AllocSpy as = AllocSpy.open(methodName)) {
-                HotSpotJVMCIRuntimeProvider runtime = HotSpotJVMCIRuntime.runtime();
+                HotSpotJVMCIRuntime runtime = HotSpotJVMCIRuntime.runtime();
                 HotSpotCompilationRequest request = new HotSpotCompilationRequest(method, JVMCICompiler.INVOCATION_ENTRY_BCI, jvmciEnv);
                 HotSpotGraalCompiler compiler = (HotSpotGraalCompiler) runtime.getCompiler();
                 OptionValues options = getInitialOptions();
-                CompilationTask task = new CompilationTask(runtime, compiler, request, true, false, options);
-                task.runCompilation();
+                CompilationTask task = new CompilationTask(runtime, compiler, request, true, false);
+                task.runCompilation(options);
             }
         }
     }
@@ -179,10 +180,10 @@ public class MemoryUsageBenchmark extends HotSpotGraalCompilerTest {
     public void run() {
         compileAndTime("simple");
         compileAndTime("complex");
-        OptionValues options = CompileTheWorld.loadOptions(getInitialOptions());
-        if (CompileTheWorld.Options.Classpath.getValue(options) != CompileTheWorld.SUN_BOOT_CLASS_PATH) {
-            HotSpotJVMCIRuntimeProvider runtime = HotSpotJVMCIRuntime.runtime();
-            CompileTheWorld ctw = new CompileTheWorld(runtime, (HotSpotGraalCompiler) runtime.getCompiler(), options);
+        OptionValues harnessOptions = CompileTheWorld.loadHarnessOptions();
+        if (CompileTheWorld.Options.Classpath.getValue(harnessOptions) != CompileTheWorld.SUN_BOOT_CLASS_PATH) {
+            HotSpotJVMCIRuntime runtime = HotSpotJVMCIRuntime.runtime();
+            CompileTheWorld ctw = new CompileTheWorld(runtime, (HotSpotGraalCompiler) runtime.getCompiler(), harnessOptions, getInitialOptions());
             try {
                 ctw.compile();
             } catch (Throwable e) {

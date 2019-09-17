@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,13 +38,17 @@ public class VerifierTest implements Opcodes {
     // Test verification settings for dumping & runtime
     static final String VFY_ALL = "-Xverify:all";
     static final String VFY_REMOTE = "-Xverify:remote"; // default
-    static final String VFY_NONE = "-Xverify:none";
+    static final String VFY_NONE = "-XX:+UnlockDiagnosticVMOptions, -XX:-BytecodeVerificationRemote, -XX:-BytecodeVerificationLocal";
 
     static final String ERR =
         "ERROR: class VerifierTestC was loaded unexpectedly";
     static final String MAP_FAIL =
         "shared archive file was created with less restrictive verification setting";
     static final String VFY_ERR = "java.lang.VerifyError";
+    static final String PASS_RESULT = "Hi, how are you?";
+    static final String VFY_INFO_MESSAGE =
+        "All non-system classes will be verified (-Xverify:remote) during CDS dump time.";
+    static final String CDS_LOGGING = "-Xlog:cds,cds+hashtables";
 
     enum Testset1Part {
         A, B
@@ -98,16 +102,27 @@ public class VerifierTest implements Opcodes {
     }
 
     static void testset_0(String jar, String[] noAppClasses, String[] appClasses) throws Exception {
-        // Dumping should fail if the IgnoreUnverifiableClassesDuringDump
-        // option is not enabled.
-        OutputAnalyzer output = TestCommon.dump(jar, appClasses,
-                            "-XX:+UnlockDiagnosticVMOptions",
-                            "-XX:-IgnoreUnverifiableClassesDuringDump");
-        output.shouldContain("Please remove the unverifiable classes");
-        output.shouldHaveExitValue(1);
+        // Unverifiable classes won't be included in the CDS archive.
+        // Dumping should not fail.
+        OutputAnalyzer output = TestCommon.dump(jar, appClasses);
+        output.shouldHaveExitValue(0);
+        if (output.getStdout().contains("Loading clases to share")) {
+            // last entry in appClasses[] is a verifiable class
+            for (int i = 0; i < (appClasses.length - 1); i++) {
+                output.shouldContain("Verification failed for " + appClasses[i]);
+                output.shouldContain("Removed error class: " + appClasses[i]);
+            }
+        }
+    }
 
-        // By default, bad classes should be ignored during dumping.
-        TestCommon.testDump(jar, appClasses);
+    static void checkRuntimeOutput(OutputAnalyzer output, String expected) throws Exception {
+        output.shouldContain(expected);
+        if (expected.equals(PASS_RESULT) ||
+            expected.equals(VFY_ERR)) {
+            output.shouldHaveExitValue(0);
+        } else {
+            output.shouldNotHaveExitValue(0);
+        }
     }
 
     static void testset_1(String jar, String[] noAppClasses, String[] appClasses, Testset1Part part)
@@ -115,7 +130,7 @@ public class VerifierTest implements Opcodes {
     {
         String config[][] = {
             // {dump_list, dumptime_verification_setting,
-            //  runtime_verification_setting, runtime_output},
+            //  runtime_verification_setting, expected_output_str},
 
             // Dump app/ext with -Xverify:remote
             {"app",   VFY_REMOTE, VFY_REMOTE, VFY_ERR},
@@ -125,8 +140,8 @@ public class VerifierTest implements Opcodes {
             {"app",   VFY_ALL,    VFY_REMOTE, VFY_ERR },
             {"app",   VFY_ALL,    VFY_ALL,    VFY_ERR },
             {"app",   VFY_ALL,    VFY_NONE,   ERR },
-            // Dump app/ext with -Xverify:none
-            {"app",   VFY_NONE,   VFY_REMOTE, MAP_FAIL},
+            // Dump app/ext with verifier turned off
+            {"app",   VFY_NONE,   VFY_REMOTE, VFY_ERR},
             {"app",   VFY_NONE,   VFY_ALL,    MAP_FAIL},
             {"app",   VFY_NONE,   VFY_NONE,   ERR },
             // Dump sys only with -Xverify:remote
@@ -137,7 +152,7 @@ public class VerifierTest implements Opcodes {
             {"noApp", VFY_ALL, VFY_REMOTE,    VFY_ERR},
             {"noApp", VFY_ALL, VFY_ALL,       VFY_ERR},
             {"noApp", VFY_ALL, VFY_NONE,      ERR},
-            // Dump sys only with -Xverify:none
+            // Dump sys only with verifier turned off
             {"noApp", VFY_NONE, VFY_REMOTE,   VFY_ERR},
             {"noApp", VFY_NONE, VFY_ALL,      VFY_ERR},
             {"noApp", VFY_NONE, VFY_NONE,     ERR},
@@ -166,29 +181,51 @@ public class VerifierTest implements Opcodes {
                 noAppClasses;
             String dump_setting = config[i][1];
             String runtime_setting = config[i][2];
-            String runtime_output = config[i][3];
+            String expected_output_str = config[i][3];
             System.out.println("Test case [" + i + "]: dumping " + config[i][0] +
                                " with " + dump_setting +
                                ", run with " + runtime_setting);
             if (!dump_setting.equals(prev_dump_setting)) {
+                String dump_arg1;
+                String dump_arg2;
+                String dump_arg3;
+                // Need to break this into two separate arguments.
+                if (dump_setting.equals(VFY_NONE)) {
+                    dump_arg1 = "-XX:+UnlockDiagnosticVMOptions";
+                    dump_arg2 = "-XX:-BytecodeVerificationRemote";
+                    dump_arg3 = "-XX:-BytecodeVerificationLocal";
+                } else {
+                    // Redundant args should be harmless.
+                    dump_arg1 = dump_arg2 = dump_arg3 = dump_setting;
+                }
+
                 OutputAnalyzer dumpOutput = TestCommon.dump(
-                                                            jar, dump_list, dump_setting,
+                                                            jar, dump_list, dump_arg1, dump_arg2,
+                                                            dump_arg3, CDS_LOGGING,
                                                             // FIXME: the following options are for working around a GC
                                                             // issue - assert failure when dumping archive with the -Xverify:all
                                                             "-Xms256m",
                                                             "-Xmx256m");
+                if (dump_setting.equals(VFY_NONE) &&
+                    runtime_setting.equals(VFY_REMOTE)) {
+                    dumpOutput.shouldContain(VFY_INFO_MESSAGE);
+                }
             }
-            OutputAnalyzer runtimeOutput = TestCommon.execCommon(
-                                                                 "-cp", jar,
-                                                                 runtime_setting,
-                                                                 "VerifierTest0");
-            try {
-                runtimeOutput.shouldContain(runtime_output);
-            } catch (RuntimeException re) {
-                // Check if the failure is due to archive mapping failure.
-                // If not, a RuntimeException will be thrown.
-                runtimeOutput.shouldContain("Unable to use shared archive");
+            String runtime_arg1;
+            String runtime_arg2;
+            String runtime_arg3;
+            if (runtime_setting.equals(VFY_NONE)) {
+                runtime_arg1 = "-XX:+UnlockDiagnosticVMOptions";
+                runtime_arg2 = "-XX:-BytecodeVerificationRemote";
+                runtime_arg3 = "-XX:-BytecodeVerificationLocal";
+            } else {
+                // Redundant args should be harmless.
+                runtime_arg1 = runtime_arg2 = runtime_arg3 = runtime_setting;
             }
+            TestCommon.run("-cp", jar,
+                           runtime_arg1, runtime_arg2, runtime_arg3,
+                           "VerifierTest0")
+                .ifNoMappingFailure(output -> checkRuntimeOutput(output, expected_output_str));
             prev_dump_setting = dump_setting;
         }
     }
@@ -204,10 +241,9 @@ public class VerifierTest implements Opcodes {
                                      "Hi$MyClass");
         jar = TestCommon.getTestJar(jarName_hi + ".jar") + File.pathSeparator +
             TestCommon.getTestJar(jarName_greet + ".jar");
-        final String PASS_RESULT = "Hi, how are you?";
         String config2[][] = {
             // {dump_list, dumptime_verification_setting,
-            //  runtime_verification_setting, runtime_output},
+            //  runtime_verification_setting, expected_output_str},
 
             // Dump app/ext with -Xverify:remote
             {"app",   VFY_REMOTE, VFY_REMOTE, PASS_RESULT},
@@ -217,39 +253,61 @@ public class VerifierTest implements Opcodes {
             {"app",   VFY_ALL,    VFY_REMOTE, PASS_RESULT },
             {"app",   VFY_ALL,    VFY_ALL,    PASS_RESULT },
             {"app",   VFY_ALL,    VFY_NONE,   PASS_RESULT },
-            // Dump app/ext with -Xverify:none
-            {"app",   VFY_NONE,   VFY_REMOTE, MAP_FAIL},
+            // Dump app/ext with verifier turned off
+            {"app",   VFY_NONE,   VFY_REMOTE, PASS_RESULT},
             {"app",   VFY_NONE,   VFY_ALL,    MAP_FAIL},
             {"app",   VFY_NONE,   VFY_NONE,   PASS_RESULT },
         };
+        String prev_dump_setting = "";
         for (int i = 0; i < config2.length; i ++) {
             // config2[i][0] is always set to "app" in this test
             String dump_setting = config2[i][1];
             String runtime_setting = config2[i][2];
-            String runtime_output = config2[i][3];
+            String expected_output_str = config2[i][3];
             System.out.println("Test case [" + i + "]: dumping " + config2[i][0] +
                                " with " + dump_setting +
                                ", run with " + runtime_setting);
-            OutputAnalyzer dumpOutput = TestCommon.dump(
-                                                        jar, appClasses, dump_setting,
-                                                        "-XX:+UnlockDiagnosticVMOptions",
-                                                        // FIXME: the following options are for working around a GC
-                                                        // issue - assert failure when dumping archive with the -Xverify:all
-                                                        "-Xms256m",
-                                                        "-Xmx256m");
-            OutputAnalyzer runtimeOutput = TestCommon.execCommon(
-                                                                 "-cp", jar,
-                                                                 runtime_setting,
-                                                                 "Hi");
-            try {
-                runtimeOutput.shouldContain(runtime_output);
-            } catch (RuntimeException re) {
-                // Check if the failure is due to archive mapping failure.
-                // If not, a RuntimeException will be thrown.
-                runtimeOutput.shouldContain("Unable to use shared archive");
+            if (!dump_setting.equals(prev_dump_setting)) {
+                String dump_arg1;
+                String dump_arg2;
+                String dump_arg3;
+                if (dump_setting.equals(VFY_NONE)) {
+                    dump_arg1 = "-XX:+UnlockDiagnosticVMOptions";
+                    dump_arg2 = "-XX:-BytecodeVerificationRemote";
+                    dump_arg3 = "-XX:-BytecodeVerificationLocal";
+                } else {
+                    // Redundant args should be harmless.
+                    dump_arg1 = dump_arg2 = dump_arg3 = dump_setting;
+                }
+                OutputAnalyzer dumpOutput = TestCommon.dump(
+                                                            jar, appClasses, dump_arg1, dump_arg2,
+                                                            dump_arg3, CDS_LOGGING,
+                                                            // FIXME: the following options are for working around a GC
+                                                            // issue - assert failure when dumping archive with the -Xverify:all
+                                                            "-Xms256m",
+                                                            "-Xmx256m");
+                if (dump_setting.equals(VFY_NONE) &&
+                    runtime_setting.equals(VFY_REMOTE)) {
+                    dumpOutput.shouldContain(VFY_INFO_MESSAGE);
+                }
             }
+            String runtime_arg1;
+            String runtime_arg2;
+            String runtime_arg3;
+            if (runtime_setting.equals(VFY_NONE)) {
+                runtime_arg1 = "-XX:+UnlockDiagnosticVMOptions";
+                runtime_arg2 = "-XX:-BytecodeVerificationRemote";
+                runtime_arg3 = "-XX:-BytecodeVerificationLocal";
+            } else {
+                // Redundant args should be harmless.
+                runtime_arg1 = runtime_arg2 = runtime_arg3 = runtime_setting;
+            }
+            TestCommon.run("-cp", jar,
+                           runtime_arg1, runtime_arg2, runtime_arg3,
+                           "Hi")
+                .ifNoMappingFailure(output -> checkRuntimeOutput(output, expected_output_str));
+           prev_dump_setting = dump_setting;
         }
-
     }
 
     static void createTestJarFile(File jarSrcFile, File jarFile) throws Exception {
@@ -279,7 +337,7 @@ public class VerifierTest implements Opcodes {
         MethodVisitor mv;
         AnnotationVisitor av0;
 
-        cw.visit(V1_6, ACC_SUPER, "UnverifiableBase", null, "java/lang/Object", null);
+        cw.visit(V1_8, ACC_SUPER, "UnverifiableBase", null, "java/lang/Object", null);
         {
             fv = cw.visitField(ACC_FINAL + ACC_STATIC, "x", "LVerifierTest;", null, null);
             fv.visitEnd();
@@ -296,8 +354,7 @@ public class VerifierTest implements Opcodes {
         {
             mv = cw.visitMethod(ACC_STATIC, "<clinit>", "()V", null, null);
             mv.visitCode();
-            //WAS mv.visitTypeInsn(NEW, "VerifierTest");
-            mv.visitTypeInsn(NEW, "java/lang/Object");
+            mv.visitTypeInsn(NEW, "VerifierTest0");
             mv.visitInsn(DUP);
             mv.visitMethodInsn(INVOKESPECIAL, "VerifierTest0", "<init>", "()V", false);
             mv.visitFieldInsn(PUTSTATIC, "UnverifiableBase", "x", "LVerifierTest;");
@@ -305,6 +362,7 @@ public class VerifierTest implements Opcodes {
             mv.visitMaxs(2, 0);
             mv.visitEnd();
         }
+        addBadMethod(cw);
         cw.visitEnd();
 
         return cw.toByteArray();
@@ -317,7 +375,7 @@ public class VerifierTest implements Opcodes {
         MethodVisitor mv;
         AnnotationVisitor av0;
 
-        cw.visit(V1_6, ACC_ABSTRACT + ACC_INTERFACE, "UnverifiableIntf", null, "java/lang/Object", null);
+        cw.visit(V1_8, ACC_ABSTRACT + ACC_INTERFACE, "UnverifiableIntf", null, "java/lang/Object", null);
 
         {
             fv = cw.visitField(ACC_PUBLIC + ACC_FINAL + ACC_STATIC, "x", "LVerifierTest0;", null, null);
@@ -326,8 +384,7 @@ public class VerifierTest implements Opcodes {
         {
             mv = cw.visitMethod(ACC_STATIC, "<clinit>", "()V", null, null);
             mv.visitCode();
-            //WAS mv.visitTypeInsn(NEW, "VerifierTest");
-            mv.visitTypeInsn(NEW, "java/lang/Object");
+            mv.visitTypeInsn(NEW, "VerifierTest0");
             mv.visitInsn(DUP);
             mv.visitMethodInsn(INVOKESPECIAL, "VerifierTest0", "<init>", "()V", false);
             mv.visitFieldInsn(PUTSTATIC, "UnverifiableIntf", "x", "LVerifierTest0;");
@@ -335,9 +392,18 @@ public class VerifierTest implements Opcodes {
             mv.visitMaxs(2, 0);
             mv.visitEnd();
         }
+        addBadMethod(cw);
         cw.visitEnd();
 
         return cw.toByteArray();
     }
 
+    // Add a bad method to make the class fail verification.
+    static void addBadMethod(ClassWriter cw) throws Exception {
+        MethodVisitor mv = cw.visitMethod(ACC_PUBLIC, "bad", "()V", null, null);
+        mv.visitCode();
+        mv.visitInsn(ARETURN); //  java.lang.VerifyError: Operand stack underflow
+        mv.visitMaxs(2, 2);
+        mv.visitEnd();
+    }
 }

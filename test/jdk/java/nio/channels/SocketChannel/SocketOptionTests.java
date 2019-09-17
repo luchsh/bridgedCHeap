@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2007, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,17 +25,22 @@
  * @bug 4640544 8044773
  * @summary Unit test to check SocketChannel setOption/getOption/options
  *          methods.
+ * @modules java.base/sun.net.ext
+ *          jdk.net
  * @requires !vm.graal.enabled
  * @run main SocketOptionTests
  * @run main/othervm --limit-modules=java.base SocketOptionTests
  */
 
-import java.nio.*;
-import java.nio.channels.*;
-import java.net.*;
 import java.io.IOException;
-import java.util.*;
+import java.net.InetSocketAddress;
+import java.net.SocketOption;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.SocketChannel;
+import java.util.Set;
+import sun.net.ext.ExtendedSocketOptions;
 import static java.net.StandardSocketOptions.*;
+import static jdk.net.ExtendedSocketOptions.*;
 
 public class SocketOptionTests {
 
@@ -48,14 +53,26 @@ public class SocketOptionTests {
     }
 
     public static void main(String[] args) throws IOException {
-        SocketChannel sc = SocketChannel.open();
+        try (var channel = SocketChannel.open()) {
+            test(channel);
+        }
+    }
 
-        // check supported options
-        Set<SocketOption<?>> options = sc.supportedOptions();
-        List<? extends SocketOption> expected = Arrays.asList(SO_SNDBUF, SO_RCVBUF,
-            SO_KEEPALIVE, SO_REUSEADDR, SO_LINGER, TCP_NODELAY);
+    static void test(SocketChannel sc) throws IOException {
+        Set<SocketOption<?>> extendedOptions = ExtendedSocketOptions.clientSocketOptions();
+        Set<SocketOption<?>> keepAliveOptions = Set.of(TCP_KEEPCOUNT, TCP_KEEPIDLE, TCP_KEEPINTERVAL);
+        boolean keepAliveOptionsSupported = extendedOptions.containsAll(keepAliveOptions);
+        Set<SocketOption<?>> expected;
+        if (keepAliveOptionsSupported) {
+            expected = Set.of(SO_SNDBUF, SO_RCVBUF, SO_KEEPALIVE,
+                    SO_REUSEADDR, SO_LINGER, TCP_NODELAY, TCP_KEEPCOUNT,
+                    TCP_KEEPIDLE, TCP_KEEPINTERVAL);
+        } else {
+            expected = Set.of(SO_SNDBUF, SO_RCVBUF, SO_KEEPALIVE,
+                    SO_REUSEADDR, SO_LINGER, TCP_NODELAY);
+        }
         for (SocketOption opt: expected) {
-            if (!options.contains(opt))
+            if (!sc.supportedOptions().contains(opt))
                 throw new RuntimeException(opt.name() + " should be supported");
         }
 
@@ -117,7 +134,14 @@ public class SocketOptionTests {
             throw new RuntimeException("expected linger to be disabled");
         sc.setOption(TCP_NODELAY, true);        // can't check
         sc.setOption(TCP_NODELAY, false);       // can't check
-
+        if (keepAliveOptionsSupported) {
+            sc.setOption(TCP_KEEPIDLE, 1234);
+            checkOption(sc, TCP_KEEPIDLE, 1234);
+            sc.setOption(TCP_KEEPINTERVAL, 123);
+            checkOption(sc, TCP_KEEPINTERVAL, 123);
+            sc.setOption(TCP_KEEPCOUNT, 7);
+            checkOption(sc, TCP_KEEPCOUNT, 7);
+        }
         // NullPointerException
         try {
             sc.setOption(null, "value");

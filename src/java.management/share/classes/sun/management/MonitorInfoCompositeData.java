@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2012, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,11 +26,13 @@
 package sun.management;
 
 import java.lang.management.MonitorInfo;
+import java.util.HashMap;
+import java.util.Map;
 import javax.management.openmbean.CompositeType;
 import javax.management.openmbean.CompositeData;
 import javax.management.openmbean.CompositeDataSupport;
 import javax.management.openmbean.OpenDataException;
-import java.util.Set;
+import javax.management.openmbean.OpenType;
 
 /**
  * A CompositeData for MonitorInfo for the local management support.
@@ -54,59 +56,64 @@ public class MonitorInfoCompositeData extends LazyCompositeData {
     }
 
     protected CompositeData getCompositeData() {
-        // CONTENTS OF THIS ARRAY MUST BE SYNCHRONIZED WITH
-        // monitorInfoItemNames!
-
-        int len = monitorInfoItemNames.length;
-        Object[] values = new Object[len];
-        CompositeData li = LockInfoCompositeData.toCompositeData(lock);
-
-        for (int i = 0; i < len; i++) {
-            String item = monitorInfoItemNames[i];
-            if (item.equals(LOCKED_STACK_FRAME)) {
-                StackTraceElement ste = lock.getLockedStackFrame();
-                values[i] = (ste != null ? StackTraceElementCompositeData.
-                                               toCompositeData(ste)
-                                         : null);
-            } else if (item.equals(LOCKED_STACK_DEPTH)) {
-                values[i] = lock.getLockedStackDepth();
-            } else {
-                values[i] = li.get(item);
-            }
-        }
+        StackTraceElement ste = lock.getLockedStackFrame();
+        CompositeData steCData = ste != null ? StackTraceElementCompositeData.toCompositeData(ste)
+                                             : null;
+        // values may be null; can't use Map.of
+        Map<String,Object> items = new HashMap<>();
+        items.put(CLASS_NAME,         lock.getClassName());
+        items.put(IDENTITY_HASH_CODE, lock.getIdentityHashCode());
+        items.put(LOCKED_STACK_FRAME, steCData);
+        items.put(LOCKED_STACK_DEPTH, lock.getLockedStackDepth());
 
         try {
-            return new CompositeDataSupport(monitorInfoCompositeType,
-                                            monitorInfoItemNames,
-                                            values);
+            return new CompositeDataSupport(MONITOR_INFO_COMPOSITE_TYPE, items);
         } catch (OpenDataException e) {
             // Should never reach here
             throw new AssertionError(e);
         }
-    }
-
-    private static final CompositeType monitorInfoCompositeType;
-    private static final String[] monitorInfoItemNames;
-    static {
-        try {
-            monitorInfoCompositeType = (CompositeType)
-                MappedMXBeanType.toOpenType(MonitorInfo.class);
-            Set<String> s = monitorInfoCompositeType.keySet();
-            monitorInfoItemNames =  s.toArray(new String[0]);
-        } catch (OpenDataException e) {
-            // Should never reach here
-            throw new AssertionError(e);
-        }
-    }
-
-    static CompositeType getMonitorInfoCompositeType() {
-        return monitorInfoCompositeType;
     }
 
     private static final String CLASS_NAME         = "className";
     private static final String IDENTITY_HASH_CODE = "identityHashCode";
     private static final String LOCKED_STACK_FRAME = "lockedStackFrame";
     private static final String LOCKED_STACK_DEPTH = "lockedStackDepth";
+
+    private static final String[] MONITOR_INFO_ATTRIBUTES = {
+        CLASS_NAME,
+        IDENTITY_HASH_CODE,
+        LOCKED_STACK_FRAME,
+        LOCKED_STACK_DEPTH
+    };
+
+    private static final CompositeType MONITOR_INFO_COMPOSITE_TYPE;
+    private static final CompositeType V6_COMPOSITE_TYPE;
+    static {
+        try {
+            MONITOR_INFO_COMPOSITE_TYPE = (CompositeType)
+                MappedMXBeanType.toOpenType(MonitorInfo.class);
+
+            OpenType<?>[] types = new OpenType<?>[MONITOR_INFO_ATTRIBUTES.length];
+            for (int i = 0; i < MONITOR_INFO_ATTRIBUTES.length; i++) {
+                String name = MONITOR_INFO_ATTRIBUTES[i];
+                types[i] = name.equals(LOCKED_STACK_FRAME)
+                            ? StackTraceElementCompositeData.v5CompositeType()
+                            : MONITOR_INFO_COMPOSITE_TYPE.getType(name);
+            }
+            V6_COMPOSITE_TYPE = new CompositeType("MonitorInfo",
+                                                  "JDK 6 MonitorInfo",
+                                                  MONITOR_INFO_ATTRIBUTES,
+                                                  MONITOR_INFO_ATTRIBUTES,
+                                                  types);
+        } catch (OpenDataException e) {
+            // Should never reach here
+            throw new AssertionError(e);
+        }
+    }
+
+    static CompositeType v6CompositeType() {
+        return V6_COMPOSITE_TYPE;
+    }
 
     public static String getClassName(CompositeData cd) {
         return getString(cd, CLASS_NAME);
@@ -138,7 +145,8 @@ public class MonitorInfoCompositeData extends LazyCompositeData {
             throw new NullPointerException("Null CompositeData");
         }
 
-        if (!isTypeMatched(monitorInfoCompositeType, cd.getCompositeType())) {
+        if (!isTypeMatched(MONITOR_INFO_COMPOSITE_TYPE, cd.getCompositeType()) &&
+            !isTypeMatched(V6_COMPOSITE_TYPE, cd.getCompositeType())) {
             throw new IllegalArgumentException(
                 "Unexpected composite type for MonitorInfo");
         }

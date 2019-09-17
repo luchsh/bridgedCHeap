@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_OPTO_CFGNODE_HPP
-#define SHARE_VM_OPTO_CFGNODE_HPP
+#ifndef SHARE_OPTO_CFGNODE_HPP
+#define SHARE_OPTO_CFGNODE_HPP
 
 #include "opto/multnode.hpp"
 #include "opto/node.hpp"
@@ -96,6 +96,7 @@ public:
   virtual Node *Ideal(PhaseGVN *phase, bool can_reshape);
   virtual const RegMask &out_RegMask() const;
   bool try_clean_mem_phi(PhaseGVN *phase);
+  bool optimize_trichotomy(PhaseIterGVN* igvn);
 };
 
 //------------------------------JProjNode--------------------------------------
@@ -118,17 +119,19 @@ class JProjNode : public ProjNode {
 // can turn PhiNodes into copys in-place by NULL'ing out their RegionNode
 // input in slot 0.
 class PhiNode : public TypeNode {
+  friend class PhaseRenumberLive;
+
   const TypePtr* const _adr_type; // non-null only for Type::MEMORY nodes.
   // The following fields are only used for data PhiNodes to indicate
   // that the PhiNode represents the value of a known instance field.
         int _inst_mem_id; // Instance memory id (node index of the memory Phi)
-  const int _inst_id;     // Instance id of the memory slice.
+        int _inst_id;     // Instance id of the memory slice.
   const int _inst_index;  // Alias index of the instance memory slice.
   // Array elements references have the same alias_idx but different offset.
   const int _inst_offset; // Offset of the instance memory slice.
   // Size is bigger to hold the _adr_type field.
   virtual uint hash() const;    // Check the type
-  virtual uint cmp( const Node &n ) const;
+  virtual bool cmp( const Node &n ) const;
   virtual uint size_of() const { return sizeof(*this); }
 
   // Determine if CMoveNode::is_cmove_id can be used at this join point.
@@ -298,11 +301,11 @@ private:
   void reroute_side_effect_free_unc(ProjNode* proj, ProjNode* dom_proj, PhaseIterGVN* igvn);
   ProjNode* uncommon_trap_proj(CallStaticJavaNode*& call) const;
   bool fold_compares_helper(ProjNode* proj, ProjNode* success, ProjNode* fail, PhaseIterGVN* igvn);
+  static bool is_dominator_unc(CallStaticJavaNode* dom_unc, CallStaticJavaNode* unc);
 
 protected:
   ProjNode* range_check_trap_proj(int& flip, Node*& l, Node*& r);
   Node* Ideal_common(PhaseGVN *phase, bool can_reshape);
-  Node* dominated_by(Node* prev_dom, PhaseIterGVN* igvn);
   Node* search_identical(int dist);
 
 public:
@@ -390,6 +393,7 @@ public:
   virtual const RegMask &out_RegMask() const;
   Node* fold_compares(PhaseIterGVN* phase);
   static Node* up_one_dom(Node* curr, bool linear_only = false);
+  Node* dominated_by(Node* prev_dom, PhaseIterGVN* igvn);
 
   // Takes the type of val and filters it through the test represented
   // by if_proj and returns a more refined type if one is produced.
@@ -461,7 +465,7 @@ protected:
 // Undefined behavior if passed-in index is not inside the table.
 class PCTableNode : public MultiBranchNode {
   virtual uint hash() const;    // Target count; table size
-  virtual uint cmp( const Node &n ) const;
+  virtual bool cmp( const Node &n ) const;
   virtual uint size_of() const { return sizeof(*this); }
 
 public:
@@ -484,8 +488,13 @@ public:
 // Indirect branch.  Uses PCTable above to implement a switch statement.
 // It emits as a table load and local branch.
 class JumpNode : public PCTableNode {
+  virtual uint size_of() const { return sizeof(*this); }
 public:
-  JumpNode( Node* control, Node* switch_val, uint size) : PCTableNode(control, switch_val, size) {
+  float* _probs; // probability of each projection
+  float _fcnt;   // total number of times this Jump was executed
+  JumpNode( Node* control, Node* switch_val, uint size, float* probs, float cnt)
+    : PCTableNode(control, switch_val, size),
+      _probs(probs), _fcnt(cnt) {
     init_class_id(Class_Jump);
   }
   virtual int   Opcode() const;
@@ -498,7 +507,7 @@ public:
 
 class JumpProjNode : public JProjNode {
   virtual uint hash() const;
-  virtual uint cmp( const Node &n ) const;
+  virtual bool cmp( const Node &n ) const;
   virtual uint size_of() const { return sizeof(*this); }
 
  private:
@@ -541,7 +550,7 @@ public:
 // the projection doesn't lead to an exception handler.
 class CatchProjNode : public CProjNode {
   virtual uint hash() const;
-  virtual uint cmp( const Node &n ) const;
+  virtual bool cmp( const Node &n ) const;
   virtual uint size_of() const { return sizeof(*this); }
 
 private:
@@ -606,4 +615,4 @@ public:
 #endif
 };
 
-#endif // SHARE_VM_OPTO_CFGNODE_HPP
+#endif // SHARE_OPTO_CFGNODE_HPP

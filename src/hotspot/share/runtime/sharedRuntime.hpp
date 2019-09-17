@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_RUNTIME_SHAREDRUNTIME_HPP
-#define SHARE_VM_RUNTIME_SHAREDRUNTIME_HPP
+#ifndef SHARE_RUNTIME_SHAREDRUNTIME_HPP
+#define SHARE_RUNTIME_SHAREDRUNTIME_HPP
 
 #include "interpreter/bytecodeHistogram.hpp"
 #include "interpreter/bytecodeTracer.hpp"
@@ -48,6 +48,9 @@ class SharedRuntime: AllStatic {
   friend class VMStructs;
 
  private:
+  static bool resolve_sub_helper_internal(methodHandle callee_method, const frame& caller_frame,
+                                          CompiledMethod* caller_nm, bool is_virtual, bool is_optimized,
+                                          Handle receiver, CallInfo& call_info, Bytecodes::Code invoke_code, TRAPS);
   static methodHandle resolve_sub_helper(JavaThread *thread,
                                          bool is_virtual,
                                          bool is_optimized, TRAPS);
@@ -182,12 +185,6 @@ class SharedRuntime: AllStatic {
   static address raw_exception_handler_for_return_address(JavaThread* thread, address return_address);
   static address exception_handler_for_return_address(JavaThread* thread, address return_address);
 
-#if INCLUDE_ALL_GCS
-  // G1 write barriers
-  static void g1_wb_pre(oopDesc* orig, JavaThread *thread);
-  static void g1_wb_post(void* card_addr, JavaThread* thread);
-#endif // INCLUDE_ALL_GCS
-
   // exception handling and implicit exceptions
   static address compute_compiled_exc_handler(CompiledMethod* nm, address ret_pc, Handle& exception,
                                               bool force_unwind, bool top_frame_only, bool& recursive_exception_occurred);
@@ -207,9 +204,10 @@ class SharedRuntime: AllStatic {
   static address continuation_for_implicit_exception(JavaThread* thread,
                                                      address faulting_pc,
                                                      ImplicitExceptionKind exception_kind);
-#if INCLUDE_JVMCI
-  static address deoptimize_for_implicit_exception(JavaThread* thread, address pc, CompiledMethod* nm, int deopt_reason);
-#endif
+
+  // Post-slow-path-allocation, pre-initializing-stores step for
+  // implementing e.g. ReduceInitialCardMarks
+  static void on_slowpath_allocation_exit(JavaThread* thread);
 
   static void enable_stack_reserved_zone(JavaThread* thread);
   static frame look_for_reserved_stack_annotated_method(JavaThread* thread, frame fr);
@@ -314,7 +312,7 @@ class SharedRuntime: AllStatic {
   // The caller (or one of it's callers) must use a ResourceMark
   // in order to correctly free the result.
   //
-  static char* generate_class_cast_message(Klass* caster_klass, Klass* target_klass);
+  static char* generate_class_cast_message(Klass* caster_klass, Klass* target_klass, Symbol* target_klass_name = NULL);
 
   // Resolves a call site- may patch in the destination of the call into the
   // compiled code.
@@ -325,6 +323,10 @@ class SharedRuntime: AllStatic {
  private:
   // deopt blob
   static void generate_deopt_blob(void);
+
+  static bool handle_ic_miss_helper_internal(Handle receiver, CompiledMethod* caller_nm, const frame& caller_frame,
+                                             methodHandle callee_method, Bytecodes::Code bc, CallInfo& call_info,
+                                             bool& needs_ic_stub_refill, TRAPS);
 
  public:
   static DeoptimizationBlob* deopt_blob(void)      { return _deopt_blob; }
@@ -488,6 +490,10 @@ class SharedRuntime: AllStatic {
   // Block before entering a JNI critical method
   static void block_for_jni_critical(JavaThread* thread);
 
+  // Pin/Unpin object
+  static oopDesc* pin_object(JavaThread* thread, oopDesc* obj);
+  static void unpin_object(JavaThread* thread, oopDesc* obj);
+
   // A compiled caller has just called the interpreter, but compiled code
   // exists.  Patch the caller so he no longer calls into the interpreter.
   static void fixup_callers_callsite(Method* moop, address ret_pc);
@@ -630,6 +636,7 @@ class AdapterHandlerEntry : public BasicHashtableEntry<mtCode> {
   address _i2c_entry;
   address _c2i_entry;
   address _c2i_unverified_entry;
+  address _c2i_no_clinit_check_entry;
 
 #ifdef ASSERT
   // Captures code and signature used to generate this adapter when
@@ -638,11 +645,12 @@ class AdapterHandlerEntry : public BasicHashtableEntry<mtCode> {
   int            _saved_code_length;
 #endif
 
-  void init(AdapterFingerPrint* fingerprint, address i2c_entry, address c2i_entry, address c2i_unverified_entry) {
+  void init(AdapterFingerPrint* fingerprint, address i2c_entry, address c2i_entry, address c2i_unverified_entry, address c2i_no_clinit_check_entry) {
     _fingerprint = fingerprint;
     _i2c_entry = i2c_entry;
     _c2i_entry = c2i_entry;
     _c2i_unverified_entry = c2i_unverified_entry;
+    _c2i_no_clinit_check_entry = c2i_no_clinit_check_entry;
 #ifdef ASSERT
     _saved_code = NULL;
     _saved_code_length = 0;
@@ -655,9 +663,11 @@ class AdapterHandlerEntry : public BasicHashtableEntry<mtCode> {
   AdapterHandlerEntry();
 
  public:
-  address get_i2c_entry()            const { return _i2c_entry; }
-  address get_c2i_entry()            const { return _c2i_entry; }
-  address get_c2i_unverified_entry() const { return _c2i_unverified_entry; }
+  address get_i2c_entry()                  const { return _i2c_entry; }
+  address get_c2i_entry()                  const { return _c2i_entry; }
+  address get_c2i_unverified_entry()       const { return _c2i_unverified_entry; }
+  address get_c2i_no_clinit_check_entry()  const { return _c2i_no_clinit_check_entry; }
+
   address base_address();
   void relocate(address new_base);
 
@@ -703,7 +713,10 @@ class AdapterHandlerLibrary: public AllStatic {
  public:
 
   static AdapterHandlerEntry* new_entry(AdapterFingerPrint* fingerprint,
-                                        address i2c_entry, address c2i_entry, address c2i_unverified_entry);
+                                        address i2c_entry,
+                                        address c2i_entry,
+                                        address c2i_unverified_entry,
+                                        address c2i_no_clinit_check_entry = NULL);
   static void create_native_wrapper(const methodHandle& method);
   static AdapterHandlerEntry* get_adapter(const methodHandle& method);
 
@@ -716,4 +729,4 @@ class AdapterHandlerLibrary: public AllStatic {
 
 };
 
-#endif // SHARE_VM_RUNTIME_SHAREDRUNTIME_HPP
+#endif // SHARE_RUNTIME_SHAREDRUNTIME_HPP

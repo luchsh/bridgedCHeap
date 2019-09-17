@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,15 +23,21 @@
 
 /*
  * @test
- * @bug      4460354 8014636 8043186 8195805
+ * @bug      4460354 8014636 8043186 8195805 8182765 8196202
  * @summary  Test to make sure that relative paths are redirected in the
  *           output so that they are not broken.
  * @author   jamieh
- * @library  ../lib
+ * @library  ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
- * @build    JavadocTester
+ * @build    javadoc.tester.*
  * @run main TestRelativeLinks
  */
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+
+import javadoc.tester.JavadocTester;
 
 public class TestRelativeLinks extends JavadocTester {
 
@@ -41,12 +47,15 @@ public class TestRelativeLinks extends JavadocTester {
     }
 
     @Test
-    void test() {
+    public void test() {
         javadoc("-d", "out",
                 "-use",
                 "-sourcepath", testSrc,
                 "pkg", "pkg2");
-        checkExit(Exit.OK);
+        checkExit(Exit.ERROR);
+
+        checkOutput(Output.OUT, true,
+                "attribute not supported in HTML5: name");
 
         // These relative paths should stay relative because they appear
         // in the right places.
@@ -88,7 +97,17 @@ public class TestRelativeLinks extends JavadocTester {
             " <a href=\"../../pkg/relative-multi-line-link.html\">relative-multi-line-link</a>.");
 
         // PACKAGE OVERVIEW
-        checkOutput("overview-summary.html", true,
+        checkOutput("index.html", true,
             "<a href=\"./pkg/relative-package-link.html\">relative package link</a>");
+    }
+
+    private void touch(String file) {
+        File f = new File(outputDir, file);
+        out.println("touch " + f);
+        try (FileOutputStream fos = new FileOutputStream(f)) {
+        } catch (IOException e) {
+            checking("Touch file");
+            failed("Error creating file: " + e);
+        }
     }
 }

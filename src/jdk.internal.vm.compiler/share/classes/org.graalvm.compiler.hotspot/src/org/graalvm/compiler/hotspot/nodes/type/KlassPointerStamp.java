@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.nodes.type;
 
 import java.util.Objects;
@@ -67,6 +69,13 @@ public final class KlassPointerStamp extends MetaspacePointerStamp {
     private KlassPointerStamp(boolean nonNull, boolean alwaysNull, CompressEncoding encoding) {
         super(nonNull, alwaysNull);
         this.encoding = encoding;
+    }
+
+    @Override
+    public void accept(Visitor v) {
+        super.accept(v);
+        v.visitLong(encoding.getBase());
+        v.visitInt(encoding.getShift());
     }
 
     @Override
@@ -120,11 +129,11 @@ public final class KlassPointerStamp extends MetaspacePointerStamp {
     }
 
     @Override
-    public Constant asConstant() {
-        if (alwaysNull() && isCompressed()) {
+    public JavaConstant nullConstant() {
+        if (isCompressed()) {
             return HotSpotCompressedNullConstant.COMPRESSED_NULL;
         } else {
-            return super.asConstant();
+            return super.nullConstant();
         }
     }
 

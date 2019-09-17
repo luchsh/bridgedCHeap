@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -371,7 +371,7 @@ public final class TimeZoneNames_zh_CN extends TimeZoneNamesBundle {
             {"Africa/Nouakchott", GMT},
             {"Africa/Ouagadougou", GMT},
             {"Africa/Porto-Novo", WAT},
-            {"Africa/Sao_Tome", WAT},
+            {"Africa/Sao_Tome", GMT},
             {"Africa/Timbuktu", GMT},
             {"Africa/Tripoli", EET},
             {"Africa/Tunis", CET},
@@ -446,7 +446,7 @@ public final class TimeZoneNames_zh_CN extends TimeZoneNamesBundle {
                                               "\u897f\u683c\u6797\u5170\u5c9b\u590f\u4ee4\u65f6", "WGST",
                                               "\u897F\u683C\u6797\u5170\u5C9B\u65F6\u95F4", "WGT"}},
             {"America/Goose_Bay", AST},
-            {"America/Grand_Turk", AST},
+            {"America/Grand_Turk", EST},
             {"America/Grenada", AST},
             {"America/Guadeloupe", AST},
             {"America/Guatemala", CST},
@@ -667,9 +667,9 @@ public final class TimeZoneNames_zh_CN extends TimeZoneNamesBundle {
                                            "Magadan \u590f\u4ee4\u65f6", "MAGST",
                                            "Magadan \u65F6\u95F4", "MAGT"}},
             {"Asia/Makassar", CIT},
-            {"Asia/Manila", new String[] {"\u83f2\u5f8b\u5bbe\u65f6\u95f4", "PHT",
-                                          "\u83f2\u5f8b\u5bbe\u590f\u4ee4\u65f6", "PHST",
-                                          "\u83F2\u5F8B\u5BBE\u65F6\u95F4", "PHT"}},
+            {"Asia/Manila", new String[] {"Philippines Standard Time", "PST",
+                                          "Philippines Daylight Time", "PDT",
+                                          "Philippines Time", "PT"}},
             {"Asia/Muscat", GST},
             {"Asia/Nicosia", EET},
             {"Asia/Novokuznetsk", KRAT},

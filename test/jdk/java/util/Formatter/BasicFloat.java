@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -1166,7 +1166,7 @@ public class BasicFloat extends Basic {
         test("%.3f", "-3141.593", mult(pi, -1000.0));
 
         test("%,.2f", "3,141.59", mult(pi, 1000.0));
-        test(Locale.FRANCE, "%,.2f", "3\u00a0141,59", mult(pi, 1000.0));
+        test(Locale.FRANCE, "%,.2f", "3\u202f141,59", mult(pi, 1000.0));
         test("%,.2f", "-3,141.59", mult(pi, -1000.0));
         test("%(.2f", "3141.59", mult(pi, 1000.0));
         test("%(.2f", "(3141.59)", mult(pi, -1000.0));
@@ -1792,6 +1792,15 @@ public class BasicFloat extends Basic {
         //---------------------------------------------------------------------
         test("%%", "%", (Object)null);
         test("%%", "%", "");
+
+        test("%5%", "    %", (Object)null);
+        test("%5%", "    %", "");
+        test("%-5%", "%    ", (Object)null);
+        test("%-5%", "%    ", "");
+
+        tryCatch("%.5%", IllegalFormatPrecisionException.class);
+        tryCatch("%5.5%", IllegalFormatPrecisionException.class);
+
         tryCatch("%%%", UnknownFormatConversionException.class);
         // perhaps an IllegalFormatArgumentIndexException should be defined?
         tryCatch("%<%", IllegalFormatFlagsException.class);

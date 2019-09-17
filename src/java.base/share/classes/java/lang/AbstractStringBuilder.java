@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,7 @@
 package java.lang;
 
 import jdk.internal.math.FloatingDecimal;
+
 import java.util.Arrays;
 import java.util.Spliterator;
 import java.util.stream.IntStream;
@@ -69,10 +70,13 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
      */
     int count;
 
+    private static final byte[] EMPTYVALUE = new byte[0];
+
     /**
      * This no-arg constructor is necessary for serialization of subclasses.
      */
     AbstractStringBuilder() {
+        value = EMPTYVALUE;
     }
 
     /**
@@ -86,6 +90,83 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
             value = StringUTF16.newBytesFor(capacity);
             coder = UTF16;
         }
+    }
+
+    /**
+     * Constructs an AbstractStringBuilder that contains the same characters
+     * as the specified {@code String}. The initial capacity of
+     * the string builder is {@code 16} plus the length of the
+     * {@code String} argument.
+     *
+     * @param      str   the string to copy.
+     */
+    AbstractStringBuilder(String str) {
+        int length = str.length();
+        int capacity = (length < Integer.MAX_VALUE - 16)
+                ? length + 16 : Integer.MAX_VALUE;
+        final byte initCoder = str.coder();
+        coder = initCoder;
+        value = (initCoder == LATIN1)
+                ? new byte[capacity] : StringUTF16.newBytesFor(capacity);
+        append(str);
+    }
+
+    /**
+     * Constructs an AbstractStringBuilder that contains the same characters
+     * as the specified {@code CharSequence}. The initial capacity of
+     * the string builder is {@code 16} plus the length of the
+     * {@code CharSequence} argument.
+     *
+     * @param      seq   the sequence to copy.
+     */
+    AbstractStringBuilder(CharSequence seq) {
+        int length = seq.length();
+        if (length < 0) {
+            throw new NegativeArraySizeException("Negative length: " + length);
+        }
+        int capacity = (length < Integer.MAX_VALUE - 16)
+                ? length + 16 : Integer.MAX_VALUE;
+
+        final byte initCoder;
+        if (COMPACT_STRINGS) {
+            if (seq instanceof AbstractStringBuilder) {
+                initCoder = ((AbstractStringBuilder)seq).getCoder();
+            } else if (seq instanceof String) {
+                initCoder = ((String)seq).coder();
+            } else {
+                initCoder = LATIN1;
+            }
+        } else {
+            initCoder = UTF16;
+        }
+
+        coder = initCoder;
+        value = (initCoder == LATIN1)
+                ? new byte[capacity] : StringUTF16.newBytesFor(capacity);
+        append(seq);
+    }
+
+    /**
+     * Compares the objects of two AbstractStringBuilder implementations lexicographically.
+     *
+     * @since 11
+     */
+    int compareTo(AbstractStringBuilder another) {
+        if (this == another) {
+            return 0;
+        }
+
+        byte val1[] = value;
+        byte val2[] = another.value;
+        int count1 = this.count;
+        int count2 = another.count;
+
+        if (coder == another.coder) {
+            return isLatin1() ? StringLatin1.compareTo(val1, val2, count1, count2)
+                              : StringUTF16.compareTo(val1, val2, count1, count2);
+        }
+        return isLatin1() ? StringLatin1.compareToUTF16(val1, val2, count1, count2)
+                          : StringUTF16.compareToLatin1(val1, val2, count1, count2);
     }
 
     /**
@@ -302,7 +383,7 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
      * @param      index the index to the {@code char} values
      * @return     the code point value of the character at the
      *             {@code index}
-     * @exception  IndexOutOfBoundsException  if the {@code index}
+     * @throws     IndexOutOfBoundsException  if the {@code index}
      *             argument is negative or not less than the length of this
      *             sequence.
      */
@@ -333,7 +414,7 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
      *
      * @param     index the index following the code point that should be returned
      * @return    the Unicode code point value before the given index.
-     * @exception IndexOutOfBoundsException if the {@code index}
+     * @throws    IndexOutOfBoundsException if the {@code index}
      *            argument is less than 1 or greater than the length
      *            of this sequence.
      */
@@ -363,7 +444,7 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
      * the text range.
      * @return the number of Unicode code points in the specified text
      * range
-     * @exception IndexOutOfBoundsException if the
+     * @throws    IndexOutOfBoundsException if the
      * {@code beginIndex} is negative, or {@code endIndex}
      * is larger than the length of this sequence, or
      * {@code beginIndex} is larger than {@code endIndex}.
@@ -388,7 +469,7 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
      * @param index the index to be offset
      * @param codePointOffset the offset in code points
      * @return the index within this sequence
-     * @exception IndexOutOfBoundsException if {@code index}
+     * @throws    IndexOutOfBoundsException if {@code index}
      *   is negative or larger then the length of this sequence,
      *   or if {@code codePointOffset} is positive and the subsequence
      *   starting with {@code index} has fewer than
@@ -605,9 +686,14 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
         checkRange(start, end, s.length());
         int len = end - start;
         ensureCapacityInternal(count + len);
-        appendChars(s, start, end);
+        if (s instanceof String) {
+            appendChars((String)s, start, end);
+        } else {
+            appendChars(s, start, end);
+        }
         return this;
     }
+
 
     /**
      * Appends the string representation of the {@code char} array
@@ -859,7 +945,7 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
      *
      * @param   codePoint   a Unicode code point
      * @return  a reference to this object.
-     * @exception IllegalArgumentException if the specified
+     * @throws    IllegalArgumentException if the specified
      * {@code codePoint} isn't a valid Unicode code point
      */
     public AbstractStringBuilder appendCodePoint(int codePoint) {
@@ -1661,6 +1747,35 @@ abstract class AbstractStringBuilder implements Appendable, CharSequence {
             StringUTF16.putCharsSB(this.value, count, s, off, end);
         }
         this.count = count + end - off;
+    }
+
+    private final void appendChars(String s, int off, int end) {
+        if (isLatin1()) {
+            if (s.isLatin1()) {
+                System.arraycopy(s.value(), off, this.value, this.count, end - off);
+            } else {
+                // We might need to inflate, but do it as late as possible since
+                // the range of characters we're copying might all be latin1
+                byte[] val = this.value;
+                for (int i = off, j = count; i < end; i++) {
+                    char c = s.charAt(i);
+                    if (StringLatin1.canEncode(c)) {
+                        val[j++] = (byte) c;
+                    } else {
+                        count = j;
+                        inflate();
+                        System.arraycopy(s.value(), i << UTF16, this.value, j << UTF16, (end - i) << UTF16);
+                        count += end - i;
+                        return;
+                    }
+                }
+            }
+        } else if (s.isLatin1()) {
+            StringUTF16.putCharsSB(this.value, this.count, s, off, end);
+        } else { // both UTF16
+            System.arraycopy(s.value(), off << UTF16, this.value, this.count << UTF16, (end - off) << UTF16);
+        }
+        count += end - off;
     }
 
     private final void appendChars(CharSequence s, int off, int end) {

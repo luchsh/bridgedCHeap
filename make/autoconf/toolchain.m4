@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # This code is free software; you can redistribute it and/or modify it
@@ -52,10 +52,13 @@ TOOLCHAIN_DESCRIPTION_xlc="IBM XL C/C++"
 
 # Minimum supported versions, empty means unspecified
 TOOLCHAIN_MINIMUM_VERSION_clang="3.2"
-TOOLCHAIN_MINIMUM_VERSION_gcc="4.7"
+TOOLCHAIN_MINIMUM_VERSION_gcc="4.8"
 TOOLCHAIN_MINIMUM_VERSION_microsoft="16.00.30319.01" # VS2010
 TOOLCHAIN_MINIMUM_VERSION_solstudio="5.13"
 TOOLCHAIN_MINIMUM_VERSION_xlc=""
+
+# Minimum supported linker versions, empty means unspecified
+TOOLCHAIN_MINIMUM_LD_VERSION_gcc="2.18"
 
 # Prepare the system so that TOOLCHAIN_CHECK_COMPILER_VERSION can be called.
 # Must have CC_VERSION_NUMBER and CXX_VERSION_NUMBER.
@@ -114,6 +117,57 @@ BASIC_DEFUN_NAMED([TOOLCHAIN_CHECK_COMPILER_VERSION],
   fi
 ])
 
+# Prepare the system so that TOOLCHAIN_CHECK_COMPILER_VERSION can be called.
+# Must have LD_VERSION_NUMBER.
+# $1 - optional variable prefix for compiler and version variables (BUILD_)
+# $2 - optional variable prefix for comparable variable (OPENJDK_BUILD_)
+AC_DEFUN([TOOLCHAIN_PREPARE_FOR_LD_VERSION_COMPARISONS],
+[
+  if [ [[ "[$]$1LD_VERSION_NUMBER" =~ (.*\.){4} ]] ]; then
+    AC_MSG_WARN([Linker version number has more than four parts (W.X.Y.Z): [$]$1LD_VERSION_NUMBER. Comparisons might be wrong.])
+  fi
+
+  if [ [[  "[$]$1LD_VERSION_NUMBER" =~ [0-9]{6} ]] ]; then
+    AC_MSG_WARN([Linker version number has a part larger than 99999: [$]$1LD_VERSION_NUMBER. Comparisons might be wrong.])
+  fi
+
+  $2COMPARABLE_ACTUAL_LD_VERSION=`$AWK -F. '{ printf("%05d%05d%05d%05d\n", [$]1, [$]2, [$]3, [$]4) }' <<< "[$]$1LD_VERSION_NUMBER"`
+])
+
+# Check if the configured linker is of a specific version or
+# newer. TOOLCHAIN_PREPARE_FOR_LD_VERSION_COMPARISONS must have been called before.
+#
+# Arguments:
+#   VERSION:   The version string to check against the found version
+#   IF_AT_LEAST:   block to run if the compiler is at least this version (>=)
+#   IF_OLDER_THAN:   block to run if the compiler is older than this version (<)
+#   PREFIX:   Optional variable prefix for compiler to compare version for (OPENJDK_BUILD_)
+BASIC_DEFUN_NAMED([TOOLCHAIN_CHECK_LINKER_VERSION],
+    [*VERSION PREFIX IF_AT_LEAST IF_OLDER_THAN], [$@],
+[
+  # Need to assign to a variable since m4 is blocked from modifying parts in [].
+  REFERENCE_VERSION=ARG_VERSION
+
+  if [ [[ "$REFERENCE_VERSION" =~ (.*\.){4} ]] ]; then
+    AC_MSG_ERROR([Internal error: Cannot compare to ARG_VERSION, only four parts (W.X.Y.Z) is supported])
+  fi
+
+  if [ [[ "$REFERENCE_VERSION" =~ [0-9]{6} ]] ]; then
+    AC_MSG_ERROR([Internal error: Cannot compare to ARG_VERSION, only parts < 99999 is supported])
+  fi
+
+  # Version comparison method inspired by http://stackoverflow.com/a/24067243
+  COMPARABLE_REFERENCE_VERSION=`$AWK -F. '{ printf("%05d%05d%05d%05d\n", [$]1, [$]2, [$]3, [$]4) }' <<< "$REFERENCE_VERSION"`
+
+  if test [$]ARG_PREFIX[COMPARABLE_ACTUAL_LD_VERSION] -ge $COMPARABLE_REFERENCE_VERSION ; then
+    :
+    ARG_IF_AT_LEAST
+  else
+    :
+    ARG_IF_OLDER_THAN
+  fi
+])
+
 # Setup a number of variables describing how native output files are
 # named on this platform/toolchain.
 AC_DEFUN([TOOLCHAIN_SETUP_FILENAME_PATTERNS],
@@ -126,7 +180,6 @@ AC_DEFUN([TOOLCHAIN_SETUP_FILENAME_PATTERNS],
     SHARED_LIBRARY='[$]1.dll'
     STATIC_LIBRARY='[$]1.lib'
     OBJ_SUFFIX='.obj'
-    EXE_SUFFIX='.exe'
   else
     LIBRARY_PREFIX=lib
     SHARED_LIBRARY_SUFFIX='.so'
@@ -134,7 +187,6 @@ AC_DEFUN([TOOLCHAIN_SETUP_FILENAME_PATTERNS],
     SHARED_LIBRARY='lib[$]1.so'
     STATIC_LIBRARY='lib[$]1.a'
     OBJ_SUFFIX='.o'
-    EXE_SUFFIX=''
     if test "x$OPENJDK_TARGET_OS" = xmacosx; then
       # For full static builds, we're overloading the SHARED_LIBRARY
       # variables in order to limit the amount of changes required.
@@ -158,7 +210,6 @@ AC_DEFUN([TOOLCHAIN_SETUP_FILENAME_PATTERNS],
   AC_SUBST(SHARED_LIBRARY)
   AC_SUBST(STATIC_LIBRARY)
   AC_SUBST(OBJ_SUFFIX)
-  AC_SUBST(EXE_SUFFIX)
 ])
 
 # Determine which toolchain type to use, and make sure it is valid for this
@@ -178,6 +229,7 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETERMINE_TOOLCHAIN_TYPE],
       XCODE_VERSION_OUTPUT=`"$XCODEBUILD" -version 2>&1 | $HEAD -n 1`
       $ECHO "$XCODE_VERSION_OUTPUT" | $GREP "Xcode " > /dev/null
       if test $? -ne 0; then
+        AC_MSG_NOTICE([xcodebuild output: $XCODE_VERSION_OUTPUT])
         AC_MSG_ERROR([Failed to determine Xcode version.])
       fi
       XCODE_MAJOR_VERSION=`$ECHO $XCODE_VERSION_OUTPUT | \
@@ -224,23 +276,47 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETERMINE_TOOLCHAIN_TYPE],
   fi
   AC_SUBST(TOOLCHAIN_TYPE)
 
+  # on AIX, check for xlclang++ on the PATH and TOOLCHAIN_PATH and use it if it is available
+  if test "x$OPENJDK_TARGET_OS" = xaix; then
+    if test "x$TOOLCHAIN_PATH" != x; then
+      XLC_TEST_PATH=${TOOLCHAIN_PATH}/
+    fi
+
+    XLCLANG_VERSION_OUTPUT=`${XLC_TEST_PATH}xlclang++ -qversion 2>&1 | $HEAD -n 1`
+    $ECHO "$XLCLANG_VERSION_OUTPUT" | $GREP "IBM XL C/C++ for AIX" > /dev/null
+    if test $? -eq 0; then
+      AC_MSG_NOTICE([xlclang++ output: $XLCLANG_VERSION_OUTPUT])
+      XLC_USES_CLANG=true
+    fi
+  fi
+
   TOOLCHAIN_CC_BINARY_clang="clang"
   TOOLCHAIN_CC_BINARY_gcc="gcc"
-  TOOLCHAIN_CC_BINARY_microsoft="cl"
+  TOOLCHAIN_CC_BINARY_microsoft="cl$EXE_SUFFIX"
   TOOLCHAIN_CC_BINARY_solstudio="cc"
   TOOLCHAIN_CC_BINARY_xlc="xlc_r"
 
   TOOLCHAIN_CXX_BINARY_clang="clang++"
   TOOLCHAIN_CXX_BINARY_gcc="g++"
-  TOOLCHAIN_CXX_BINARY_microsoft="cl"
+  TOOLCHAIN_CXX_BINARY_microsoft="cl$EXE_SUFFIX"
   TOOLCHAIN_CXX_BINARY_solstudio="CC"
   TOOLCHAIN_CXX_BINARY_xlc="xlC_r"
+
+  if test "x$OPENJDK_TARGET_OS" = xaix; then
+    if test "x$XLC_USES_CLANG" = xtrue; then
+      AC_MSG_NOTICE([xlclang++ detected, using it])
+      TOOLCHAIN_CC_BINARY_xlc="xlclang"
+      TOOLCHAIN_CXX_BINARY_xlc="xlclang++"
+    fi
+  fi
 
   # Use indirect variable referencing
   toolchain_var_name=TOOLCHAIN_DESCRIPTION_$TOOLCHAIN_TYPE
   TOOLCHAIN_DESCRIPTION=${!toolchain_var_name}
   toolchain_var_name=TOOLCHAIN_MINIMUM_VERSION_$TOOLCHAIN_TYPE
   TOOLCHAIN_MINIMUM_VERSION=${!toolchain_var_name}
+  toolchain_var_name=TOOLCHAIN_MINIMUM_LD_VERSION_$TOOLCHAIN_TYPE
+  TOOLCHAIN_MINIMUM_LD_VERSION=${!toolchain_var_name}
   toolchain_var_name=TOOLCHAIN_CC_BINARY_$TOOLCHAIN_TYPE
   TOOLCHAIN_CC_BINARY=${!toolchain_var_name}
   toolchain_var_name=TOOLCHAIN_CXX_BINARY_$TOOLCHAIN_TYPE
@@ -276,9 +352,17 @@ AC_DEFUN_ONCE([TOOLCHAIN_PRE_DETECTION],
   if test "x$OPENJDK_BUILD_OS" = "xwindows" \
       && test "x$TOOLCHAIN_TYPE" = "xmicrosoft"; then
     TOOLCHAIN_SETUP_VISUAL_STUDIO_ENV
-    # Reset path to VS_PATH. It will include everything that was on PATH at the time we
-    # ran TOOLCHAIN_SETUP_VISUAL_STUDIO_ENV.
-    PATH="$VS_PATH"
+    if test "x$OPENJDK_BUILD_OS_ENV" = "xwindows.wsl"; then
+      # Append VS_PATH. In WSL, VS_PATH will not contain the WSL env path needed
+      # for using basic Unix tools, so need to keep the original PATH.
+      BASIC_APPEND_TO_PATH(PATH, $VS_PATH)
+      BASIC_APPEND_TO_PATH(WSLENV, "PATH/l:LIB:INCLUDE")
+      export WSLENV
+    else
+      # Reset path to VS_PATH. It will include everything that was on PATH at the time we
+      # ran TOOLCHAIN_SETUP_VISUAL_STUDIO_ENV.
+      PATH="$VS_PATH"
+    fi
     # The microsoft toolchain also requires INCLUDE and LIB to be set.
     export INCLUDE="$VS_INCLUDE"
     export LIB="$VS_LIB"
@@ -373,7 +457,7 @@ AC_DEFUN([TOOLCHAIN_EXTRACT_COMPILER_VERSION],
     # There is no specific version flag, but all output starts with a version string.
     # First line typically looks something like:
     # Microsoft (R) 32-bit C/C++ Optimizing Compiler Version 16.00.40219.01 for 80x86
-    COMPILER_VERSION_OUTPUT=`$COMPILER 2>&1 | $HEAD -n 1 | $TR -d '\r'`
+    COMPILER_VERSION_OUTPUT=`"$COMPILER" 2>&1 | $GREP -v 'ERROR.*UtilTranslatePathList' | $HEAD -n 1 | $TR -d '\r'`
     # Check that this is likely to be Microsoft CL.EXE.
     $ECHO "$COMPILER_VERSION_OUTPUT" | $GREP "Microsoft.*Compiler" > /dev/null
     if test $? -ne 0; then
@@ -524,6 +608,84 @@ AC_DEFUN([TOOLCHAIN_FIND_COMPILER],
   TOOLCHAIN_EXTRACT_COMPILER_VERSION([$1], [$COMPILER_NAME])
 ])
 
+# Retrieve the linker version number and store it in LD_VERSION_NUMBER
+# (as a dotted number), and
+# the full version string in LD_VERSION_STRING.
+#
+# $1 = linker to test (LD or BUILD_LD)
+# $2 = human readable name of linker (Linker or BuildLinker)
+AC_DEFUN([TOOLCHAIN_EXTRACT_LD_VERSION],
+[
+  LINKER=[$]$1
+  LINKER_NAME="$2"
+
+  if test "x$TOOLCHAIN_TYPE" = xsolstudio; then
+    # cc -Wl,-V output typically looks like
+    #   ld: Software Generation Utilities - Solaris Link Editors: 5.11-1.2329
+
+    # solstudio cc requires us to have an existing file to pass as argument,
+    # but it need not be a syntactically correct C file, so just use
+    # ourself. :) The intermediate 'cat' is needed to stop ld from leaving
+    # a lingering a.out (!).
+    LINKER_VERSION_STRING=`$LD -Wl,-V $TOPDIR/configure 2>&1 | $CAT | $HEAD -n 1 | $SED -e 's/ld: //'`
+    # Extract version number
+    [ LINKER_VERSION_NUMBER=`$ECHO $LINKER_VERSION_STRING | \
+        $SED -e 's/.* \([0-9][0-9]*\.[0-9][0-9]*\)-\([0-9][0-9]*\.[0-9][0-9]*\)/\1.\2/'` ]
+  elif test  "x$TOOLCHAIN_TYPE" = xxlc; then
+    LINKER_VERSION_STRING="Unknown"
+    LINKER_VERSION_NUMBER="0.0"
+  elif test  "x$TOOLCHAIN_TYPE" = xmicrosoft; then
+    # There is no specific version flag, but all output starts with a version string.
+    # First line typically looks something like:
+    #   Microsoft (R) Incremental Linker Version 12.00.31101.0
+    LINKER_VERSION_STRING=`$LD 2>&1 | $HEAD -n 1 | $TR -d '\r'`
+    # Extract version number
+    [ LINKER_VERSION_NUMBER=`$ECHO $LINKER_VERSION_STRING | \
+        $SED -e 's/.* \([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/'` ]
+  elif test  "x$TOOLCHAIN_TYPE" = xgcc; then
+    # gcc -Wl,-version output typically looks like:
+    #   GNU ld (GNU Binutils for Ubuntu) 2.26.1
+    #   Copyright (C) 2015 Free Software Foundation, Inc.
+    #   This program is free software; [...]
+    # If using gold it will look like:
+    #   GNU gold (GNU Binutils 2.30) 1.15
+    LINKER_VERSION_STRING=`$LD -Wl,--version 2> /dev/null | $HEAD -n 1`
+    # Extract version number
+    if [ [[ "$LINKER_VERSION_STRING" == *gold* ]] ]; then
+      [ LINKER_VERSION_NUMBER=`$ECHO $LINKER_VERSION_STRING | \
+          $SED -e 's/.* \([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*) .*/\1/'` ]
+    else
+      [ LINKER_VERSION_NUMBER=`$ECHO $LINKER_VERSION_STRING | \
+          $SED -e 's/.* \([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/'` ]
+    fi
+  elif test  "x$TOOLCHAIN_TYPE" = xclang; then
+    # clang -Wl,-v output typically looks like
+    #   @(#)PROGRAM:ld  PROJECT:ld64-305
+    #   configured to support archs: armv6 armv7 armv7s arm64 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em (tvOS)
+    #   Library search paths: [...]
+    # or
+    #   GNU ld (GNU Binutils for Ubuntu) 2.26.1
+
+    LINKER_VERSION_STRING=`$LD -Wl,-v 2>&1 | $HEAD -n 1`
+    # Check if we're using the GNU ld
+    $ECHO "$LINKER_VERSION_STRING" | $GREP "GNU" > /dev/null
+    if test $? -eq 0; then
+      # Extract version number
+      [ LINKER_VERSION_NUMBER=`$ECHO $LINKER_VERSION_STRING | \
+          $SED -e 's/.* \([0-9][0-9]*\(\.[0-9][0-9]*\)*\).*/\1/'` ]
+    else
+      # Extract version number
+      [ LINKER_VERSION_NUMBER=`$ECHO $LINKER_VERSION_STRING | \
+          $SED -e 's/.*-\([0-9][0-9]*\)/\1/'` ]
+    fi
+  fi
+
+  $1_VERSION_NUMBER="$LINKER_VERSION_NUMBER"
+  $1_VERSION_STRING="$LINKER_VERSION_STRING"
+
+  AC_MSG_NOTICE([Using $TOOLCHAIN_TYPE $LINKER_NAME version $LINKER_VERSION_NUMBER @<:@$LINKER_VERSION_STRING@:>@])
+])
+
 # Detect the core components of the toolchain, i.e. the compilers (CC and CXX),
 # preprocessor (CPP and CXXCPP), the linker (LD), the assembler (AS) and the
 # archiver (AR). Verify that the compilers are correct according to the
@@ -570,7 +732,7 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETECT_TOOLCHAIN_CORE],
     # In the Microsoft toolchain we have a separate LD command "link".
     # Make sure we reject /usr/bin/link (as determined in CYGWIN_LINK), which is
     # a cygwin program for something completely different.
-    AC_CHECK_PROG([LD], [link],[link],,, [$CYGWIN_LINK])
+    AC_CHECK_PROG([LD], [link$EXE_SUFFIX],[link$EXE_SUFFIX],,, [$CYGWIN_LINK])
     BASIC_FIXUP_EXECUTABLE(LD)
     # Verify that we indeed succeeded with this trick.
     AC_MSG_CHECKING([if the found link.exe is actually the Visual Studio linker])
@@ -582,14 +744,31 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETECT_TOOLCHAIN_CORE],
       AC_MSG_RESULT([yes])
     fi
     LDCXX="$LD"
+    # jaotc being a windows program expects the linker to be supplied with exe suffix.
+    LD_JAOTC="$LD$EXE_SUFFIX"
   else
     # All other toolchains use the compiler to link.
     LD="$CC"
     LDCXX="$CXX"
+    # jaotc expects 'ld' as the linker rather than the compiler.
+    BASIC_CHECK_TOOLS([LD_JAOTC], ld)
+    BASIC_FIXUP_EXECUTABLE(LD_JAOTC)
   fi
   AC_SUBST(LD)
+  AC_SUBST(LD_JAOTC)
   # FIXME: it should be CXXLD, according to standard (cf CXXCPP)
   AC_SUBST(LDCXX)
+
+  TOOLCHAIN_EXTRACT_LD_VERSION([LD], [linker])
+  TOOLCHAIN_PREPARE_FOR_LD_VERSION_COMPARISONS
+
+  if test "x$TOOLCHAIN_MINIMUM_LD_VERSION" != x; then
+    TOOLCHAIN_CHECK_LINKER_VERSION(VERSION: $TOOLCHAIN_MINIMUM_LD_VERSION,
+        IF_OLDER_THAN: [
+          AC_MSG_WARN([You are using a linker older than $TOOLCHAIN_MINIMUM_LD_VERSION. This is not a supported configuration.])
+        ]
+    )
+  fi
 
   #
   # Setup the assembler (AS)
@@ -611,7 +790,7 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETECT_TOOLCHAIN_CORE],
   #
   if test "x$TOOLCHAIN_TYPE" = xmicrosoft; then
     # The corresponding ar tool is lib.exe (used to create static libraries)
-    AC_CHECK_PROG([AR], [lib],[lib],,,)
+    AC_CHECK_PROG([AR], [lib$EXE_SUFFIX],[lib$EXE_SUFFIX],,,)
   elif test "x$TOOLCHAIN_TYPE" = xgcc; then
     BASIC_CHECK_TOOLS(AR, ar gcc-ar)
   else
@@ -635,12 +814,12 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETECT_TOOLCHAIN_EXTRA],
   fi
 
   if test "x$TOOLCHAIN_TYPE" = xmicrosoft; then
-    AC_CHECK_PROG([MT], [mt], [mt],,, [/usr/bin/mt])
+    AC_CHECK_PROG([MT], [mt$EXE_SUFFIX], [mt$EXE_SUFFIX],,, [/usr/bin/mt])
     BASIC_FIXUP_EXECUTABLE(MT)
     # Setup the resource compiler (RC)
-    AC_CHECK_PROG([RC], [rc], [rc],,, [/usr/bin/rc])
+    AC_CHECK_PROG([RC], [rc$EXE_SUFFIX], [rc$EXE_SUFFIX],,, [/usr/bin/rc])
     BASIC_FIXUP_EXECUTABLE(RC)
-    AC_CHECK_PROG([DUMPBIN], [dumpbin], [dumpbin],,,)
+    AC_CHECK_PROG([DUMPBIN], [dumpbin$EXE_SUFFIX], [dumpbin$EXE_SUFFIX],,,)
     BASIC_FIXUP_EXECUTABLE(DUMPBIN)
     # We need to check for 'msbuild.exe' because at the place where we expect to
     # find 'msbuild.exe' there's also a directory called 'msbuild' and configure
@@ -649,7 +828,7 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETECT_TOOLCHAIN_EXTRA],
     # Notice that we intentionally don't fix up the path to MSBUILD because we
     # will call it in a DOS shell during freetype detection on Windows (see
     # 'LIB_SETUP_FREETYPE' in "libraries.m4"
-    AC_CHECK_PROG([MSBUILD], [msbuild.exe], [msbuild.exe],,,)
+    AC_CHECK_PROG([MSBUILD], [msbuild$EXE_SUFFIX], [msbuild$EXE_SUFFIX],,,)
   fi
 
   if test "x$OPENJDK_TARGET_OS" = xsolaris; then
@@ -726,6 +905,14 @@ AC_DEFUN_ONCE([TOOLCHAIN_DETECT_TOOLCHAIN_EXTRA],
     # bails if argument is missing.
     BASIC_FIXUP_EXECUTABLE(OBJDUMP)
   fi
+
+  case $TOOLCHAIN_TYPE in
+    gcc|clang|solstudio)
+      BASIC_CHECK_TOOLS(CXXFILT, [c++filt])
+      BASIC_CHECK_NONEMPTY(CXXFILT)
+      BASIC_FIXUP_EXECUTABLE(CXXFILT)
+      ;;
+  esac
 ])
 
 # Setup the build tools (i.e, the compiler and linker used to build programs
@@ -783,7 +970,6 @@ AC_DEFUN_ONCE([TOOLCHAIN_SETUP_BUILD_COMPILERS],
         fi
 
         BUILD_SYSROOT="$BUILD_DEVKIT_SYSROOT"
-        FLAGS_SETUP_SYSROOT_FLAGS([BUILD_])
 
          # Fallback default of just /bin if DEVKIT_PATH is not defined
         if test "x$BUILD_DEVKIT_TOOLCHAIN_PATH" = x; then
@@ -819,6 +1005,8 @@ AC_DEFUN_ONCE([TOOLCHAIN_SETUP_BUILD_COMPILERS],
     TOOLCHAIN_EXTRACT_COMPILER_VERSION(BUILD_CC, [BuildC])
     TOOLCHAIN_EXTRACT_COMPILER_VERSION(BUILD_CXX, [BuildC++])
     TOOLCHAIN_PREPARE_FOR_VERSION_COMPARISONS([BUILD_], [OPENJDK_BUILD_])
+    TOOLCHAIN_EXTRACT_LD_VERSION(BUILD_LD, [build linker])
+    TOOLCHAIN_PREPARE_FOR_LD_VERSION_COMPARISONS([BUILD_], [OPENJDK_BUILD_])
   else
     # If we are not cross compiling, use the normal target compilers for
     # building the build platform executables.
@@ -830,11 +1018,10 @@ AC_DEFUN_ONCE([TOOLCHAIN_SETUP_BUILD_COMPILERS],
     BUILD_AS="$AS"
     BUILD_OBJCOPY="$OBJCOPY"
     BUILD_STRIP="$STRIP"
-    BUILD_SYSROOT_CFLAGS="$SYSROOT_CFLAGS"
-    BUILD_SYSROOT_LDFLAGS="$SYSROOT_LDFLAGS"
     BUILD_AR="$AR"
 
     TOOLCHAIN_PREPARE_FOR_VERSION_COMPARISONS([], [OPENJDK_BUILD_])
+    TOOLCHAIN_PREPARE_FOR_LD_VERSION_COMPARISONS([BUILD_], [OPENJDK_BUILD_])
   fi
 
   AC_SUBST(BUILD_CC)
@@ -843,23 +1030,16 @@ AC_DEFUN_ONCE([TOOLCHAIN_SETUP_BUILD_COMPILERS],
   AC_SUBST(BUILD_LDCXX)
   AC_SUBST(BUILD_NM)
   AC_SUBST(BUILD_AS)
-  AC_SUBST(BUILD_SYSROOT_CFLAGS)
-  AC_SUBST(BUILD_SYSROOT_LDFLAGS)
   AC_SUBST(BUILD_AR)
 ])
 
 # Do some additional checks on the detected tools.
 AC_DEFUN_ONCE([TOOLCHAIN_MISC_CHECKS],
 [
-  # The package path is used only on macosx?
-  # FIXME: clean this up, and/or move it elsewhere.
-  PACKAGE_PATH=/opt/local
-  AC_SUBST(PACKAGE_PATH)
-
   # Check for extra potential brokenness.
   if test  "x$TOOLCHAIN_TYPE" = xmicrosoft; then
     # On Windows, double-check that we got the right compiler.
-    CC_VERSION_OUTPUT=`$CC 2>&1 | $HEAD -n 1 | $TR -d '\r'`
+    CC_VERSION_OUTPUT=`$CC 2>&1 | $GREP -v 'ERROR.*UtilTranslatePathList' | $HEAD -n 1 | $TR -d '\r'`
     COMPILER_CPU_TEST=`$ECHO $CC_VERSION_OUTPUT | $SED -n "s/^.* \(.*\)$/\1/p"`
     if test "x$OPENJDK_TARGET_CPU" = "xx86"; then
       if test "x$COMPILER_CPU_TEST" != "x80x86" -a "x$COMPILER_CPU_TEST" != "xx86"; then
@@ -876,50 +1056,18 @@ AC_DEFUN_ONCE([TOOLCHAIN_MISC_CHECKS],
     # If this is a --hash-style=gnu system, use --hash-style=both, why?
     HAS_GNU_HASH=`$CC -dumpspecs 2>/dev/null | $GREP 'hash-style=gnu'`
     # This is later checked when setting flags.
-
-    # "-Og" suppported for GCC 4.8 and later
-    CFLAG_OPTIMIZE_DEBUG_FLAG="-Og"
-    FLAGS_COMPILER_CHECK_ARGUMENTS(ARGUMENT: [$CFLAG_OPTIMIZE_DEBUG_FLAG],
-      IF_TRUE: [HAS_CFLAG_OPTIMIZE_DEBUG=true],
-      IF_FALSE: [HAS_CFLAG_OPTIMIZE_DEBUG=false])
-
-    # "-z relro" supported in GNU binutils 2.17 and later
-    LINKER_RELRO_FLAG="-Wl,-z,relro"
-    FLAGS_LINKER_CHECK_ARGUMENTS(ARGUMENT: [$LINKER_RELRO_FLAG],
-      IF_TRUE: [HAS_LINKER_RELRO=true],
-      IF_FALSE: [HAS_LINKER_RELRO=false])
-
-    # "-z now" supported in GNU binutils 2.11 and later
-    LINKER_NOW_FLAG="-Wl,-z,now"
-    FLAGS_LINKER_CHECK_ARGUMENTS(ARGUMENT: [$LINKER_NOW_FLAG],
-      IF_TRUE: [HAS_LINKER_NOW=true],
-      IF_FALSE: [HAS_LINKER_NOW=false])
   fi
 
-  # Check for broken SuSE 'ld' for which 'Only anonymous version tag is allowed
-  # in executable.'
-  USING_BROKEN_SUSE_LD=no
-  if test "x$OPENJDK_TARGET_OS" = xlinux && test "x$TOOLCHAIN_TYPE" = xgcc; then
-    AC_MSG_CHECKING([for broken SuSE 'ld' which only understands anonymous version tags in executables])
-    $ECHO "SUNWprivate_1.1 { local: *; };" > version-script.map
-    $ECHO "int main() { }" > main.c
-    if $CXX -Wl,-version-script=version-script.map main.c 2>&AS_MESSAGE_LOG_FD >&AS_MESSAGE_LOG_FD; then
-      AC_MSG_RESULT(no)
-      USING_BROKEN_SUSE_LD=no
-    else
-      AC_MSG_RESULT(yes)
-      USING_BROKEN_SUSE_LD=yes
-    fi
-    $RM version-script.map main.c a.out
+  if test "x$TOOLCHAIN_TYPE" = xgcc || test "x$TOOLCHAIN_TYPE" = xclang; then
+    # Check if linker has -z noexecstack.
+    HAS_NOEXECSTACK=`$CC -Wl,--help 2>/dev/null | $GREP 'z noexecstack'`
+    # This is later checked when setting flags.
   fi
-  AC_SUBST(USING_BROKEN_SUSE_LD)
 
   # Setup hotspot lecagy names for toolchains
   HOTSPOT_TOOLCHAIN_TYPE=$TOOLCHAIN_TYPE
   if test "x$TOOLCHAIN_TYPE" = xclang; then
     HOTSPOT_TOOLCHAIN_TYPE=gcc
-  elif test "x$TOOLCHAIN_TYPE" = xsolstudio; then
-    HOTSPOT_TOOLCHAIN_TYPE=sparcWorks
   elif test "x$TOOLCHAIN_TYPE" = xmicrosoft; then
     HOTSPOT_TOOLCHAIN_TYPE=visCPP
   fi
@@ -1036,5 +1184,5 @@ AC_DEFUN_ONCE([TOOLCHAIN_SETUP_JIB],
     fi
   fi
 
-  AC_SUBST(JIB_JAR)
+  AC_SUBST(JIB_HOME)
 ])

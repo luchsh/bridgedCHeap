@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.core.common.type;
 
 import static org.graalvm.compiler.core.common.calc.FloatConvert.I2D;
@@ -122,11 +124,11 @@ public final class IntegerStamp extends PrimitiveStamp {
         return new IntegerStamp(bits, lowerBoundTmp, upperBoundTmp, defaultMask & (downMask | boundedDownMask), defaultMask & upMask & boundedUpMask);
     }
 
-    static long significantBit(long bits, long value) {
+    private static long significantBit(long bits, long value) {
         return (value >>> (bits - 1)) & 1;
     }
 
-    static long minValueForMasks(int bits, long downMask, long upMask) {
+    private static long minValueForMasks(int bits, long downMask, long upMask) {
         if (significantBit(bits, upMask) == 0) {
             // Value is always positive. Minimum value always positive.
             assert significantBit(bits, downMask) == 0;
@@ -137,7 +139,7 @@ public final class IntegerStamp extends PrimitiveStamp {
         }
     }
 
-    static long maxValueForMasks(int bits, long downMask, long upMask) {
+    private static long maxValueForMasks(int bits, long downMask, long upMask) {
         if (significantBit(bits, downMask) == 1) {
             // Value is always negative. Maximum value always negative.
             assert significantBit(bits, upMask) == 1;
@@ -330,6 +332,12 @@ public final class IntegerStamp extends PrimitiveStamp {
         if (otherStamp == this) {
             return this;
         }
+        if (isEmpty()) {
+            return otherStamp;
+        }
+        if (otherStamp.isEmpty()) {
+            return this;
+        }
         IntegerStamp other = (IntegerStamp) otherStamp;
         return createStamp(other, Math.max(upperBound, other.upperBound), Math.min(lowerBound, other.lowerBound), downMask & other.downMask, upMask | other.upMask);
     }
@@ -413,7 +421,7 @@ public final class IntegerStamp extends PrimitiveStamp {
         return super.equals(other);
     }
 
-    public static long upMaskFor(int bits, long lowerBound, long upperBound) {
+    private static long upMaskFor(int bits, long lowerBound, long upperBound) {
         long mask = lowerBound | upperBound;
         if (mask == 0) {
             return 0;
@@ -595,6 +603,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp s) {
+                            if (s.isEmpty()) {
+                                return s;
+                            }
                             IntegerStamp stamp = (IntegerStamp) s;
                             int bits = stamp.getBits();
                             if (stamp.lowerBound == stamp.upperBound) {
@@ -622,11 +633,17 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
 
                             int bits = a.getBits();
-                            assert bits == b.getBits();
+                            assert bits == b.getBits() : String.format("stamp1.bits=%d, stamp2.bits=%d", bits, b.getBits());
 
                             if (a.lowerBound == a.upperBound && b.lowerBound == b.upperBound) {
                                 long value = CodeUtil.convert(a.lowerBound() + b.lowerBound(), a.getBits(), false);
@@ -715,6 +732,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
 
@@ -885,6 +908,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
                             JavaKind javaKind = a.getStackKind();
@@ -952,6 +981,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
                             JavaKind javaKind = a.getStackKind();
@@ -1046,6 +1081,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
                             assert a.getBits() == b.getBits();
@@ -1083,6 +1124,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
                             assert a.getBits() == b.getBits();
@@ -1121,6 +1168,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp) {
+                            if (stamp.isEmpty()) {
+                                return stamp;
+                            }
                             IntegerStamp integerStamp = (IntegerStamp) stamp;
                             int bits = integerStamp.getBits();
                             long defaultMask = CodeUtil.mask(bits);
@@ -1140,6 +1190,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
                             assert a.getBits() == b.getBits();
@@ -1167,6 +1223,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
                             assert a.getBits() == b.getBits();
@@ -1192,6 +1254,12 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp stamp1, Stamp stamp2) {
+                            if (stamp1.isEmpty()) {
+                                return stamp1;
+                            }
+                            if (stamp2.isEmpty()) {
+                                return stamp2;
+                            }
                             IntegerStamp a = (IntegerStamp) stamp1;
                             IntegerStamp b = (IntegerStamp) stamp2;
                             assert a.getBits() == b.getBits();
@@ -1230,6 +1298,15 @@ public final class IntegerStamp extends PrimitiveStamp {
                             }
                         }
 
+                        private boolean testNoSignChangeAfterShifting(int bits, long value, int shiftAmount) {
+                            long removedBits = -1L << (bits - shiftAmount - 1);
+                            if (value < 0) {
+                                return (value & removedBits) == removedBits;
+                            } else {
+                                return (value & removedBits) == 0;
+                            }
+                        }
+
                         @Override
                         public Stamp foldStamp(Stamp stamp, IntegerStamp shift) {
                             IntegerStamp value = (IntegerStamp) stamp;
@@ -1250,13 +1327,15 @@ public final class IntegerStamp extends PrimitiveStamp {
                                     return value;
                                 }
                                 // the mask of bits that will be lost or shifted into the sign bit
-                                long removedBits = -1L << (bits - shiftAmount - 1);
-                                if ((value.lowerBound() & removedBits) == 0 && (value.upperBound() & removedBits) == 0) {
+                                if (testNoSignChangeAfterShifting(bits, value.lowerBound(), shiftAmount) && testNoSignChangeAfterShifting(bits, value.upperBound(), shiftAmount)) {
                                     /*
                                      * use a better stamp if neither lower nor upper bound can lose
                                      * bits
                                      */
-                                    return new IntegerStamp(bits, value.lowerBound() << shiftAmount, value.upperBound() << shiftAmount, value.downMask() << shiftAmount, value.upMask() << shiftAmount);
+                                    IntegerStamp result = new IntegerStamp(bits, value.lowerBound() << shiftAmount, value.upperBound() << shiftAmount,
+                                                    (value.downMask() << shiftAmount) & CodeUtil.mask(bits),
+                                                    (value.upMask() << shiftAmount) & CodeUtil.mask(bits));
+                                    return result;
                                 }
                             }
                             if ((shift.lowerBound() >>> shiftBits) == (shift.upperBound() >>> shiftBits)) {
@@ -1269,8 +1348,7 @@ public final class IntegerStamp extends PrimitiveStamp {
                                         upMask |= value.upMask() << (i & shiftMask);
                                     }
                                 }
-                                Stamp result = IntegerStamp.stampForMask(bits, downMask, upMask & defaultMask);
-                                return result;
+                                return IntegerStamp.stampForMask(bits, downMask, upMask & defaultMask);
                             }
                             return value.unrestricted();
                         }
@@ -1392,6 +1470,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp input) {
+                            if (input.isEmpty()) {
+                                return input;
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             int bits = stamp.getBits();
                             if (stamp.lowerBound == stamp.upperBound) {
@@ -1419,6 +1500,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(int inputBits, int resultBits, Stamp input) {
+                            if (input.isEmpty()) {
+                                return StampFactory.forInteger(resultBits).empty();
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             assert inputBits == stamp.getBits();
                             assert inputBits <= resultBits;
@@ -1458,6 +1542,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(int inputBits, int resultBits, Stamp input) {
+                            if (input.isEmpty()) {
+                                return StampFactory.forInteger(resultBits).empty();
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             assert inputBits == stamp.getBits();
                             assert inputBits <= resultBits;
@@ -1471,6 +1558,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp invertStamp(int inputBits, int resultBits, Stamp outStamp) {
+                            if (outStamp.isEmpty()) {
+                                return StampFactory.forInteger(inputBits).empty();
+                            }
                             IntegerStamp stamp = (IntegerStamp) outStamp;
                             long mask = CodeUtil.mask(inputBits);
                             return StampFactory.forIntegerWithMask(inputBits, stamp.lowerBound(), stamp.upperBound(), stamp.downMask() & mask, stamp.upMask() & mask);
@@ -1487,6 +1577,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(int inputBits, int resultBits, Stamp input) {
+                            if (input.isEmpty()) {
+                                return StampFactory.forInteger(resultBits).empty();
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             assert inputBits == stamp.getBits();
                             assert resultBits <= inputBits;
@@ -1526,6 +1619,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp input) {
+                            if (input.isEmpty()) {
+                                return StampFactory.empty(JavaKind.Float);
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             assert stamp.getBits() == 32;
                             float lowerBound = stamp.lowerBound();
@@ -1544,6 +1640,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp input) {
+                            if (input.isEmpty()) {
+                                return StampFactory.empty(JavaKind.Float);
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             assert stamp.getBits() == 64;
                             float lowerBound = stamp.lowerBound();
@@ -1562,6 +1661,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp input) {
+                            if (input.isEmpty()) {
+                                return StampFactory.empty(JavaKind.Double);
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             assert stamp.getBits() == 32;
                             double lowerBound = stamp.lowerBound();
@@ -1580,6 +1682,9 @@ public final class IntegerStamp extends PrimitiveStamp {
 
                         @Override
                         public Stamp foldStamp(Stamp input) {
+                            if (input.isEmpty()) {
+                                return StampFactory.empty(JavaKind.Double);
+                            }
                             IntegerStamp stamp = (IntegerStamp) input;
                             assert stamp.getBits() == 64;
                             double lowerBound = stamp.lowerBound();

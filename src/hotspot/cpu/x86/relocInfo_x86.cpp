@@ -25,7 +25,9 @@
 #include "precompiled.hpp"
 #include "asm/macroAssembler.hpp"
 #include "code/relocInfo.hpp"
+#include "memory/universe.hpp"
 #include "nativeInst_x86.hpp"
+#include "oops/compressedOops.inline.hpp"
 #include "oops/klass.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/safepoint.hpp"
@@ -51,15 +53,15 @@ void Relocation::pd_set_data_value(address x, intptr_t o, bool verify_only) {
     // both compressed oops and compressed classes look the same
     if (Universe::heap()->is_in_reserved((oop)x)) {
     if (verify_only) {
-      guarantee(*(uint32_t*) disp == oopDesc::encode_heap_oop((oop)x), "instructions must match");
+      guarantee(*(uint32_t*) disp == CompressedOops::encode((oop)x), "instructions must match");
     } else {
-      *(int32_t*) disp = oopDesc::encode_heap_oop((oop)x);
+      *(int32_t*) disp = CompressedOops::encode((oop)x);
     }
   } else {
       if (verify_only) {
-        guarantee(*(uint32_t*) disp == Klass::encode_klass((Klass*)x), "instructions must match");
+        guarantee(*(uint32_t*) disp == CompressedKlassPointers::encode((Klass*)x), "instructions must match");
       } else {
-        *(int32_t*) disp = Klass::encode_klass((Klass*)x);
+        *(int32_t*) disp = CompressedKlassPointers::encode((Klass*)x);
       }
     }
   } else {

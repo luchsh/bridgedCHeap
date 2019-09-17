@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,13 +31,13 @@
  *        "--limit-modules java.base" option is specified
  * @requires vm.cds & !vm.graal.enabled
  * @library /test/lib /test/hotspot/jtreg/runtime/appcds
- * @modules java.base/jdk.internal.misc
+ * @modules java.base/jdk.internal.access
  *          java.management
  *          jdk.jartool/sun.tools.jar
  *          jdk.internal.jvmstat/sun.jvmstat.monitor
  * @compile ../../test-classes/EmptyClassHelper.java
  * @compile ../../test-classes/com/sun/tools/javac/Main.jasm
- * @run main EmptyClassInBootClassPath
+ * @run driver EmptyClassInBootClassPath
  */
 
 import java.io.File;
@@ -66,23 +66,21 @@ public class EmptyClassInBootClassPath {
         List<String> argsList = new ArrayList<String>();
         argsList.add(classPath);
         argsList.add(bootclasspath);
-        argsList.add("--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED");
+        argsList.add("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED");
         argsList.add("EmptyClassHelper");
 
         // case 1: load class in bootclasspath using app loader
         argsList.add("useAppLoader");
         String[] opts = new String[argsList.size()];
         opts = argsList.toArray(opts);
-        OutputAnalyzer runOutput = TestCommon.execCommon(opts);
-        TestCommon.checkExec(runOutput, "appLoader found method main");
+        TestCommon.run(opts).assertNormalExit("appLoader found method main");
 
         // case 2: load class in bootclasspath using boot loader
         argsList.remove(argsList.size() - 1);
         argsList.add("useBootLoader");
         opts = new String[argsList.size()];
         opts = argsList.toArray(opts);
-        runOutput = TestCommon.execCommon(opts);
-        TestCommon.checkExec(runOutput, EXPECTED_EXCEPTION);
+        TestCommon.run(opts).assertNormalExit(EXPECTED_EXCEPTION);
 
         // case 3: load class in bootclasspath using app loader with '--limit-modules java.base'
         argsList.add(0, "--limit-modules");
@@ -91,16 +89,15 @@ public class EmptyClassInBootClassPath {
         argsList.add("useAppLoader");
         opts = new String[argsList.size()];
         opts = argsList.toArray(opts);
-        runOutput = TestCommon.execCommon(opts);
-        TestCommon.checkExec(runOutput, EXPECTED_EXCEPTION);
+        TestCommon.run(opts)
+            .assertSilentlyDisabledCDS(0, EXPECTED_EXCEPTION);
 
         // case 4: load class in bootclasspath using boot loader with '--limit-modules java.base'
         argsList.remove(argsList.size() - 1);
         argsList.add("useBootLoader");
         opts = new String[argsList.size()];
         opts = argsList.toArray(opts);
-        runOutput = TestCommon.execCommon(opts);
-        TestCommon.checkExec(runOutput, EXPECTED_EXCEPTION);
-
+        TestCommon.run(opts)
+            .assertSilentlyDisabledCDS(0, EXPECTED_EXCEPTION);
     }
 }

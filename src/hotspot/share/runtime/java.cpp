@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,21 +26,24 @@
 #include "jvm.h"
 #include "aot/aotLoader.hpp"
 #include "classfile/classLoader.hpp"
+#include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/stringTable.hpp"
+#include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "code/codeCache.hpp"
 #include "compiler/compileBroker.hpp"
 #include "compiler/compilerOracle.hpp"
-#include "gc/shared/genCollectedHeap.hpp"
 #include "interpreter/bytecodeHistogram.hpp"
+#include "jfr/jfrEvents.hpp"
+#include "jfr/support/jfrThreadId.hpp"
 #if INCLUDE_JVMCI
-#include "jvmci/jvmciCompiler.hpp"
-#include "jvmci/jvmciRuntime.hpp"
+#include "jvmci/jvmci.hpp"
 #endif
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
+#include "memory/dynamicArchive.hpp"
 #include "memory/universe.hpp"
 #include "oops/constantPool.hpp"
 #include "oops/generateOopMap.hpp"
@@ -55,8 +58,10 @@
 #include "runtime/biasedLocking.hpp"
 #include "runtime/compilationPolicy.hpp"
 #include "runtime/deoptimization.hpp"
+#include "runtime/flags/flagSetting.hpp"
+#include "runtime/handles.inline.hpp"
 #include "runtime/init.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/memprofiler.hpp"
 #include "runtime/sharedRuntime.hpp"
@@ -65,29 +70,25 @@
 #include "runtime/task.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/timer.hpp"
-#include "runtime/vm_operations.hpp"
+#include "runtime/vmOperations.hpp"
 #include "services/memTracker.hpp"
-#include "trace/traceMacros.hpp"
-#include "trace/tracing.hpp"
 #include "utilities/dtrace.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/histogram.hpp"
 #include "utilities/macros.hpp"
 #include "utilities/vmError.hpp"
-#if INCLUDE_ALL_GCS
-#include "gc/cms/concurrentMarkSweepThread.hpp"
-#include "gc/parallel/psScavenge.hpp"
-#endif // INCLUDE_ALL_GCS
 #ifdef COMPILER1
 #include "c1/c1_Compiler.hpp"
 #include "c1/c1_Runtime1.hpp"
 #endif
 #ifdef COMPILER2
 #include "code/compiledIC.hpp"
-#include "compiler/methodLiveness.hpp"
 #include "opto/compile.hpp"
 #include "opto/indexSet.hpp"
 #include "opto/runtime.hpp"
+#endif
+#if INCLUDE_JFR
+#include "jfr/jfr.hpp"
 #endif
 
 GrowableArray<Method*>* collected_profiled_methods;
@@ -258,26 +259,22 @@ void print_statistics() {
   if (PrintLockStatistics || PrintPreciseBiasedLockingStatistics || PrintPreciseRTMLockingStatistics) {
     OptoRuntime::print_named_counters();
   }
-
-  if (TimeLivenessAnalysis) {
-    MethodLiveness::print_times();
-  }
 #ifdef ASSERT
   if (CollectIndexSetStatistics) {
     IndexSet::print_statistics();
   }
 #endif // ASSERT
-#else
-#ifdef INCLUDE_JVMCI
+#else // COMPILER2
+#if INCLUDE_JVMCI
 #ifndef COMPILER1
   if ((TraceDeoptimization || LogVMOutput || LogCompilation) && UseCompiler) {
     FlagSetting fs(DisplayVMOutput, DisplayVMOutput && TraceDeoptimization);
     Deoptimization::print_statistics();
     SharedRuntime::print_statistics();
   }
-#endif
-#endif
-#endif
+#endif // COMPILER1
+#endif // INCLUDE_JVMCI
+#endif // COMPILER2
 
   if (PrintAOTStatistics) {
     AOTLoader::print_statistics();
@@ -292,14 +289,8 @@ void print_statistics() {
 
   print_method_profiling_data();
 
-  if (TimeCompilationPolicy) {
-    CompilationPolicy::policy()->print_time();
-  }
   if (TimeOopMap) {
     GenerateOopMap::print_time();
-  }
-  if (ProfilerCheckIntervals) {
-    PeriodicTask::print_intervals();
   }
   if (PrintSymbolTableSizeHistogram) {
     SymbolTable::print_histogram();
@@ -312,16 +303,20 @@ void print_statistics() {
   }
 
   if (PrintCodeCache) {
-    MutexLockerEx mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
     CodeCache::print();
   }
 
-  if (PrintMethodFlushingStatistics) {
-    NMethodSweeper::print();
+  // CodeHeap State Analytics.
+  // Does also call NMethodSweeper::print(tty)
+  if (PrintCodeHeapAnalytics) {
+    CompileBroker::print_heapinfo(NULL, "all", 4096); // details
+  } else if (PrintMethodFlushingStatistics) {
+    NMethodSweeper::print(tty);
   }
 
   if (PrintCodeCache2) {
-    MutexLockerEx mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
     CodeCache::print_internals();
   }
 
@@ -329,7 +324,7 @@ void print_statistics() {
     klassVtable::print_statistics();
     klassItable::print_statistics();
   }
-  if (VerifyOops) {
+  if (VerifyOops && Verbose) {
     tty->print_cr("+VerifyOops count: %d", StubRoutines::verify_oop_count());
   }
 
@@ -341,7 +336,10 @@ void print_statistics() {
   }
 
   if (PrintSystemDictionaryAtExit) {
+    ResourceMark rm;
+    MutexLocker mcld(ClassLoaderDataGraph_lock);
     SystemDictionary::print();
+    ClassLoaderDataGraph::print();
   }
 
   if (LogTouchedMethods && PrintTouchedMethodsAtExit) {
@@ -373,12 +371,16 @@ void print_statistics() {
   }
 
   if (PrintCodeCache) {
-    MutexLockerEx mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
     CodeCache::print();
   }
 
-  if (PrintMethodFlushingStatistics) {
-    NMethodSweeper::print();
+  // CodeHeap State Analytics.
+  // Does also call NMethodSweeper::print(tty)
+  if (PrintCodeHeapAnalytics) {
+    CompileBroker::print_heapinfo(NULL, "all", 4096); // details
+  } else if (PrintMethodFlushingStatistics) {
+    NMethodSweeper::print(tty);
   }
 
 #ifdef COMPILER2
@@ -418,14 +420,14 @@ void before_exit(JavaThread* thread) {
   // A CAS or OSMutex would work just fine but then we need to manipulate
   // thread state for Safepoint. Here we use Monitor wait() and notify_all()
   // for synchronization.
-  { MutexLocker ml(BeforeExit_lock);
+  { MonitorLocker ml(BeforeExit_lock);
     switch (_before_exit_status) {
     case BEFORE_EXIT_NOT_RUN:
       _before_exit_status = BEFORE_EXIT_RUNNING;
       break;
     case BEFORE_EXIT_RUNNING:
       while (_before_exit_status == BEFORE_EXIT_RUNNING) {
-        BeforeExit_lock->wait();
+        ml.wait();
       }
       assert(_before_exit_status == BEFORE_EXIT_DONE, "invalid state");
       return;
@@ -438,15 +440,7 @@ void before_exit(JavaThread* thread) {
   }
 
 #if INCLUDE_JVMCI
-  // We are not using CATCH here because we want the exit to continue normally.
-  Thread* THREAD = thread;
-  JVMCIRuntime::shutdown(THREAD);
-  if (HAS_PENDING_EXCEPTION) {
-    HandleMark hm(THREAD);
-    Handle exception(THREAD, PENDING_EXCEPTION);
-    CLEAR_PENDING_EXCEPTION;
-    java_lang_Throwable::java_printStackTrace(exception, THREAD);
-  }
+  JVMCI::shutdown();
 #endif
 
   // Hang forever on exit if we're reporting an error.
@@ -456,11 +450,11 @@ void before_exit(JavaThread* thread) {
 
   EventThreadEnd event;
   if (event.should_commit()) {
-    event.set_thread(THREAD_TRACE_ID(thread));
+    event.set_thread(JFR_THREAD_ID(thread));
     event.commit();
   }
 
-  TRACE_VM_EXIT();
+  JFR_ONLY(Jfr::on_vm_shutdown();)
 
   // Stop the WatcherThread. We do this before disenrolling various
   // PeriodicTasks to reduce the likelihood of races.
@@ -483,7 +477,8 @@ void before_exit(JavaThread* thread) {
     Universe::print_on(&ls_info);
     if (log.is_trace()) {
       LogStream ls_trace(log.trace());
-      ClassLoaderDataGraph::dump_on(&ls_trace);
+      MutexLocker mcld(ClassLoaderDataGraph_lock);
+      ClassLoaderDataGraph::print_on(&ls_trace);
     }
   }
 
@@ -504,6 +499,12 @@ void before_exit(JavaThread* thread) {
   // Note: we don't wait until it actually dies.
   os::terminate_signal_thread();
 
+#if INCLUDE_CDS
+  if (DynamicDumpSharedSpaces) {
+    DynamicArchive::dump();
+  }
+#endif
+
   print_statistics();
   Universe::heap()->print_tracing_info();
 
@@ -513,14 +514,9 @@ void before_exit(JavaThread* thread) {
   }
 
   if (VerifyStringTableAtExit) {
-    int fail_cnt = 0;
-    {
-      MutexLocker ml(StringTable_lock);
-      fail_cnt = StringTable::verify_and_compare_entries();
-    }
-
+    size_t fail_cnt = StringTable::verify_and_compare_entries();
     if (fail_cnt != 0) {
-      tty->print_cr("ERROR: fail_cnt=%d", fail_cnt);
+      tty->print_cr("ERROR: fail_cnt=" SIZE_FORMAT, fail_cnt);
       guarantee(fail_cnt == 0, "unexpected StringTable verification failures");
     }
   }
@@ -538,11 +534,31 @@ void vm_exit(int code) {
     vm_direct_exit(code);
   }
 
+  // We'd like to add an entry to the XML log to show that the VM is
+  // terminating, but we can't safely do that here. The logic to make
+  // XML termination logging safe is tied to the termination of the
+  // VMThread, and it doesn't terminate on this exit path. See 8222534.
+
   if (VMThread::vm_thread() != NULL) {
+    if (thread->is_Java_thread()) {
+      // We must be "in_vm" for the code below to work correctly.
+      // Historically there must have been some exit path for which
+      // that was not the case and so we set it explicitly - even
+      // though we no longer know what that path may be.
+      ((JavaThread*)thread)->set_thread_state(_thread_in_vm);
+    }
+
     // Fire off a VM_Exit operation to bring VM to a safepoint and exit
     VM_Exit op(code);
-    if (thread->is_Java_thread())
-      ((JavaThread*)thread)->set_thread_state(_thread_in_vm);
+
+    // 4945125 The vm thread comes to a safepoint during exit.
+    // GC vm_operations can get caught at the safepoint, and the
+    // heap is unparseable if they are caught. Grab the Heap_lock
+    // to prevent this. The GC vm_operations will not be able to
+    // queue until after we release it, but we never do that as we
+    // are terminating the VM process.
+    MutexLocker ml(Heap_lock);
+
     VMThread::execute(&op);
     // should never reach here; but in case something wrong with VM Thread.
     vm_direct_exit(code);
@@ -566,9 +582,6 @@ void vm_direct_exit(int code) {
 }
 
 void vm_perform_shutdown_actions() {
-  // Warning: do not call 'exit_globals()' here. All threads are still running.
-  // Calling 'exit_globals()' will disable thread-local-storage and cause all
-  // kinds of assertions to trigger in debug mode.
   if (is_init_completed()) {
     Thread* thread = Thread::current_or_null();
     if (thread != NULL && thread->is_Java_thread()) {
@@ -601,6 +614,26 @@ void vm_abort(bool dump_core) {
 
   os::abort(dump_core);
   ShouldNotReachHere();
+}
+
+void vm_notify_during_cds_dumping(const char* error, const char* message) {
+  if (error != NULL) {
+    tty->print_cr("Error occurred during CDS dumping");
+    tty->print("%s", error);
+    if (message != NULL) {
+      tty->print_cr(": %s", message);
+    }
+    else {
+      tty->cr();
+    }
+  }
+}
+
+void vm_exit_during_cds_dumping(const char* error, const char* message) {
+  vm_notify_during_cds_dumping(error, message);
+
+  // Failure during CDS dumping, we don't want to dump core
+  vm_abort(false);
 }
 
 void vm_notify_during_shutdown(const char* error, const char* message) {
@@ -684,14 +717,7 @@ void JDK_Version::initialize() {
   int security = JDK_VERSION_SECURITY(info.jdk_version);
   int build = JDK_VERSION_BUILD(info.jdk_version);
 
-  // Incompatible with pre-4243978 JDK.
-  if (info.pending_list_uses_discovered_field == 0) {
-    vm_exit_during_initialization(
-      "Incompatible JDK is not using Reference.discovered field for pending list");
-  }
-  _current = JDK_Version(major, minor, security, info.patch_version, build,
-                         info.thread_park_blocker == 1,
-                         info.post_vm_init_hook_enabled == 1);
+  _current = JDK_Version(major, minor, security, info.patch_version, build);
 }
 
 void JDK_Version_init() {

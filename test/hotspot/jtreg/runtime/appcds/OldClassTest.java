@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,7 @@
 
 /*
  * @test
- * @summary classes with major version < JDK_1.5 (48) should not be included in CDS
+ * @summary classes with major version < JDK_6 (50) should not be included in CDS
  * @requires vm.cds
  * @library /test/lib
  * @modules java.base/jdk.internal.org.objectweb.asm
@@ -33,7 +33,7 @@
  *          jdk.jartool/sun.tools.jar
  * @compile test-classes/Hello.java
  * @run build TestCommon JarBuilder
- * @run main OldClassTest
+ * @run driver OldClassTest
  */
 
 import java.io.File;
@@ -61,27 +61,25 @@ public class OldClassTest implements Opcodes {
 
     String appClasses[] = TestCommon.list("Hello");
 
-    // CASE 1: pre-JDK 1.5 compiled classes should be excluded from the dump
+    // CASE 1: pre-JDK 6 compiled classes should be excluded from the dump
     OutputAnalyzer output = TestCommon.dump(jar, appClasses);
-    TestCommon.checkExecReturn(output, 0, true, "Pre JDK 1.5 class not supported by CDS");
+    TestCommon.checkExecReturn(output, 0, true, "Pre JDK 6 class not supported by CDS");
 
-    output = TestCommon.execCommon(
+    TestCommon.run(
         "-cp", jar,
-        "-verbose:class",
-        "Hello");
-    TestCommon.checkExecReturn(output, 0, true, "Hello Unicode world (Old)");
+        "Hello")
+      .assertNormalExit("Hello Unicode world (Old)");
 
     // CASE 2: if we exlcude old version of this class, we should not pick up
     //         the newer version of this class in a subsequent classpath element.
     String classpath = jar + File.pathSeparator + jarSrcFile.getPath();
     output = TestCommon.dump(classpath, appClasses);
-    TestCommon.checkExecReturn(output, 0, true, "Pre JDK 1.5 class not supported by CDS");
+    TestCommon.checkExecReturn(output, 0, true, "Pre JDK 6 class not supported by CDS");
 
-    output = TestCommon.execCommon(
+    TestCommon.run(
         "-cp", classpath,
-        "-verbose:class",
-        "Hello");
-    TestCommon.checkExecReturn(output, 0, true, "Hello Unicode world (Old)");
+        "Hello")
+      .assertNormalExit("Hello Unicode world (Old)");
   }
 
   static void createTestJarFile(File jarSrcFile, File jarFile) throws Exception {
@@ -129,8 +127,7 @@ java jdk.internal.org.objectweb.asm.util.ASMifier Hello.class
     MethodVisitor mv;
     AnnotationVisitor av0;
 
-//WAS cw.visit(V1_6, ACC_PUBLIC + ACC_SUPER, "Hello", null, "java/lang/Object", null);
-      cw.visit(V1_4, ACC_PUBLIC + ACC_SUPER, "Hello", null, "java/lang/Object", null);
+      cw.visit(V1_5, ACC_PUBLIC + ACC_SUPER, "Hello", null, "java/lang/Object", null);
 
     {
       mv = cw.visitMethod(ACC_PUBLIC, "<init>", "()V", null, null);

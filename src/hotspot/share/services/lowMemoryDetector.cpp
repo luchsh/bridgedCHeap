@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,8 @@
 #include "classfile/vmSymbols.hpp"
 #include "memory/resourceArea.hpp"
 #include "oops/oop.inline.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/handles.inline.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/mutex.hpp"
@@ -79,7 +80,7 @@ void LowMemoryDetector::process_sensor_changes(TRAPS) {
 // This method could be called from any Java threads
 // and also VMThread.
 void LowMemoryDetector::detect_low_memory() {
-  MutexLockerEx ml(Service_lock, Mutex::_no_safepoint_check_flag);
+  MutexLocker ml(Service_lock, Mutex::_no_safepoint_check_flag);
 
   bool has_pending_requests = false;
   int num_memory_pools = MemoryService::num_memory_pools();
@@ -112,7 +113,7 @@ void LowMemoryDetector::detect_low_memory(MemoryPool* pool) {
   }
 
   {
-    MutexLockerEx ml(Service_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker ml(Service_lock, Mutex::_no_safepoint_check_flag);
 
     MemoryUsage usage = pool->get_memory_usage();
     sensor->set_gauge_sensor_level(usage,
@@ -134,7 +135,7 @@ void LowMemoryDetector::detect_after_gc_memory(MemoryPool* pool) {
   }
 
   {
-    MutexLockerEx ml(Service_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker ml(Service_lock, Mutex::_no_safepoint_check_flag);
 
     MemoryUsage usage = pool->get_last_collection_usage();
     sensor->set_counter_sensor_level(usage, pool->gc_usage_threshold());
@@ -334,7 +335,7 @@ void SensorInfo::trigger(int count, TRAPS) {
 
   {
     // Holds Service_lock and update the sensor state
-    MutexLockerEx ml(Service_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker ml(Service_lock, Mutex::_no_safepoint_check_flag);
     assert(_pending_trigger_count > 0, "Must have pending trigger");
     _sensor_on = true;
     _sensor_count += count;
@@ -345,7 +346,7 @@ void SensorInfo::trigger(int count, TRAPS) {
 void SensorInfo::clear(int count, TRAPS) {
   {
     // Holds Service_lock and update the sensor state
-    MutexLockerEx ml(Service_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker ml(Service_lock, Mutex::_no_safepoint_check_flag);
     if (_pending_clear_count == 0) {
       // Bail out if we lost a race to set_*_sensor_level() which may have
       // reactivated the sensor in the meantime because it was triggered again.

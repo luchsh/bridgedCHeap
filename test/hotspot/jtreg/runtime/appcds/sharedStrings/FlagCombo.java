@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,33 +22,45 @@
  *
  */
 
-/*
+/**
  * @test
  * @summary Test relevant combinations of command line flags with shared strings
- * @requires vm.cds
- * @requires (sun.arch.data.model != "32") & (os.family != "windows")
- * @requires (vm.gc=="null")
+ * @requires vm.cds.archived.java.heap & vm.hasJFR
  * @library /test/lib /test/hotspot/jtreg/runtime/appcds
  * @modules java.base/jdk.internal.misc
  * @modules java.management
  *          jdk.jartool/sun.tools.jar
  * @build HelloString
- * @run main FlagCombo
+ * @run driver FlagCombo
+ */
+
+/**
+ * @test
+ * @summary Test relevant combinations of command line flags with shared strings
+ * @comment A special test excluding the case that requires JFR
+ * @requires vm.cds.archived.java.heap & !vm.hasJFR
+ * @library /test/lib /test/hotspot/jtreg/runtime/appcds
+ * @modules java.base/jdk.internal.misc
+ * @modules java.management
+ *          jdk.jartool/sun.tools.jar
+ * @build HelloString
+ * @run driver FlagCombo noJfr
  */
 
 import jdk.test.lib.BuildHelper;
+import jdk.test.lib.Platform;
 
 public class FlagCombo {
     public static void main(String[] args) throws Exception {
         SharedStringsUtils.buildJar("HelloString");
 
         SharedStringsUtils.dump(TestCommon.list("HelloString"),
-            "SharedStringsBasic.txt");
+            "SharedStringsBasic.txt", "-Xlog:cds,cds+hashtables");
 
         SharedStringsUtils.runWithArchive("HelloString", "-XX:+UseG1GC");
 
-        if (BuildHelper.isCommercialBuild()) {
-            SharedStringsUtils.runWithArchiveAuto("HelloString", "-XX:+UnlockCommercialFeatures",
+        if (args.length == 0) {
+            SharedStringsUtils.runWithArchiveAuto("HelloString",
                 "-XX:StartFlightRecording=dumponexit=true");
         }
 

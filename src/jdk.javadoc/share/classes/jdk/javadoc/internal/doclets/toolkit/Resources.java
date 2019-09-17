@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,9 +39,16 @@ import java.util.ResourceBundle;
  * HTML doclet.
  */
 public class Resources {
+    public final String annotationTypeSummary;
+    public final String classSummary;
     private final BaseConfiguration configuration;
     private final String commonBundleName;
     private final String docletBundleName;
+    public final String enumSummary;
+    public final String errorSummary;
+    public final String exceptionSummary;
+    public final String interfaceSummary;
+    public final String packageSummary;
 
     protected ResourceBundle commonBundle;
     protected ResourceBundle docletBundle;
@@ -62,6 +69,13 @@ public class Resources {
         this.configuration = configuration;
         this.commonBundleName = commonBundleName;
         this.docletBundleName = docletBundleName;
+        this.annotationTypeSummary = getText("doclet.Annotation_Types_Summary");
+        this.classSummary = getText("doclet.Class_Summary");
+        this.enumSummary = getText("doclet.Enum_Summary");
+        this.errorSummary = getText("doclet.Error_Summary");
+        this.exceptionSummary = getText("doclet.Exception_Summary");
+        this.interfaceSummary = getText("doclet.Interface_Summary");
+        this.packageSummary = getText("doclet.Package_Summary");
     }
 
     /**

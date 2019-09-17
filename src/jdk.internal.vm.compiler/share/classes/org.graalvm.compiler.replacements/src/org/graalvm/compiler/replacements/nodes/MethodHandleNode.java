@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.replacements.nodes;
 
 import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_UNKNOWN;
@@ -60,7 +62,6 @@ import jdk.vm.ci.meta.Assumptions;
 import jdk.vm.ci.meta.Assumptions.AssumptionResult;
 import jdk.vm.ci.meta.DeoptimizationAction;
 import jdk.vm.ci.meta.DeoptimizationReason;
-import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.MethodHandleAccessProvider;
@@ -68,6 +69,8 @@ import jdk.vm.ci.meta.MethodHandleAccessProvider.IntrinsicMethod;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
+import jdk.vm.ci.meta.SpeculationLog;
+import jdk.vm.ci.meta.SpeculationLog.Speculation;
 
 /**
  * Node for invocation methods defined on the class {@link MethodHandle}.
@@ -203,7 +206,8 @@ public final class MethodHandleNode extends MacroStateSplitNode implements Simpl
                     StampPair returnStamp, ValueNode[] arguments) {
         ValueNode methodHandleNode = getReceiver(arguments);
         if (methodHandleNode.isConstant()) {
-            return getTargetInvokeNode(adder, intrinsicMethod, bci, returnStamp, arguments, methodHandleAccess.resolveInvokeBasicTarget(methodHandleNode.asJavaConstant(), true), original);
+            return getTargetInvokeNode(adder, intrinsicMethod, methodHandleAccess, bci, returnStamp, arguments, methodHandleAccess.resolveInvokeBasicTarget(methodHandleNode.asJavaConstant(), true),
+                            original);
         }
         return null;
     }
@@ -224,7 +228,7 @@ public final class MethodHandleNode extends MacroStateSplitNode implements Simpl
                     StampPair returnStamp, ValueNode[] arguments) {
         ValueNode memberNameNode = getMemberName(arguments);
         if (memberNameNode.isConstant()) {
-            return getTargetInvokeNode(adder, intrinsicMethod, bci, returnStamp, arguments, methodHandleAccess.resolveLinkToTarget(memberNameNode.asJavaConstant()), original);
+            return getTargetInvokeNode(adder, intrinsicMethod, methodHandleAccess, bci, returnStamp, arguments, methodHandleAccess.resolveLinkToTarget(memberNameNode.asJavaConstant()), original);
         }
         return null;
     }
@@ -238,9 +242,10 @@ public final class MethodHandleNode extends MacroStateSplitNode implements Simpl
      *
      * @return invoke node for the member name target
      */
-    private static InvokeNode getTargetInvokeNode(GraphAdder adder, IntrinsicMethod intrinsicMethod, int bci, StampPair returnStamp, ValueNode[] originalArguments, ResolvedJavaMethod target,
+    private static InvokeNode getTargetInvokeNode(GraphAdder adder, IntrinsicMethod intrinsicMethod, MethodHandleAccessProvider methodHandleAccess, int bci, StampPair returnStamp,
+                    ValueNode[] originalArguments, ResolvedJavaMethod target,
                     ResolvedJavaMethod original) {
-        if (target == null) {
+        if (target == null || !isConsistentInfo(methodHandleAccess, original, target)) {
             return null;
         }
 
@@ -327,13 +332,13 @@ public final class MethodHandleNode extends MacroStateSplitNode implements Simpl
                         AnchoringNode guardAnchor = adder.getGuardAnchor();
                         DeoptimizationReason reason = DeoptimizationReason.ClassCastException;
                         DeoptimizationAction action = DeoptimizationAction.InvalidateRecompile;
-                        JavaConstant speculation = JavaConstant.NULL_POINTER;
+                        Speculation speculation = SpeculationLog.NO_SPECULATION;
                         GuardingNode guard;
                         if (guardAnchor == null) {
                             FixedGuardNode fixedGuard = adder.add(new FixedGuardNode(inst, reason, action, speculation, false));
                             guard = fixedGuard;
                         } else {
-                            GuardNode newGuard = adder.add(new GuardNode(inst, guardAnchor, reason, action, false, speculation));
+                            GuardNode newGuard = adder.add(new GuardNode(inst, guardAnchor, reason, action, false, speculation, null));
                             adder.add(new ValueAnchorNode(newGuard));
                             guard = newGuard;
                         }
@@ -386,5 +391,85 @@ public final class MethodHandleNode extends MacroStateSplitNode implements Simpl
         } else {
             return new InvokeNode(callTarget, bci);
         }
+    }
+
+    /**
+     * Checks basic type consistency of low level method handle intrinsics.
+     *
+     * @param original declared method
+     * @param target resolved method
+     * @return true if original is type consistent with target
+     */
+    private static boolean isConsistentInfo(MethodHandleAccessProvider methodHandleAccess, ResolvedJavaMethod original, ResolvedJavaMethod target) {
+        IntrinsicMethod originalIntrinsicMethod = methodHandleAccess.lookupMethodHandleIntrinsic(original);
+        assert originalIntrinsicMethod == IntrinsicMethod.INVOKE_BASIC ||
+                        originalIntrinsicMethod == IntrinsicMethod.LINK_TO_STATIC ||
+                        originalIntrinsicMethod == IntrinsicMethod.LINK_TO_SPECIAL ||
+                        originalIntrinsicMethod == IntrinsicMethod.LINK_TO_VIRTUAL ||
+                        originalIntrinsicMethod == IntrinsicMethod.LINK_TO_INTERFACE;
+        IntrinsicMethod targetIntrinsicMethod = methodHandleAccess.lookupMethodHandleIntrinsic(target);
+        Signature originalSignature = original.getSignature();
+        Signature targetSignature = target.getSignature();
+
+        boolean invokeThroughMHIntrinsic = originalIntrinsicMethod != null && targetIntrinsicMethod == null;
+        if (!invokeThroughMHIntrinsic) {
+            return (original.getName().equals(target.getName())) && (originalSignature.equals(targetSignature));
+        }
+
+        // Linkers have appendix argument which is not passed to callee.
+        int hasAppendix = (originalIntrinsicMethod == IntrinsicMethod.LINK_TO_STATIC ||
+                        originalIntrinsicMethod == IntrinsicMethod.LINK_TO_SPECIAL ||
+                        originalIntrinsicMethod == IntrinsicMethod.LINK_TO_VIRTUAL ||
+                        originalIntrinsicMethod == IntrinsicMethod.LINK_TO_INTERFACE) ? 1 : 0;
+        if (originalSignature.getParameterCount(original.hasReceiver()) != (targetSignature.getParameterCount(target.hasReceiver()) + hasAppendix)) {
+            return false; // parameter count mismatch
+        }
+        int senderBase = 0;
+        int receiverBase = 0;
+        switch (originalIntrinsicMethod) {
+            case LINK_TO_VIRTUAL:
+            case LINK_TO_INTERFACE:
+            case LINK_TO_SPECIAL: {
+                if (target.isStatic()) {
+                    return false;
+                }
+                if (originalSignature.getParameterKind(0).isPrimitive()) {
+                    return false; // receiver should be an oop
+                }
+                senderBase = 1; // skip receiver
+                break;
+            }
+            case LINK_TO_STATIC: {
+                if (target.hasReceiver()) {
+                    return false;
+                }
+                break;
+            }
+            case INVOKE_BASIC: {
+                if (target.isStatic()) {
+                    if (targetSignature.getParameterKind(0).isPrimitive()) {
+                        return false; // receiver should be an oop
+                    }
+                    receiverBase = 1; // skip receiver
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        assert (targetSignature.getParameterCount(false) - receiverBase) == (originalSignature.getParameterCount(false) - senderBase - hasAppendix) : "argument count mismatch";
+        int argCount = targetSignature.getParameterCount(false) - receiverBase;
+        for (int i = 0; i < argCount; i++) {
+            if (originalSignature.getParameterKind(senderBase + i).getStackKind() != targetSignature.getParameterKind(receiverBase + i).getStackKind()) {
+                return false;
+            }
+        }
+        // Only check the return type if the symbolic info has non-void return type.
+        // I.e. the return value of the resolved method can be dropped.
+        if (originalSignature.getReturnKind() != JavaKind.Void &&
+                        originalSignature.getReturnKind().getStackKind() != targetSignature.getReturnKind().getStackKind()) {
+            return false;
+        }
+        return true; // no mismatch found
     }
 }

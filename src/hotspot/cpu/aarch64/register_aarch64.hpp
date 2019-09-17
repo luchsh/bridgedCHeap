@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2014, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef CPU_AARCH64_VM_REGISTER_AARCH64_HPP
-#define CPU_AARCH64_VM_REGISTER_AARCH64_HPP
+#ifndef CPU_AARCH64_REGISTER_AARCH64_HPP
+#define CPU_AARCH64_REGISTER_AARCH64_HPP
 
 #include "asm/register.hpp"
 
@@ -136,7 +136,7 @@ class FloatRegisterImpl: public AbstractRegisterImpl {
   VMReg as_VMReg();
 
   // derived registers, offsets, and addresses
-  FloatRegister successor() const                          { return as_FloatRegister(encoding() + 1); }
+  FloatRegister successor() const                          { return as_FloatRegister((encoding() + 1) % 32); }
 
   // accessors
   int   encoding() const                          { assert(is_valid(), "invalid register"); return (intptr_t)this; }
@@ -258,4 +258,4 @@ public:
   uint32_t bits() const { return _bitset; }
 };
 
-#endif // CPU_AARCH64_VM_REGISTER_AARCH64_HPP
+#endif // CPU_AARCH64_REGISTER_AARCH64_HPP

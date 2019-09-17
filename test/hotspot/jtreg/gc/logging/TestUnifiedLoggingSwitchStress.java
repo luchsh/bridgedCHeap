@@ -31,6 +31,9 @@ import javax.management.MBeanServer;
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
 import javax.management.ReflectionException;
+
+import static java.lang.ref.Reference.reachabilityFence;
+
 import java.lang.management.ManagementFactory;
 import java.util.LinkedList;
 import java.util.List;
@@ -42,6 +45,7 @@ import java.util.Random;
  * @key gc stress
  * @summary Switches gc log level on fly while stressing memory/gc
  * @requires !vm.flightRecorder
+ * @requires vm.gc != "Z"
  * @library /test/lib /
  * @modules java.management java.base/jdk.internal.misc
  *
@@ -127,7 +131,7 @@ class MemoryStresser implements Runnable {
             // Dead object allocation
             () -> {
                 int size = RND.nextInt(DEAD_OBJECT_MAX_SIZE);
-                byte[] deadObject = new byte[size];
+                reachabilityFence(new byte[size]);
             }
     };
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,7 +37,6 @@ import com.sun.source.doctree.UnknownInlineTagTree;
 import jdk.javadoc.doclet.Taglet;
 
 import static com.sun.source.doctree.DocTree.Kind.*;
-import static jdk.javadoc.doclet.Taglet.Location.*;
 
 /**
  * An inline tag to conveniently insert an external link.
@@ -49,16 +48,26 @@ import static jdk.javadoc.doclet.Taglet.Location.*;
  * will produce the following html
  * <p>
  * {@code
- * Please see <a href="https://www.oracle.com/pls/topic/lookup?ctx=javase9&id=Borealis">a spectacular</a> sight.
+ * Please see <a href="https://docs.oracle.com/pls/topic/lookup?ctx=javase10&id=Borealis">a spectacular</a> sight.
  * }
  */
 public class ExtLink implements Taglet {
+    static final String SPEC_VERSION;
+
+    static {
+        SPEC_VERSION = System.getProperty("extlink.spec.version");
+        if (SPEC_VERSION == null) {
+            throw new RuntimeException("extlink.spec.version property not set");
+        }
+    }
 
     static final String TAG_NAME = "extLink";
 
-    static final String URL = "https://www.oracle.com/pls/topic/lookup?ctx=javase9&amp;id=";
+    static final String URL = "https://docs.oracle.com/pls/topic/lookup?ctx=javase" +
+        SPEC_VERSION + "&amp;id=";
 
     static final Pattern TAG_PATTERN = Pattern.compile("(?s)(\\s*)(?<name>\\w+)(\\s+)(?<desc>.*)$");
+
 
     /**
      * Returns the set of locations in which the tag may be used.

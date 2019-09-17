@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,13 +31,14 @@
 #include "memory/heapInspection.hpp"
 #include "memory/metaspaceClosure.hpp"
 #include "memory/resourceArea.hpp"
-#include "oops/methodData.hpp"
+#include "oops/methodData.inline.hpp"
 #include "prims/jvmtiRedefineClasses.hpp"
 #include "runtime/arguments.hpp"
 #include "runtime/compilationPolicy.hpp"
 #include "runtime/deoptimization.hpp"
 #include "runtime/handles.inline.hpp"
-#include "runtime/orderAccess.inline.hpp"
+#include "runtime/orderAccess.hpp"
+#include "runtime/safepointVerifiers.hpp"
 #include "utilities/align.hpp"
 #include "utilities/copy.hpp"
 
@@ -70,9 +71,9 @@ void DataLayout::initialize(u1 tag, u2 bci, int cell_count) {
   }
 }
 
-void DataLayout::clean_weak_klass_links(BoolObjectClosure* cl) {
+void DataLayout::clean_weak_klass_links(bool always_clean) {
   ResourceMark m;
-  data_in()->clean_weak_klass_links(cl);
+  data_in()->clean_weak_klass_links(always_clean);
 }
 
 
@@ -314,23 +315,20 @@ void VirtualCallTypeData::post_initialize(BytecodeStream* stream, MethodData* md
   }
 }
 
-bool TypeEntries::is_loader_alive(BoolObjectClosure* is_alive_cl, intptr_t p) {
-  Klass* k = (Klass*)klass_part(p);
-  return k != NULL && k->is_loader_alive(is_alive_cl);
-}
-
-void TypeStackSlotEntries::clean_weak_klass_links(BoolObjectClosure* is_alive_cl) {
+void TypeStackSlotEntries::clean_weak_klass_links(bool always_clean) {
   for (int i = 0; i < _number_of_entries; i++) {
     intptr_t p = type(i);
-    if (!is_loader_alive(is_alive_cl, p)) {
+    Klass* k = (Klass*)klass_part(p);
+    if (k != NULL && (always_clean || !k->is_loader_alive())) {
       set_type(i, with_status((Klass*)NULL, p));
     }
   }
 }
 
-void ReturnTypeEntry::clean_weak_klass_links(BoolObjectClosure* is_alive_cl) {
+void ReturnTypeEntry::clean_weak_klass_links(bool always_clean) {
   intptr_t p = type();
-  if (!is_loader_alive(is_alive_cl, p)) {
+  Klass* k = (Klass*)klass_part(p);
+  if (k != NULL && (always_clean || !k->is_loader_alive())) {
     set_type(with_status((Klass*)NULL, p));
   }
 }
@@ -407,21 +405,21 @@ void VirtualCallTypeData::print_data_on(outputStream* st, const char* extra) con
 // that the check is reached, and a series of (Klass*, count) pairs
 // which are used to store a type profile for the receiver of the check.
 
-void ReceiverTypeData::clean_weak_klass_links(BoolObjectClosure* is_alive_cl) {
+void ReceiverTypeData::clean_weak_klass_links(bool always_clean) {
     for (uint row = 0; row < row_limit(); row++) {
     Klass* p = receiver(row);
-    if (p != NULL && !p->is_loader_alive(is_alive_cl)) {
+    if (p != NULL && (always_clean || !p->is_loader_alive())) {
       clear_row(row);
     }
   }
 }
 
 #if INCLUDE_JVMCI
-void VirtualCallData::clean_weak_klass_links(BoolObjectClosure* is_alive_cl) {
-  ReceiverTypeData::clean_weak_klass_links(is_alive_cl);
+void VirtualCallData::clean_weak_klass_links(bool always_clean) {
+  ReceiverTypeData::clean_weak_klass_links(always_clean);
   for (uint row = 0; row < method_row_limit(); row++) {
     Method* p = method(row);
-    if (p != NULL && !p->method_holder()->is_loader_alive(is_alive_cl)) {
+    if (p != NULL && (always_clean || !p->method_holder()->is_loader_alive())) {
       clear_method_row(row);
     }
   }
@@ -431,7 +429,7 @@ void VirtualCallData::clean_weak_method_links() {
   ReceiverTypeData::clean_weak_method_links();
   for (uint row = 0; row < method_row_limit(); row++) {
     Method* p = method(row);
-    if (p != NULL && !p->on_stack()) {
+    if (p != NULL && p->is_old()) {
       clear_method_row(row);
     }
   }
@@ -542,12 +540,6 @@ address RetData::fixup_ret(int return_bci, MethodData* h_mdo) {
   }
   return mdp;
 }
-
-#ifdef CC_INTERP
-DataLayout* RetData::advance(MethodData *md, int bci) {
-  return (DataLayout*) md->bci_to_dp(bci);
-}
-#endif // CC_INTERP
 
 void RetData::print_data_on(outputStream* st, const char* extra) const {
   print_shared(st, "RetData", extra);
@@ -853,6 +845,86 @@ bool MethodData::is_speculative_trap_bytecode(Bytecodes::Code code) {
   }
   return false;
 }
+
+#if INCLUDE_JVMCI
+
+void* FailedSpeculation::operator new(size_t size, size_t fs_size) throw() {
+  return CHeapObj<mtCompiler>::operator new(fs_size, std::nothrow);
+}
+
+FailedSpeculation::FailedSpeculation(address speculation, int speculation_len) : _data_len(speculation_len), _next(NULL) {
+  memcpy(data(), speculation, speculation_len);
+}
+
+// A heuristic check to detect nmethods that outlive a failed speculations list.
+static void guarantee_failed_speculations_alive(nmethod* nm, FailedSpeculation** failed_speculations_address) {
+  jlong head = (jlong)(address) *failed_speculations_address;
+  if ((head & 0x1) == 0x1) {
+    stringStream st;
+    if (nm != NULL) {
+      st.print("%d", nm->compile_id());
+      Method* method = nm->method();
+      st.print_raw("{");
+      if (method != NULL) {
+        method->print_name(&st);
+      } else {
+        const char* jvmci_name = nm->jvmci_name();
+        if (jvmci_name != NULL) {
+          st.print_raw(jvmci_name);
+        }
+      }
+      st.print_raw("}");
+    } else {
+      st.print("<unknown>");
+    }
+    fatal("Adding to failed speculations list that appears to have been freed. Source: %s", st.as_string());
+  }
+}
+
+bool FailedSpeculation::add_failed_speculation(nmethod* nm, FailedSpeculation** failed_speculations_address, address speculation, int speculation_len) {
+  assert(failed_speculations_address != NULL, "must be");
+  size_t fs_size = sizeof(FailedSpeculation) + speculation_len;
+  FailedSpeculation* fs = new (fs_size) FailedSpeculation(speculation, speculation_len);
+  if (fs == NULL) {
+    // no memory -> ignore failed speculation
+    return false;
+  }
+
+  guarantee(is_aligned(fs, sizeof(FailedSpeculation*)), "FailedSpeculation objects must be pointer aligned");
+  guarantee_failed_speculations_alive(nm, failed_speculations_address);
+
+  FailedSpeculation** cursor = failed_speculations_address;
+  do {
+    if (*cursor == NULL) {
+      FailedSpeculation* old_fs = Atomic::cmpxchg(fs, cursor, (FailedSpeculation*) NULL);
+      if (old_fs == NULL) {
+        // Successfully appended fs to end of the list
+        return true;
+      }
+      cursor = old_fs->next_adr();
+    } else {
+      cursor = (*cursor)->next_adr();
+    }
+  } while (true);
+}
+
+void FailedSpeculation::free_failed_speculations(FailedSpeculation** failed_speculations_address) {
+  assert(failed_speculations_address != NULL, "must be");
+  FailedSpeculation* fs = *failed_speculations_address;
+  while (fs != NULL) {
+    FailedSpeculation* next = fs->next();
+    delete fs;
+    fs = next;
+  }
+
+  // Write an unaligned value to failed_speculations_address to denote
+  // that it is no longer a valid pointer. This is allows for the check
+  // in add_failed_speculation against adding to a freed failed
+  // speculations list.
+  long* head = (long*) failed_speculations_address;
+  (*head) = (*head) | 0x1;
+}
+#endif // INCLUDE_JVMCI
 
 int MethodData::compute_extra_data_count(int data_size, int empty_bc_count, bool needs_speculative_traps) {
 #if INCLUDE_JVMCI
@@ -1225,8 +1297,8 @@ void MethodData::init() {
   // Set per-method invoke- and backedge mask.
   double scale = 1.0;
   CompilerOracle::has_option_value(_method, "CompileThresholdScaling", scale);
-  _invoke_mask = right_n_bits(Arguments::scaled_freq_log(Tier0InvokeNotifyFreqLog, scale)) << InvocationCounter::count_shift;
-  _backedge_mask = right_n_bits(Arguments::scaled_freq_log(Tier0BackedgeNotifyFreqLog, scale)) << InvocationCounter::count_shift;
+  _invoke_mask = right_n_bits(CompilerConfig::scaled_freq_log(Tier0InvokeNotifyFreqLog, scale)) << InvocationCounter::count_shift;
+  _backedge_mask = right_n_bits(CompilerConfig::scaled_freq_log(Tier0BackedgeNotifyFreqLog, scale)) << InvocationCounter::count_shift;
 
   _tenure_traps = 0;
   _num_loops = 0;
@@ -1235,6 +1307,7 @@ void MethodData::init() {
 
 #if INCLUDE_JVMCI
   _jvmci_ir_size = 0;
+  _failed_speculations = NULL;
 #endif
 
 #if INCLUDE_RTM_OPT
@@ -1661,19 +1734,13 @@ void MethodData::clean_extra_data_helper(DataLayout* dp, int shift, bool reset) 
   }
 }
 
-class CleanExtraDataClosure : public StackObj {
-public:
-  virtual bool is_live(Method* m) = 0;
-};
-
 // Check for entries that reference an unloaded method
 class CleanExtraDataKlassClosure : public CleanExtraDataClosure {
-private:
-  BoolObjectClosure* _is_alive;
+  bool _always_clean;
 public:
-  CleanExtraDataKlassClosure(BoolObjectClosure* is_alive) : _is_alive(is_alive) {}
+  CleanExtraDataKlassClosure(bool always_clean) : _always_clean(always_clean) {}
   bool is_live(Method* m) {
-    return m->method_holder()->is_loader_alive(_is_alive);
+    return !(_always_clean) && m->method_holder()->is_loader_alive();
   }
 };
 
@@ -1756,23 +1823,25 @@ void MethodData::verify_extra_data_clean(CleanExtraDataClosure* cl) {
 #endif
 }
 
-void MethodData::clean_method_data(BoolObjectClosure* is_alive) {
+void MethodData::clean_method_data(bool always_clean) {
   ResourceMark rm;
   for (ProfileData* data = first_data();
        is_valid(data);
        data = next_data(data)) {
-    data->clean_weak_klass_links(is_alive);
+    data->clean_weak_klass_links(always_clean);
   }
   ParametersTypeData* parameters = parameters_type_data();
   if (parameters != NULL) {
-    parameters->clean_weak_klass_links(is_alive);
+    parameters->clean_weak_klass_links(always_clean);
   }
 
-  CleanExtraDataKlassClosure cl(is_alive);
+  CleanExtraDataKlassClosure cl(always_clean);
   clean_extra_data(&cl);
   verify_extra_data_clean(&cl);
 }
 
+// This is called during redefinition to clean all "old" redefined
+// methods out of MethodData for all methods.
 void MethodData::clean_weak_method_links() {
   ResourceMark rm;
   for (ProfileData* data = first_data();

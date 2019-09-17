@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,7 +32,7 @@
  * @modules java.base/jdk.internal.misc
  *          jdk.jartool/sun.tools.jar
  * @build PatchMain
- * @run main PatchJavaBase
+ * @run driver PatchJavaBase
  */
 
 import jdk.test.lib.compiler.InMemoryJavaCompiler;
@@ -58,16 +58,25 @@ public class PatchJavaBase {
         moduleJar = TestCommon.getTestJar("javabase.jar");
 
         System.out.println("Test dumping with --patch-module");
+        String runError = "Unable to use shared archive: CDS is disabled when java.base module is patched";
+        String dumpingError = "Cannot use the following option when dumping the shared archive: --patch-module";
+        String errMsg;
+        if (TestCommon.isDynamicArchive()) {
+            errMsg = runError;
+        } else {
+            errMsg = dumpingError;
+        }
         OutputAnalyzer output =
             TestCommon.dump(null, null,
                 "--patch-module=java.base=" + moduleJar,
                 "PatchMain", "java.lang.NewClass");
-        TestCommon.checkDump(output, "Loading classes to share");
+        output.shouldHaveExitValue(1)
+              .shouldContain(errMsg);
 
-        output = TestCommon.execCommon(
+        TestCommon.run(
             "-XX:+UnlockDiagnosticVMOptions",
             "--patch-module=java.base=" + moduleJar,
-            "PatchMain", "java.lang.NewClass");
-        output.shouldContain("CDS is disabled when java.base module is patched");
+            "PatchMain", "java.lang.NewClass")
+          .assertAbnormalExit(runError);
     }
 }

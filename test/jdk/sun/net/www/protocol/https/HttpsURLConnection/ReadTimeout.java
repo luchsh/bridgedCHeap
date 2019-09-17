@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,12 +32,14 @@
  * @summary sun.net.client.defaultConnectTimeout should work with
  *     HttpsURLConnection; HTTP client: Connect and read timeouts;
  *     Https needs to support new tiger features that went into http
+ * @library /test/lib
  * @run main/othervm ReadTimeout
  */
 
 import java.io.*;
 import java.net.*;
 import javax.net.ssl.*;
+import jdk.test.lib.net.URIBuilder;
 
 public class ReadTimeout {
 
@@ -93,10 +95,11 @@ public class ReadTimeout {
      * to avoid infinite hangs.
      */
     void doServerSide() throws Exception {
+        InetAddress loopback = InetAddress.getLoopbackAddress();
         SSLServerSocketFactory sslssf =
             (SSLServerSocketFactory) SSLServerSocketFactory.getDefault();
         SSLServerSocket sslServerSocket =
-            (SSLServerSocket) sslssf.createServerSocket(serverPort);
+            (SSLServerSocket) sslssf.createServerSocket(serverPort, 0, loopback);
         serverPort = sslServerSocket.getLocalPort();
 
         /*
@@ -163,7 +166,11 @@ public class ReadTimeout {
             }
             HttpsURLConnection http = null;
             try {
-                URL url = new URL("https://localhost:" + serverPort);
+                URL url = URIBuilder.newBuilder()
+                          .scheme("https")
+                          .loopback()
+                          .port(serverPort)
+                          .toURL();
 
                 // set read timeout through system property
                 System.setProperty("sun.net.client.defaultReadTimeout", "2000");
@@ -175,16 +182,20 @@ public class ReadTimeout {
 
                 throw new Exception(
                         "system property timeout configuration does not work");
-            } catch (SocketTimeoutException stex) {
+            } catch (SSLException | SocketTimeoutException ex) {
                 System.out.println("Got expected timeout exception for " +
-                        "system property timeout configuration: " + stex);
+                        "system property timeout configuration: " + getCause(ex));
             } finally {
                 done();
                 http.disconnect();
             }
 
             try {
-                URL url = new URL("https://localhost:" + serverPort);
+                URL url = URIBuilder.newBuilder()
+                          .scheme("https")
+                          .loopback()
+                          .port(serverPort)
+                          .toURL();
 
                 HttpsURLConnection.setDefaultHostnameVerifier(
                                           new NameVerifier());
@@ -196,9 +207,9 @@ public class ReadTimeout {
 
                 throw new Exception(
                         "HttpsURLConnection.setReadTimeout() does not work");
-            } catch (SocketTimeoutException stex) {
+            } catch (SSLException | SocketTimeoutException ex) {
                 System.out.println("Got expected timeout exception for " +
-                        "HttpsURLConnection.setReadTimeout(): " + stex);
+                        "HttpsURLConnection.setReadTimeout(): " + getCause(ex));
             } finally {
                 done();
                 http.disconnect();
@@ -206,6 +217,20 @@ public class ReadTimeout {
         } finally {
             HttpsURLConnection.setDefaultHostnameVerifier(reservedHV);
         }
+    }
+
+    private Exception getCause(Exception ex) {
+        Exception cause = null;
+        if (ex instanceof SSLException) {
+            cause = (Exception) ex.getCause();
+            if (!(cause instanceof SocketTimeoutException)) {
+                throw new RuntimeException("Unexpected cause", cause);
+            }
+        } else {
+            cause = ex;
+        }
+
+        return cause;
     }
 
     static class NameVerifier implements HostnameVerifier {
@@ -224,6 +249,10 @@ public class ReadTimeout {
 
     volatile Exception serverException = null;
     volatile Exception clientException = null;
+
+    private boolean sslConnectionFailed() {
+        return clientException instanceof SSLHandshakeException;
+    }
 
     public static void main(String[] args) throws Exception {
         String keyFilename =
@@ -268,7 +297,9 @@ public class ReadTimeout {
          * Wait for other side to close down.
          */
         if (separateServerThread) {
-            serverThread.join();
+            if (!sslConnectionFailed()) {
+                serverThread.join();
+            }
         } else {
             clientThread.join();
         }

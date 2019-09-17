@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,8 +35,8 @@ import jdk.javadoc.internal.doclets.toolkit.BaseConfiguration;
 import jdk.javadoc.internal.doclets.toolkit.Content;
 import jdk.javadoc.internal.doclets.toolkit.DocletException;
 import jdk.javadoc.internal.doclets.toolkit.EnumConstantWriter;
-import jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberMap;
 
+import static jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberTable.Kind.*;
 
 /**
  * Builds documentation for a enum constants.
@@ -52,16 +52,6 @@ import jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberMap;
 public class EnumConstantBuilder extends AbstractMemberBuilder {
 
     /**
-     * The class whose enum constants are being documented.
-     */
-    private final TypeElement typeElement;
-
-    /**
-     * The visible enum constantss for the given class.
-     */
-    private final VisibleMemberMap visibleMemberMap;
-
-    /**
      * The writer to output the enum constants documentation.
      */
     private final EnumConstantWriter writer;
@@ -69,7 +59,7 @@ public class EnumConstantBuilder extends AbstractMemberBuilder {
     /**
      * The set of enum constants being documented.
      */
-    private final List<Element> enumConstants;
+    private final List<? extends Element> enumConstants;
 
     /**
      * The current enum constant that is being documented at this point
@@ -86,12 +76,9 @@ public class EnumConstantBuilder extends AbstractMemberBuilder {
      */
     private EnumConstantBuilder(Context context,
             TypeElement typeElement, EnumConstantWriter writer) {
-        super(context);
-        this.typeElement = typeElement;
+        super(context, typeElement);
         this.writer = writer;
-        visibleMemberMap = configuration.getVisibleMemberMap(typeElement,
-                VisibleMemberMap.Kind.ENUM_CONSTANTS);
-        enumConstants = visibleMemberMap.getMembers(typeElement);
+        enumConstants = getVisibleMembers(ENUM_CONSTANTS);
     }
 
     /**
@@ -136,9 +123,10 @@ public class EnumConstantBuilder extends AbstractMemberBuilder {
             return;
         }
         if (hasMembersToDocument()) {
-            Content enumConstantsDetailsTree = writer.getEnumConstantsDetailsTreeHeader(typeElement,
+            Content enumConstantsDetailsTreeHeader = writer.getEnumConstantsDetailsTreeHeader(typeElement,
                     memberDetailsTree);
-            Element lastElement = enumConstants.get(enumConstants.size() - 1);
+            Content enumConstantsDetailsTree = writer.getMemberTreeHeader();
+
             for (Element enumConstant : enumConstants) {
                 currentElement = (VariableElement)enumConstant;
                 Content enumConstantsTree = writer.getEnumConstantsTreeHeader(currentElement,
@@ -149,11 +137,10 @@ public class EnumConstantBuilder extends AbstractMemberBuilder {
                 buildEnumConstantComments(enumConstantsTree);
                 buildTagInfo(enumConstantsTree);
 
-                enumConstantsDetailsTree.addContent(writer.getEnumConstants(
-                        enumConstantsTree, currentElement == lastElement));
+                enumConstantsDetailsTree.add(writer.getEnumConstants(enumConstantsTree));
             }
-            memberDetailsTree.addContent(
-                    writer.getEnumConstantsDetails(enumConstantsDetailsTree));
+            memberDetailsTree.add(
+                    writer.getEnumConstantsDetails(enumConstantsDetailsTreeHeader, enumConstantsDetailsTree));
         }
     }
 
@@ -163,7 +150,7 @@ public class EnumConstantBuilder extends AbstractMemberBuilder {
      * @param enumConstantsTree the content tree to which the documentation will be added
      */
     protected void buildSignature(Content enumConstantsTree) {
-        enumConstantsTree.addContent(writer.getSignature(currentElement));
+        enumConstantsTree.add(writer.getSignature(currentElement));
     }
 
     /**

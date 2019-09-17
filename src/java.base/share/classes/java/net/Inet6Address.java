@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,7 +38,7 @@ import java.util.Arrays;
  * Defined by <a href="http://www.ietf.org/rfc/rfc2373.txt">
  * <i>RFC&nbsp;2373: IP Version 6 Addressing Architecture</i></a>.
  *
- * <h3> <a id="format">Textual representation of IP addresses</a> </h3>
+ * <h2> <a id="format">Textual representation of IP addresses</a> </h2>
  *
  * Textual representation of IPv6 address used as input to methods
  * takes one of the following forms:
@@ -116,7 +116,7 @@ import java.util.Arrays;
  * form because it is unambiguous when used in combination with other
  * textual data.
  *
- * <h4> Special IPv6 address </h4>
+ * <h3> Special IPv6 address </h3>
  *
  * <blockquote>
  * <table class="borderless">
@@ -135,7 +135,7 @@ import java.util.Arrays;
  *         address.</td></tr>
  * </table></blockquote>
  *
- * <h4><a id="scoped">Textual representation of IPv6 scoped addresses</a></h4>
+ * <h3><a id="scoped">Textual representation of IPv6 scoped addresses</a></h3>
  *
  * <p> The textual representation of IPv6 addresses as described above can be
  * extended to specify IPv6 scoped addresses. This extension to the basic
@@ -175,11 +175,6 @@ import java.util.Arrays;
 public final
 class Inet6Address extends InetAddress {
     static final int INADDRSZ = 16;
-
-    /*
-     * cached scope_id - for link-local address use only.
-     */
-    private transient int cached_scope_id;  // 0
 
     private class Inet6AddressHolder {
 
@@ -415,7 +410,7 @@ class Inet6Address extends InetAddress {
      * set to the value corresponding to the given interface for the address
      * type specified in {@code addr}. The call will fail with an
      * UnknownHostException if the given interface does not have a numeric
-     * scope_id assigned for the given address type (eg. link-local or site-local).
+     * scope_id assigned for the given address type (e.g. link-local or site-local).
      * See <a href="Inet6Address.html#scoped">here</a> for a description of IPv6
      * scoped addresses.
      *
@@ -433,7 +428,7 @@ class Inet6Address extends InetAddress {
                                             NetworkInterface nif)
         throws UnknownHostException
     {
-        if (host != null && host.length() > 0 && host.charAt(0) == '[') {
+        if (host != null && !host.isEmpty() && host.charAt(0) == '[') {
             if (host.charAt(host.length()-1) == ']') {
                 host = host.substring(1, host.length() -1);
             }
@@ -466,7 +461,7 @@ class Inet6Address extends InetAddress {
                                             int scope_id)
         throws UnknownHostException
     {
-        if (host != null && host.length() > 0 && host.charAt(0) == '[') {
+        if (host != null && !host.isEmpty() && host.charAt(0) == '[') {
             if (host.charAt(host.length()-1) == ']') {
                 host = host.substring(1, host.length() -1);
             }
@@ -507,7 +502,7 @@ class Inet6Address extends InetAddress {
 
     /* check the two Ipv6 addresses and return false if they are both
      * non global address types, but not the same.
-     * (ie. one is sitelocal and the other linklocal)
+     * (i.e. one is site-local and the other link-local)
      * return true otherwise.
      */
 
@@ -601,7 +596,7 @@ class Inet6Address extends InetAddress {
         boolean scope_ifname_set = gf.get("scope_ifname_set", false);
         String ifname = (String)gf.get("ifname", null);
 
-        if (ifname != null && !"".equals (ifname)) {
+        if (ifname != null && !ifname.isEmpty()) {
             try {
                 scope_ifname = NetworkInterface.getByName(ifname);
                 if (scope_ifname == null) {
@@ -641,7 +636,7 @@ class Inet6Address extends InetAddress {
             ipaddress, scope_id, scope_id_set, scope_ifname, scope_ifname_set
         );
 
-        UNSAFE.putObject(this, FIELDS_OFFSET, h);
+        UNSAFE.putReference(this, FIELDS_OFFSET, h);
     }
 
     /**
@@ -683,7 +678,7 @@ class Inet6Address extends InetAddress {
     /**
      * Utility routine to check if the InetAddress is a wildcard address.
      *
-     * @return a {@code boolean} indicating if the Inetaddress is
+     * @return a {@code boolean} indicating if the InetAddress is
      *         a wildcard address.
      */
     @Override
@@ -821,7 +816,7 @@ class Inet6Address extends InetAddress {
 
     /**
      * Returns the scoped interface, if this instance was created with
-     * with a scoped interface.
+     * a scoped interface.
      *
      * @return the scoped interface, or null if not set.
      * @since 1.5

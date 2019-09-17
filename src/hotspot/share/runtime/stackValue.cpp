@@ -24,10 +24,17 @@
 
 #include "precompiled.hpp"
 #include "code/debugInfo.hpp"
-#include "oops/oop.inline.hpp"
+#include "oops/compressedOops.inline.hpp"
+#include "oops/oop.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/stackValue.hpp"
+#if INCLUDE_ZGC
+#include "gc/z/zBarrier.inline.hpp"
+#endif
+#if INCLUDE_SHENANDOAHGC
+#include "gc/shenandoah/shenandoahBarrierSet.hpp"
+#endif
 
 StackValue* StackValue::create_stack_value(const frame* fr, const RegisterMap* reg_map, ScopeValue* sv) {
   if (sv->is_location()) {
@@ -102,15 +109,22 @@ StackValue* StackValue::create_stack_value(const frame* fr, const RegisterMap* r
       } else {
         value.noop = *(narrowOop*) value_addr;
       }
-      // Decode narrowoop and wrap a handle around the oop
-      Handle h(Thread::current(), oopDesc::decode_heap_oop(value.noop));
+      // Decode narrowoop
+      oop val = CompressedOops::decode(value.noop);
+      // Deoptimization must make sure all oops have passed load barriers
+#if INCLUDE_SHENANDOAHGC
+      if (UseShenandoahGC) {
+        val = ShenandoahBarrierSet::barrier_set()->load_reference_barrier(val);
+      }
+#endif
+      Handle h(Thread::current(), val); // Wrap a handle around the oop
       return new StackValue(h);
     }
 #endif
     case Location::oop: {
       oop val = *(oop *)value_addr;
 #ifdef _LP64
-      if (Universe::is_narrow_oop_base(val)) {
+      if (CompressedOops::is_base(val)) {
          // Compiled code may produce decoded oop = narrow_oop_base
          // when a narrow oop implicit null check is used.
          // The narrow_oop_base could be NULL or be the address
@@ -118,6 +132,13 @@ StackValue* StackValue::create_stack_value(const frame* fr, const RegisterMap* r
          val = (oop)NULL;
       }
 #endif
+      // Deoptimization must make sure all oops have passed load barriers
+#if INCLUDE_SHENANDOAHGC
+      if (UseShenandoahGC) {
+        val = ShenandoahBarrierSet::barrier_set()->load_reference_barrier(val);
+      }
+#endif
+      assert(oopDesc::is_oop_or_null(val, false), "bad oop found");
       Handle h(Thread::current(), val); // Wrap a handle around the oop
       return new StackValue(h);
     }
@@ -195,7 +216,11 @@ void StackValue::print_on(outputStream* st) const {
       break;
 
     case T_OBJECT:
-      _handle_value()->print_value_on(st);
+      if (_handle_value() != NULL) {
+        _handle_value()->print_value_on(st);
+      } else {
+        st->print("NULL");
+      }
       st->print(" <" INTPTR_FORMAT ">", p2i((address)_handle_value()));
      break;
 

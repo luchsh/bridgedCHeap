@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,16 +22,18 @@
  *
  */
 
-#ifndef SHARE_VM_CODE_DEPENDENCIES_HPP
-#define SHARE_VM_CODE_DEPENDENCIES_HPP
+#ifndef SHARE_CODE_DEPENDENCIES_HPP
+#define SHARE_CODE_DEPENDENCIES_HPP
 
 #include "ci/ciCallSite.hpp"
 #include "ci/ciKlass.hpp"
+#include "ci/ciMethod.hpp"
 #include "ci/ciMethodHandle.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "code/compressedStream.hpp"
 #include "code/nmethod.hpp"
 #include "memory/resourceArea.hpp"
+#include "runtime/safepointVerifiers.hpp"
 #include "utilities/growableArray.hpp"
 #include "utilities/hashtable.hpp"
 
@@ -204,7 +206,7 @@ class Dependencies: public ResourceObj {
 
 #if INCLUDE_JVMCI
   // A Metadata* or object value recorded in an OopRecorder
-  class DepValue VALUE_OBJ_CLASS_SPEC {
+  class DepValue {
    private:
     // Unique identifier of the value within the associated OopRecorder that
     // encodes both the category of the value (0: invalid, positive: metadata, negative: object)
@@ -340,6 +342,9 @@ class Dependencies: public ResourceObj {
     check_ctxk(ctxk);
     assert(!is_concrete_klass(ctxk->as_instance_klass()), "must be abstract");
   }
+  static void check_unique_method(ciKlass* ctxk, ciMethod* m) {
+    assert(!m->can_be_statically_bound(ctxk->as_instance_klass()), "redundant");
+  }
 
   void assert_common_1(DepType dept, ciBaseObject* x);
   void assert_common_2(DepType dept, ciBaseObject* x0, ciBaseObject* x1);
@@ -367,6 +372,10 @@ class Dependencies: public ResourceObj {
     check_ctxk(ctxk);
     assert(ctxk->is_abstract(), "must be abstract");
   }
+  static void check_unique_method(Klass* ctxk, Method* m) {
+    assert(!m->can_be_statically_bound(InstanceKlass::cast(ctxk)), "redundant");
+  }
+
   void assert_common_1(DepType dept, DepValue x);
   void assert_common_2(DepType dept, DepValue x0, DepValue x1);
 
@@ -508,9 +517,9 @@ class Dependencies: public ResourceObj {
     bool  _valid;
     void* _value;
    public:
-    DepArgument() : _is_oop(false), _value(NULL), _valid(false) {}
-    DepArgument(oop v): _is_oop(true), _value(v), _valid(true) {}
-    DepArgument(Metadata* v): _is_oop(false), _value(v), _valid(true) {}
+    DepArgument() : _is_oop(false), _valid(false), _value(NULL) {}
+    DepArgument(oop v): _is_oop(true), _valid(true), _value(v) {}
+    DepArgument(Metadata* v): _is_oop(false), _valid(true), _value(v) {}
 
     bool is_null() const               { return _value == NULL; }
     bool is_oop() const                { return _is_oop; }
@@ -581,15 +590,15 @@ class Dependencies: public ResourceObj {
 
   public:
     DepStream(Dependencies* deps)
-      : _deps(deps),
-        _code(NULL),
+      : _code(NULL),
+        _deps(deps),
         _bytes(deps->content_bytes())
     {
       initial_asserts(deps->size_in_bytes());
     }
     DepStream(nmethod* code)
-      : _deps(NULL),
-        _code(code),
+      : _code(code),
+        _deps(NULL),
         _bytes(code->dependencies_begin())
     {
       initial_asserts(code->dependencies_size());
@@ -715,7 +724,7 @@ class DepChange : public StackObj {
     // iteration variables:
     ChangeType  _change_type;
     Klass*      _klass;
-    Array<Klass*>* _ti_base;    // i.e., transitive_interfaces
+    Array<InstanceKlass*>* _ti_base;    // i.e., transitive_interfaces
     int         _ti_index;
     int         _ti_limit;
 
@@ -798,4 +807,4 @@ class CallSiteDepChange : public DepChange {
   oop method_handle() const { return _method_handle(); }
 };
 
-#endif // SHARE_VM_CODE_DEPENDENCIES_HPP
+#endif // SHARE_CODE_DEPENDENCIES_HPP

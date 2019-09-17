@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -72,10 +72,12 @@ public final class PropertyInfo {
     }
 
     private boolean initialize() {
+        boolean isInitedToIsGetter = false;
         if (this.read != null) {
             this.type = this.read.type;
+            isInitedToIsGetter = isPrefix(this.read.method.getName(), "is");
         }
-        if (this.readList != null) {
+        if (!isInitedToIsGetter && this.readList != null) {
             for (MethodInfo info : this.readList) {
                 if ((this.read == null) || this.read.type.isAssignableFrom(info.type)) {
                     this.read = info;
@@ -84,18 +86,23 @@ public final class PropertyInfo {
             }
             this.readList = null;
         }
+        Class<?> writeType = this.type;
         if (this.writeList != null) {
             for (MethodInfo info : this.writeList) {
-                if (this.type == null) {
+                if (writeType == null) {
                     this.write = info;
-                    this.type = info.type;
-                } else if (this.type.isAssignableFrom(info.type)) {
+                    writeType = info.type;
+                } else if (writeType.isAssignableFrom(info.type)) {
                     if ((this.write == null) || this.write.type.isAssignableFrom(info.type)) {
                         this.write = info;
+                        writeType = info.type;
                     }
                 }
             }
             this.writeList = null;
+        }
+        if (this.type == null) {
+            this.type = writeType;
         }
         if (this.indexed != null) {
             if ((this.type != null) && !this.type.isArray()) {

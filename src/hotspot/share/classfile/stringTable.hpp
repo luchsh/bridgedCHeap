@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,163 +22,120 @@
  *
  */
 
-#ifndef SHARE_VM_CLASSFILE_STRINGTABLE_HPP
-#define SHARE_VM_CLASSFILE_STRINGTABLE_HPP
+#ifndef SHARE_CLASSFILE_STRINGTABLE_HPP
+#define SHARE_CLASSFILE_STRINGTABLE_HPP
 
+#include "gc/shared/oopStorage.hpp"
 #include "memory/allocation.hpp"
-#include "utilities/hashtable.hpp"
+#include "memory/padded.hpp"
+#include "oops/oop.hpp"
+#include "oops/weakHandle.hpp"
+#include "utilities/tableStatistics.hpp"
 
-template <class T, class N> class CompactHashtable;
-class CompactStringTableWriter;
-class FileMapInfo;
+class CompactHashtableWriter;
 class SerializeClosure;
 
-class StringTable : public RehashableHashtable<oop, mtSymbol> {
+class StringTable;
+class StringTableConfig;
+class StringTableCreateEntry;
+
+class StringTable : public CHeapObj<mtSymbol>{
   friend class VMStructs;
   friend class Symbol;
+  friend class StringTableConfig;
+  friend class StringTableCreateEntry;
 
-private:
-  // The string table
-  static StringTable* _the_table;
-
-  // Shared string table
-  static CompactHashtable<oop, char> _shared_table;
-  static bool _shared_string_mapped;
+  static volatile bool _has_work;
+  static volatile size_t _uncleaned_items_count;
 
   // Set if one bucket is out of balance due to hash algorithm deficiency
-  static bool _needs_rehashing;
+  static volatile bool _needs_rehashing;
 
-  // Claimed high water mark for parallel chunked scanning
-  static volatile int _parallel_claimed_idx;
+  static OopStorage* _weak_handles;
 
-  static oop intern(Handle string_or_null, jchar* chars, int length, TRAPS);
-  oop basic_add(int index, Handle string_or_null, jchar* name, int len,
-                unsigned int hashValue, TRAPS);
+  static void grow(JavaThread* jt);
+  static void clean_dead_entries(JavaThread* jt);
 
-  oop lookup_in_main_table(int index, jchar* chars, int length, unsigned int hashValue);
-  static oop lookup_shared(jchar* name, int len, unsigned int hash);
+  static double get_load_factor();
+  static double get_dead_factor();
 
-  // Apply the give oop closure to the entries to the buckets
-  // in the range [start_idx, end_idx).
-  static void buckets_oops_do(OopClosure* f, int start_idx, int end_idx);
+  static void check_concurrent_work();
+  static void trigger_concurrent_work();
 
-  typedef StringTable::BucketUnlinkContext BucketUnlinkContext;
-  // Unlink or apply the give oop closure to the entries to the buckets
-  // in the range [start_idx, end_idx). Unlinked bucket entries are collected in the given
-  // context to be freed later.
-  // This allows multiple threads to work on the table at once.
-  static void buckets_unlink_or_oops_do(BoolObjectClosure* is_alive, OopClosure* f, int start_idx, int end_idx, BucketUnlinkContext* context);
+  static size_t item_added();
+  static void item_removed();
+  static size_t add_items_to_clean(size_t ndead);
 
-  // Hashing algorithm, used as the hash value used by the
-  //     StringTable for bucket selection and comparison (stored in the
-  //     HashtableEntry structures).  This is used in the String.intern() method.
-  static unsigned int hash_string(const jchar* s, int len);
-  static unsigned int hash_string(oop string);
-  static unsigned int alt_hash_string(const jchar* s, int len);
+  static oop intern(Handle string_or_null_h, const jchar* name, int len, TRAPS);
+  static oop do_intern(Handle string_or_null, const jchar* name, int len, uintx hash, TRAPS);
+  static oop do_lookup(const jchar* name, int len, uintx hash);
 
-  // Accessors for the string roots in the hashtable entries.
-  // Use string_object_no_keepalive() only when the value is not returned
-  // outside of a scope where a thread transition is possible.
-  static oop string_object(HashtableEntry<oop, mtSymbol>* entry);
-  static oop string_object_no_keepalive(HashtableEntry<oop, mtSymbol>* entry);
-  static void set_string_object(HashtableEntry<oop, mtSymbol>* entry, oop string);
+  static void print_table_statistics(outputStream* st, const char* table_name);
 
-  StringTable() : RehashableHashtable<oop, mtSymbol>((int)StringTableSize,
-                              sizeof (HashtableEntry<oop, mtSymbol>)) {}
+  static bool do_rehash();
 
-  StringTable(HashtableBucket<mtSymbol>* t, int number_of_entries)
-    : RehashableHashtable<oop, mtSymbol>((int)StringTableSize, sizeof (HashtableEntry<oop, mtSymbol>), t,
-                     number_of_entries) {}
-public:
-  // The string table
-  static StringTable* the_table() { return _the_table; }
+ public:
+  static size_t table_size();
+  static TableStatistics get_table_statistics();
 
-  // Size of one bucket in the string table.  Used when checking for rollover.
-  static uint bucket_size() { return sizeof(HashtableBucket<mtSymbol>); }
+  static OopStorage* weak_storage() { return _weak_handles; }
 
-  static void create_table() {
-    assert(_the_table == NULL, "One string table allowed.");
-    _the_table = new StringTable();
-  }
+  static void create_table();
+
+  static void do_concurrent_work(JavaThread* jt);
+  static bool has_work() { return _has_work; }
 
   // GC support
-  //   Delete pointers to otherwise-unreachable objects.
-  static void unlink_or_oops_do(BoolObjectClosure* cl, OopClosure* f) {
-    int processed = 0;
-    int removed = 0;
-    unlink_or_oops_do(cl, f, &processed, &removed);
-  }
-  static void unlink(BoolObjectClosure* cl) {
-    int processed = 0;
-    int removed = 0;
-    unlink_or_oops_do(cl, NULL, &processed, &removed);
-  }
-  static void unlink_or_oops_do(BoolObjectClosure* cl, OopClosure* f, int* processed, int* removed);
-  static void unlink(BoolObjectClosure* cl, int* processed, int* removed) {
-    unlink_or_oops_do(cl, NULL, processed, removed);
-  }
+
+  // Must be called before a parallel walk where strings might die.
+  static void reset_dead_counter() { _uncleaned_items_count = 0; }
+
+  // After the parallel walk this method must be called to trigger
+  // cleaning. Note it might trigger a resize instead.
+  static void finish_dead_counter() { check_concurrent_work(); }
+
+  // If GC uses ParState directly it should add the number of cleared
+  // strings to this method.
+  static void inc_dead_counter(size_t ndead) { add_items_to_clean(ndead); }
+
   // Serially invoke "f->do_oop" on the locations of all oops in the table.
+  // Used by JFR leak profiler.  TODO: it should find these oops through
+  // the WeakProcessor.
   static void oops_do(OopClosure* f);
-
-  // Possibly parallel versions of the above
-  static void possibly_parallel_unlink_or_oops_do(BoolObjectClosure* cl, OopClosure* f, int* processed, int* removed);
-  static void possibly_parallel_unlink(BoolObjectClosure* cl, int* processed, int* removed) {
-    possibly_parallel_unlink_or_oops_do(cl, NULL, processed, removed);
-  }
-  static void possibly_parallel_oops_do(OopClosure* f);
-
-  // Internal test.
-  static void test_alt_hash() PRODUCT_RETURN;
 
   // Probing
   static oop lookup(Symbol* symbol);
-  static oop lookup(jchar* chars, int length);
+  static oop lookup(const jchar* chars, int length);
 
   // Interning
   static oop intern(Symbol* symbol, TRAPS);
   static oop intern(oop string, TRAPS);
   static oop intern(const char *utf8_string, TRAPS);
 
-  // Debugging
-  static void verify();
-  static void dump(outputStream* st, bool verbose=false);
-
-  enum VerifyMesgModes {
-    _verify_quietly    = 0,
-    _verify_with_mesgs = 1
-  };
-
-  enum VerifyRetTypes {
-    _verify_pass          = 0,
-    _verify_fail_continue = 1,
-    _verify_fail_done     = 2
-  };
-
-  static VerifyRetTypes compare_entries(int bkt1, int e_cnt1,
-                                        HashtableEntry<oop, mtSymbol>* e_ptr1,
-                                        int bkt2, int e_cnt2,
-                                        HashtableEntry<oop, mtSymbol>* e_ptr2);
-  static VerifyRetTypes verify_entry(int bkt, int e_cnt,
-                                     HashtableEntry<oop, mtSymbol>* e_ptr,
-                                     VerifyMesgModes mesg_mode);
-  static int verify_and_compare_entries();
-
-  // Sharing
-  static void set_shared_string_mapped() { _shared_string_mapped = true; }
-  static bool shared_string_mapped()       { return _shared_string_mapped; }
-  static void shared_oops_do(OopClosure* f) NOT_CDS_JAVA_HEAP_RETURN;
-  static bool copy_shared_string(GrowableArray<MemRegion> *string_space,
-                                 CompactStringTableWriter* ch_table) NOT_CDS_JAVA_HEAP_RETURN_(false);
-  static oop  create_archived_string(oop s, Thread* THREAD) NOT_CDS_JAVA_HEAP_RETURN_(NULL);
-  static void write_to_archive(GrowableArray<MemRegion> *string_space) NOT_CDS_JAVA_HEAP_RETURN;
-  static void serialize(SerializeClosure* soc) NOT_CDS_JAVA_HEAP_RETURN;
-
-  // Rehash the symbol table if it gets out of balance
+  // Rehash the string table if it gets out of balance
   static void rehash_table();
   static bool needs_rehashing() { return _needs_rehashing; }
+  static inline void update_needs_rehash(bool rehash) {
+    if (rehash) {
+      _needs_rehashing = true;
+    }
+  }
 
-  // Parallel chunked scanning
-  static void clear_parallel_claimed_index() { _parallel_claimed_idx = 0; }
-  static int parallel_claimed_index() { return _parallel_claimed_idx; }
+  // Sharing
+ private:
+  static oop lookup_shared(const jchar* name, int len, unsigned int hash) NOT_CDS_JAVA_HEAP_RETURN_(NULL);
+  static void copy_shared_string_table(CompactHashtableWriter* ch_table) NOT_CDS_JAVA_HEAP_RETURN;
+ public:
+  static oop create_archived_string(oop s, Thread* THREAD) NOT_CDS_JAVA_HEAP_RETURN_(NULL);
+  static void shared_oops_do(OopClosure* f) NOT_CDS_JAVA_HEAP_RETURN;
+  static void write_to_archive() NOT_CDS_JAVA_HEAP_RETURN;
+  static void serialize_shared_table_header(SerializeClosure* soc) NOT_CDS_JAVA_HEAP_RETURN;
+
+  // Jcmd
+  static void dump(outputStream* st, bool verbose=false);
+  // Debugging
+  static size_t verify_and_compare_entries();
+  static void verify();
 };
-#endif // SHARE_VM_CLASSFILE_STRINGTABLE_HPP
+
+#endif // SHARE_CLASSFILE_STRINGTABLE_HPP

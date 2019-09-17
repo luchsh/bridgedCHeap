@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,8 +26,10 @@
 #include "logging/log.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/virtualspace.hpp"
+#include "oops/compressedOops.hpp"
 #include "oops/markOop.hpp"
 #include "oops/oop.inline.hpp"
+#include "runtime/os.inline.hpp"
 #include "services/memTracker.hpp"
 #include "utilities/align.hpp"
 
@@ -35,7 +37,7 @@
 
 // Dummy constructor
 ReservedSpace::ReservedSpace() : _base(NULL), _size(0), _noaccess_prefix(0),
-    _alignment(0), _special(false), _executable(false), _fd_for_heap(-1) {
+    _alignment(0), _special(false), _fd_for_heap(-1), _executable(false) {
 }
 
 ReservedSpace::ReservedSpace(size_t size, size_t preferred_page_size) : _fd_for_heap(-1) {
@@ -67,6 +69,18 @@ ReservedSpace::ReservedSpace(size_t size, size_t alignment,
                              bool large,
                              bool executable) : _fd_for_heap(-1) {
   initialize(size, alignment, large, NULL, executable);
+}
+
+ReservedSpace::ReservedSpace(char* base, size_t size, size_t alignment,
+                             bool special, bool executable) : _fd_for_heap(-1) {
+  assert((size % os::vm_allocation_granularity()) == 0,
+         "size not allocation aligned");
+  _base = base;
+  _size = size;
+  _alignment = alignment;
+  _noaccess_prefix = 0;
+  _special = special;
+  _executable = executable;
 }
 
 // Helper method
@@ -217,20 +231,6 @@ void ReservedSpace::initialize(size_t size, size_t alignment, bool large,
   }
 }
 
-
-ReservedSpace::ReservedSpace(char* base, size_t size, size_t alignment,
-                             bool special, bool executable) {
-  assert((size % os::vm_allocation_granularity()) == 0,
-         "size not allocation aligned");
-  _base = base;
-  _size = size;
-  _alignment = alignment;
-  _noaccess_prefix = 0;
-  _special = special;
-  _executable = executable;
-}
-
-
 ReservedSpace ReservedSpace::first_part(size_t partition_size, size_t alignment,
                                         bool split, bool realloc) {
   assert(partition_size <= size(), "partition failed");
@@ -264,11 +264,6 @@ size_t ReservedSpace::page_align_size_down(size_t size) {
 
 size_t ReservedSpace::allocation_align_size_up(size_t size) {
   return align_up(size, os::vm_allocation_granularity());
-}
-
-
-size_t ReservedSpace::allocation_align_size_down(size_t size) {
-  return align_down(size, os::vm_allocation_granularity());
 }
 
 
@@ -315,9 +310,9 @@ void ReservedHeapSpace::establish_noaccess_prefix() {
                                  PTR_FORMAT " / " INTX_FORMAT " bytes",
                                  p2i(_base),
                                  _noaccess_prefix);
-      assert(Universe::narrow_oop_use_implicit_null_checks() == true, "not initialized?");
+      assert(CompressedOops::use_implicit_null_checks() == true, "not initialized?");
     } else {
-      Universe::set_narrow_oop_use_implicit_null_checks(false);
+      CompressedOops::set_use_implicit_null_checks(false);
     }
   }
 
@@ -491,7 +486,6 @@ void ReservedHeapSpace::initialize_compressed_heap(const size_t size, size_t ali
   guarantee(size + noaccess_prefix_size(alignment) <= OopEncodingHeapMax,
             "can not allocate compressed oop heap for this size");
   guarantee(alignment == MAX2(alignment, (size_t)os::vm_page_size()), "alignment too small");
-  assert(HeapBaseMinAddress > 0, "sanity");
 
   const size_t granularity = os::vm_allocation_granularity();
   assert((size & (granularity - 1)) == 0,
@@ -585,7 +579,7 @@ void ReservedHeapSpace::initialize_compressed_heap(const size_t size, size_t ali
     while (addresses[i] &&                                 // End of array not yet reached.
            ((_base == NULL) ||                             // No previous try succeeded.
             (_base + size >  (char *)OopEncodingHeapMax && // Not zerobased or unscaled address.
-             !Universe::is_disjoint_heap_base_address((address)_base)))) {  // Not disjoint address.
+             !CompressedOops::is_disjoint_heap_base_address((address)_base)))) {  // Not disjoint address.
       char* const attach_point = addresses[i];
       assert(attach_point >= aligned_heap_base_min_address, "Flag support broken");
       try_reserve_heap(size + noaccess_prefix, alignment, large, attach_point);
@@ -1061,14 +1055,6 @@ void VirtualSpace::print() {
 
 #ifndef PRODUCT
 
-#define test_log(...) \
-  do {\
-    if (VerboseInternalVMTests) { \
-      tty->print_cr(__VA_ARGS__); \
-      tty->flush(); \
-    }\
-  } while (false)
-
 class TestReservedSpace : AllStatic {
  public:
   static void small_page_write(void* addr, size_t size) {
@@ -1089,16 +1075,12 @@ class TestReservedSpace : AllStatic {
   }
 
   static void test_reserved_space1(size_t size, size_t alignment) {
-    test_log("test_reserved_space1(%p)", (void*) (uintptr_t) size);
-
     assert(is_aligned(size, alignment), "Incorrect input parameters");
 
     ReservedSpace rs(size,          // size
                      alignment,     // alignment
                      UseLargePages, // large
                      (char *)NULL); // requested_address
-
-    test_log(" rs.special() == %d", rs.special());
 
     assert(rs.base() != NULL, "Must be");
     assert(rs.size() == size, "Must be");
@@ -1114,13 +1096,9 @@ class TestReservedSpace : AllStatic {
   }
 
   static void test_reserved_space2(size_t size) {
-    test_log("test_reserved_space2(%p)", (void*)(uintptr_t)size);
-
     assert(is_aligned(size, os::vm_allocation_granularity()), "Must be at least AG aligned");
 
     ReservedSpace rs(size);
-
-    test_log(" rs.special() == %d", rs.special());
 
     assert(rs.base() != NULL, "Must be");
     assert(rs.size() == size, "Must be");
@@ -1133,9 +1111,6 @@ class TestReservedSpace : AllStatic {
   }
 
   static void test_reserved_space3(size_t size, size_t alignment, bool maybe_large) {
-    test_log("test_reserved_space3(%p, %p, %d)",
-        (void*)(uintptr_t)size, (void*)(uintptr_t)alignment, maybe_large);
-
     if (size < alignment) {
       // Tests might set -XX:LargePageSizeInBytes=<small pages> and cause unexpected input arguments for this test.
       assert((size_t)os::vm_page_size() == os::large_page_size(), "Test needs further refinement");
@@ -1148,8 +1123,6 @@ class TestReservedSpace : AllStatic {
     bool large = maybe_large && UseLargePages && size >= os::large_page_size();
 
     ReservedSpace rs(size, alignment, large, false);
-
-    test_log(" rs.special() == %d", rs.special());
 
     assert(rs.base() != NULL, "Must be");
     assert(rs.size() == size, "Must be");

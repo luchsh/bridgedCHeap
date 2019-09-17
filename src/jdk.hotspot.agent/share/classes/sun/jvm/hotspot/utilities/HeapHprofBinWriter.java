@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2004, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,6 +32,7 @@ import sun.jvm.hotspot.memory.*;
 import sun.jvm.hotspot.oops.*;
 import sun.jvm.hotspot.runtime.*;
 import sun.jvm.hotspot.classfile.*;
+import sun.jvm.hotspot.gc.z.ZCollectedHeap;
 
 /*
  * This class writes Java heap in hprof binary format. This format is
@@ -309,6 +310,9 @@ import sun.jvm.hotspot.classfile.*;
 
 public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
 
+    // Record which Symbol names have been dumped already.
+    private HashSet<Symbol> names;
+
     private static final long HPROF_SEGMENTED_HEAP_DUMP_THRESHOLD = 2L * 0x40000000;
 
     // The approximate size of a heap segment. Used to calculate when to create
@@ -381,17 +385,18 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
 
     public HeapHprofBinWriter() {
         this.KlassMap = new ArrayList<Klass>();
+        this.names = new HashSet<Symbol>();
     }
 
     public synchronized void write(String fileName) throws IOException {
+        VM vm = VM.getVM();
+
         // open file stream and create buffered data output stream
         fos = new FileOutputStream(fileName);
         out = new DataOutputStream(new BufferedOutputStream(fos));
 
-        VM vm = VM.getVM();
         dbg = vm.getDebugger();
         objectHeap = vm.getObjectHeap();
-        symTbl = vm.getSymbolTable();
 
         OBJ_ID_SIZE = (int) vm.getOopSize();
 
@@ -703,8 +708,8 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         int frameSerialNum = 0;
         int numThreads = 0;
         Threads threads = VM.getVM().getThreads();
-
-        for (JavaThread thread = threads.first(); thread != null; thread = thread.next()) {
+        for (int i = 0; i < threads.getNumberOfThreads(); i++) {
+            JavaThread thread = threads.getJavaThreadAt(i);
             Oop threadObj = thread.getThreadObj();
             if (threadObj != null && !thread.isExiting() && !thread.isHiddenFromExternalView()) {
 
@@ -745,6 +750,11 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         } else {
             lineNumber = m.getLineNumberFromBCI(bci);
         }
+        // First dump UTF8 if needed
+        writeSymbol(m.getName());                              // method's name
+        writeSymbol(m.getSignature());                         // method's signature
+        writeSymbol(m.getMethodHolder().getSourceFileName());  // source file name
+        // Then write FRAME descriptor
         writeHeader(HPROF_FRAME, 4 * (int)VM.getVM().getOopSize() + 2 * (int)INT_SIZE);
         writeObjectID(frameSN);                                  // frame serial number
         writeSymbolID(m.getName());                              // method's name
@@ -928,10 +938,16 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
     }
 
     protected void writeInstance(Instance instance) throws IOException {
+        Klass klass = instance.getKlass();
+        if (klass.getClassLoaderData() == null) {
+            // Ignoring this object since the corresponding Klass is not loaded.
+            // Might be a dormant archive object.
+            return;
+        }
+
         out.writeByte((byte) HPROF_GC_INSTANCE_DUMP);
         writeObjectID(instance);
         out.writeInt(DUMMY_STACK_TRACE_ID);
-        Klass klass = instance.getKlass();
         writeObjectID(klass.getJavaMirror());
 
         ClassData cd = (ClassData) classDataCache.get(klass);
@@ -955,7 +971,7 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         out.writeShort((short) fields.size());
         for (Iterator itr = fields.iterator(); itr.hasNext();) {
             Field field = (Field) itr.next();
-            Symbol name = symTbl.probe(field.getID().getName());
+            Symbol name = field.getName();
             writeSymbolID(name);
             char typeCode = (char) field.getSignature().getByteAt(0);
             int kind = signatureToHprofKind(typeCode);
@@ -1049,27 +1065,44 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
         out.writeInt(0);
     }
 
+    private void writeClassSymbols(Klass k) throws IOException {
+        writeSymbol(k.getName());
+        if (k instanceof InstanceKlass) {
+            InstanceKlass ik = (InstanceKlass) k;
+            List declaredFields = ik.getImmediateFields();
+            for (Iterator itr = declaredFields.iterator(); itr.hasNext();) {
+                Field field = (Field) itr.next();
+                writeSymbol(field.getName());
+            }
+        }
+    }
+
     private void writeSymbols() throws IOException {
+        // Write all the symbols that are used by the classes
+        ClassLoaderDataGraph cldGraph = VM.getVM().getClassLoaderDataGraph();
         try {
-            symTbl.symbolsDo(new SymbolTable.SymbolVisitor() {
-                    public void visit(Symbol sym) {
-                        try {
-                            writeSymbol(sym);
-                        } catch (IOException exp) {
-                            throw new RuntimeException(exp);
-                        }
-                    }
-                });
+             cldGraph.classesDo(new ClassLoaderDataGraph.ClassVisitor() {
+                            public void visit(Klass k) {
+                                try {
+                                    writeClassSymbols(k);
+                                } catch (IOException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            }
+                        });
         } catch (RuntimeException re) {
             handleRuntimeException(re);
         }
     }
 
     private void writeSymbol(Symbol sym) throws IOException {
-        byte[] buf = sym.asString().getBytes("UTF-8");
-        writeHeader(HPROF_UTF8, buf.length + OBJ_ID_SIZE);
-        writeSymbolID(sym);
-        out.write(buf);
+        // If name is already written don't write it again.
+        if (names.add(sym)) {
+            byte[] buf = sym.asString().getBytes("UTF-8");
+            writeHeader(HPROF_UTF8, buf.length + OBJ_ID_SIZE);
+            writeSymbolID(sym);
+            out.write(buf);
+        }
     }
 
     private void writeClasses() throws IOException {
@@ -1118,6 +1151,7 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
     }
 
     private void writeSymbolID(Symbol sym) throws IOException {
+        assert names.contains(sym);
         writeObjectID(getAddressValue(sym.getAddress()));
     }
 
@@ -1195,7 +1229,6 @@ public class HeapHprofBinWriter extends AbstractHeapGraphWriter {
     private FileOutputStream fos;
     private Debugger dbg;
     private ObjectHeap objectHeap;
-    private SymbolTable symTbl;
     private ArrayList<Klass> KlassMap;
 
     // oopSize of the debuggee

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes.java;
 
 import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_64;
@@ -36,7 +38,7 @@ import org.graalvm.compiler.nodes.spi.LoweringTool;
 import org.graalvm.compiler.nodes.spi.Virtualizable;
 import org.graalvm.compiler.nodes.spi.VirtualizerTool;
 import org.graalvm.compiler.nodes.virtual.VirtualObjectNode;
-import org.graalvm.word.LocationIdentity;
+import jdk.internal.vm.compiler.word.LocationIdentity;
 
 /**
  * The {@code MonitorExitNode} represents a monitor release. If it is the release of the monitor of
@@ -54,15 +56,15 @@ public final class MonitorExitNode extends AccessMonitorNode implements Virtuali
      */
     @OptionalInput ValueNode escapedReturnValue;
 
-    public MonitorExitNode(ValueNode object, MonitorIdNode monitorId, ValueNode escapedReturnValue) {
+    public MonitorExitNode(ValueNode object, MonitorIdNode monitorId, ValueNode escapedValue) {
         super(TYPE, object, monitorId);
-        this.escapedReturnValue = escapedReturnValue;
+        this.escapedReturnValue = escapedValue;
     }
 
     /**
      * Return value is cleared when a synchronized method graph is inlined.
      */
-    public void clearEscapedReturnValue() {
+    public void clearEscapedValue() {
         updateUsages(escapedReturnValue, null);
         this.escapedReturnValue = null;
     }

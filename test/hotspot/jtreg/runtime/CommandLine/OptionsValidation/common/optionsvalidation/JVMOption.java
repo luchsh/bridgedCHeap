@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,6 +34,7 @@ import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.process.ProcessTools;
 import jdk.test.lib.dcmd.CommandExecutor;
 import jdk.test.lib.dcmd.JMXExecutor;
+import jdk.test.lib.Platform;
 import sun.tools.attach.HotSpotVirtualMachine;
 
 import static optionsvalidation.JVMOptionsUtils.failedMessage;
@@ -145,7 +146,7 @@ public abstract class JVMOption {
      *
      * @return name of the option
      */
-    final String getName() {
+    public final String getName() {
         return name;
     }
 
@@ -382,6 +383,17 @@ public abstract class JVMOption {
 
         if (VMType != null) {
             runJava.add(VMType);
+        }
+
+        // Run with a small heap to avoid excessive execution time
+        long max = Runtime.getRuntime().maxMemory() / 1024 / 1024;
+        if (max > 1024) {
+            runJava.add("-Xmx1024m");
+        }
+
+        if (Platform.isDebugBuild()) {
+            // Avoid excessive execution time.
+            runJava.add("-XX:-ZapUnusedHeapArea");
         }
 
         if (GCType != null &&

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,31 +20,38 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.loop;
 
-import static org.graalvm.compiler.loop.MathUtil.add;
-import static org.graalvm.compiler.loop.MathUtil.divBefore;
-import static org.graalvm.compiler.loop.MathUtil.sub;
+import static java.lang.Math.abs;
+import static org.graalvm.compiler.loop.MathUtil.unsignedDivBefore;
+import static org.graalvm.compiler.nodes.calc.BinaryArithmeticNode.add;
+import static org.graalvm.compiler.nodes.calc.BinaryArithmeticNode.sub;
 
+import org.graalvm.compiler.core.common.NumUtil;
 import org.graalvm.compiler.core.common.type.IntegerStamp;
 import org.graalvm.compiler.core.common.type.Stamp;
+import org.graalvm.compiler.core.common.util.UnsignedLong;
+import org.graalvm.compiler.debug.DebugCloseable;
 import org.graalvm.compiler.loop.InductionVariable.Direction;
 import org.graalvm.compiler.nodes.AbstractBeginNode;
 import org.graalvm.compiler.nodes.ConstantNode;
 import org.graalvm.compiler.nodes.GuardNode;
 import org.graalvm.compiler.nodes.IfNode;
+import org.graalvm.compiler.nodes.LogicNode;
 import org.graalvm.compiler.nodes.NodeView;
 import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.ValueNode;
-import org.graalvm.compiler.nodes.calc.CompareNode;
 import org.graalvm.compiler.nodes.calc.ConditionalNode;
 import org.graalvm.compiler.nodes.calc.IntegerLessThanNode;
+import org.graalvm.compiler.nodes.calc.NegateNode;
 import org.graalvm.compiler.nodes.extended.GuardingNode;
+import org.graalvm.compiler.nodes.util.GraphUtil;
 
-import jdk.vm.ci.code.CodeUtil;
 import jdk.vm.ci.meta.DeoptimizationAction;
 import jdk.vm.ci.meta.DeoptimizationReason;
-import jdk.vm.ci.meta.JavaConstant;
+import jdk.vm.ci.meta.SpeculationLog;
 
 public class CountedLoopInfo {
 
@@ -56,6 +63,7 @@ public class CountedLoopInfo {
     private IfNode ifNode;
 
     CountedLoopInfo(LoopEx loop, InductionVariable iv, IfNode ifNode, ValueNode end, boolean oneOff, AbstractBeginNode body) {
+        assert iv.direction() != null;
         this.loop = loop;
         this.iv = iv;
         this.end = end;
@@ -64,94 +72,109 @@ public class CountedLoopInfo {
         this.ifNode = ifNode;
     }
 
+    /**
+     * Returns a node that computes the maximum trip count of this loop. That is the trip count of
+     * this loop assuming it is not exited by an other exit than the {@linkplain #getLimitTest()
+     * count check}.
+     *
+     * This count is exact if {@link #isExactTripCount()} returns true.
+     *
+     * THIS VALUE SHOULD BE TREATED AS UNSIGNED.
+     */
     public ValueNode maxTripCountNode() {
         return maxTripCountNode(false);
     }
 
-    public ValueNode maxTripCountNode(boolean assumePositive) {
+    /**
+     * Returns a node that computes the maximum trip count of this loop. That is the trip count of
+     * this loop assuming it is not exited by an other exit than the {@linkplain #getLimitTest()
+     * count check}.
+     *
+     * This count is exact if {@link #isExactTripCount()} returns true.
+     *
+     * THIS VALUE SHOULD BE TREATED AS UNSIGNED.
+     *
+     * @param assumeLoopEntered if true the check that the loop is entered at all will be omitted.
+     */
+    public ValueNode maxTripCountNode(boolean assumeLoopEntered) {
         StructuredGraph graph = iv.valueNode().graph();
         Stamp stamp = iv.valueNode().stamp(NodeView.DEFAULT);
-        ValueNode range = sub(graph, end, iv.initNode());
 
         ValueNode max;
         ValueNode min;
-        ValueNode oneDirection;
+        ValueNode absStride;
         if (iv.direction() == Direction.Up) {
-            oneDirection = ConstantNode.forIntegerStamp(stamp, 1, graph);
+            absStride = iv.strideNode();
             max = end;
             min = iv.initNode();
         } else {
             assert iv.direction() == Direction.Down;
-            oneDirection = ConstantNode.forIntegerStamp(stamp, -1, graph);
+            absStride = NegateNode.create(iv.strideNode(), NodeView.DEFAULT);
             max = iv.initNode();
             min = end;
         }
+        ValueNode range = sub(max, min);
+
+        ConstantNode one = ConstantNode.forIntegerStamp(stamp, 1);
         if (oneOff) {
-            range = add(graph, range, oneDirection);
+            range = add(range, one);
         }
         // round-away-from-zero divison: (range + stride -/+ 1) / stride
-        ValueNode denominator = range;
-        if (!oneDirection.stamp(NodeView.DEFAULT).equals(iv.strideNode().stamp(NodeView.DEFAULT))) {
-            ValueNode subedRanged = sub(graph, range, oneDirection);
-            denominator = add(graph, subedRanged, iv.strideNode());
-        }
-        ValueNode div = divBefore(graph, loop.entryPoint(), denominator, iv.strideNode());
+        ValueNode denominator = add(range, sub(absStride, one));
+        ValueNode div = unsignedDivBefore(graph, loop.entryPoint(), denominator, absStride, null);
 
-        if (assumePositive) {
-            return div;
+        if (assumeLoopEntered) {
+            return graph.addOrUniqueWithInputs(div);
         }
-        ConstantNode zero = ConstantNode.forIntegerStamp(stamp, 0, graph);
-        return graph.unique(new ConditionalNode(graph.unique(new IntegerLessThanNode(max, min)), zero, div));
+        ConstantNode zero = ConstantNode.forIntegerStamp(stamp, 0);
+        LogicNode noEntryCheck = IntegerLessThanNode.create(max, min, NodeView.DEFAULT);
+        return graph.addOrUniqueWithInputs(ConditionalNode.create(noEntryCheck, zero, div, NodeView.DEFAULT));
     }
 
     /**
-     * @return true if the loop has constant bounds and the trip count is representable as a
-     *         positive integer.
+     * @return true if the loop has constant bounds.
      */
     public boolean isConstantMaxTripCount() {
-        /*
-         * It's possible that the iteration range is too large to treat this as constant because it
-         * will overflow.
-         */
-        return (hasConstantBounds() && rawConstantMaxTripCount() >= 0);
-    }
-
-    /**
-     * @return true if the bounds on the iteration space are all constants.
-     */
-    public boolean hasConstantBounds() {
         return end instanceof ConstantNode && iv.isConstantInit() && iv.isConstantStride();
     }
 
-    public long constantMaxTripCount() {
+    public UnsignedLong constantMaxTripCount() {
         assert isConstantMaxTripCount();
-        return rawConstantMaxTripCount();
+        return new UnsignedLong(rawConstantMaxTripCount());
     }
 
     /**
-     * Compute the raw value of the trip count for this loop. Since we don't have unsigned values
-     * this may be outside representable positive values.
+     * Compute the raw value of the trip count for this loop. THIS IS AN UNSIGNED VALUE;
      */
-    protected long rawConstantMaxTripCount() {
+    private long rawConstantMaxTripCount() {
         assert iv.direction() != null;
-        long off = oneOff ? iv.direction() == Direction.Up ? 1 : -1 : 0;
-        long endValue = ((ConstantNode) end).asJavaConstant().asLong();
-        try {
-            // If no overflow occurs then negative values represent a trip count of 0
-            long max = Math.subtractExact(Math.addExact(endValue, off), iv.constantInit()) / iv.constantStride();
-            return Math.max(0, max);
-        } catch (ArithmeticException e) {
-            /*
-             * The computation overflowed to return a negative value. It's possible some
-             * optimization could handle this value as an unsigned and produce the right answer but
-             * we hide this value by default.
-             */
-            return -1;
+        long endValue = end.asJavaConstant().asLong();
+        long initValue = iv.constantInit();
+        long range;
+        long absStride;
+        if (iv.direction() == Direction.Up) {
+            if (endValue < initValue) {
+                return 0;
+            }
+            range = endValue - iv.constantInit();
+            absStride = iv.constantStride();
+        } else {
+            assert iv.direction() == Direction.Down;
+            if (initValue < endValue) {
+                return 0;
+            }
+            range = iv.constantInit() - endValue;
+            absStride = -iv.constantStride();
         }
+        if (oneOff) {
+            range += 1;
+        }
+        long denominator = range + absStride - 1;
+        return Long.divideUnsigned(denominator, absStride);
     }
 
     public boolean isExactTripCount() {
-        return loop.loopBegin().loopExits().count() == 1;
+        return loop.loop().getNaturalExits().size() == 1;
     }
 
     public ValueNode exactTripCountNode() {
@@ -164,7 +187,7 @@ public class CountedLoopInfo {
         return isConstantMaxTripCount();
     }
 
-    public long constantExactTripCount() {
+    public UnsignedLong constantExactTripCount() {
         assert isExactTripCount();
         return constantMaxTripCount();
     }
@@ -194,6 +217,15 @@ public class CountedLoopInfo {
         return body;
     }
 
+    public AbstractBeginNode getCountedExit() {
+        if (getLimitTest().trueSuccessor() == getBody()) {
+            return getLimitTest().falseSuccessor();
+        } else {
+            assert getLimitTest().falseSuccessor() == getBody();
+            return getLimitTest().trueSuccessor();
+        }
+    }
+
     public Direction getDirection() {
         return iv.direction();
     }
@@ -206,34 +238,55 @@ public class CountedLoopInfo {
         return loop.loopBegin().getOverflowGuard();
     }
 
+    public boolean counterNeverOverflows() {
+        if (iv.isConstantStride() && abs(iv.constantStride()) == 1) {
+            return true;
+        }
+        IntegerStamp endStamp = (IntegerStamp) end.stamp(NodeView.DEFAULT);
+        ValueNode strideNode = iv.strideNode();
+        IntegerStamp strideStamp = (IntegerStamp) strideNode.stamp(NodeView.DEFAULT);
+        GraphUtil.tryKillUnused(strideNode);
+        if (getDirection() == Direction.Up) {
+            long max = NumUtil.maxValue(endStamp.getBits());
+            return endStamp.upperBound() <= max - (strideStamp.upperBound() - 1) - (oneOff ? 1 : 0);
+        } else if (getDirection() == Direction.Down) {
+            long min = NumUtil.minValue(endStamp.getBits());
+            return min + (1 - strideStamp.lowerBound()) + (oneOff ? 1 : 0) <= endStamp.lowerBound();
+        }
+        return false;
+    }
+
+    @SuppressWarnings("try")
     public GuardingNode createOverFlowGuard() {
         GuardingNode overflowGuard = getOverFlowGuard();
-        if (overflowGuard != null) {
+        if (overflowGuard != null || counterNeverOverflows()) {
             return overflowGuard;
         }
-        IntegerStamp stamp = (IntegerStamp) iv.valueNode().stamp(NodeView.DEFAULT);
-        StructuredGraph graph = iv.valueNode().graph();
-        CompareNode cond; // we use a negated guard with a < condition to achieve a >=
-        ConstantNode one = ConstantNode.forIntegerStamp(stamp, 1, graph);
-        if (iv.direction() == Direction.Up) {
-            ValueNode v1 = sub(graph, ConstantNode.forIntegerStamp(stamp, CodeUtil.maxValue(stamp.getBits()), graph), sub(graph, iv.strideNode(), one));
-            if (oneOff) {
-                v1 = sub(graph, v1, one);
+        try (DebugCloseable position = loop.loopBegin().withNodeSourcePosition()) {
+            IntegerStamp stamp = (IntegerStamp) iv.valueNode().stamp(NodeView.DEFAULT);
+            StructuredGraph graph = iv.valueNode().graph();
+            LogicNode cond; // we use a negated guard with a < condition to achieve a >=
+            ConstantNode one = ConstantNode.forIntegerStamp(stamp, 1, graph);
+            if (iv.direction() == Direction.Up) {
+                ValueNode v1 = sub(ConstantNode.forIntegerStamp(stamp, NumUtil.maxValue(stamp.getBits())), sub(iv.strideNode(), one));
+                if (oneOff) {
+                    v1 = sub(v1, one);
+                }
+                cond = graph.addOrUniqueWithInputs(IntegerLessThanNode.create(v1, end, NodeView.DEFAULT));
+            } else {
+                assert iv.direction() == Direction.Down;
+                ValueNode v1 = add(ConstantNode.forIntegerStamp(stamp, NumUtil.minValue(stamp.getBits())), sub(one, iv.strideNode()));
+                if (oneOff) {
+                    v1 = add(v1, one);
+                }
+                cond = graph.addOrUniqueWithInputs(IntegerLessThanNode.create(end, v1, NodeView.DEFAULT));
             }
-            cond = graph.unique(new IntegerLessThanNode(v1, end));
-        } else {
-            assert iv.direction() == Direction.Down;
-            ValueNode v1 = add(graph, ConstantNode.forIntegerStamp(stamp, CodeUtil.minValue(stamp.getBits()), graph), sub(graph, one, iv.strideNode()));
-            if (oneOff) {
-                v1 = add(graph, v1, one);
-            }
-            cond = graph.unique(new IntegerLessThanNode(end, v1));
+            assert graph.getGuardsStage().allowsFloatingGuards();
+            overflowGuard = graph.unique(new GuardNode(cond, AbstractBeginNode.prevBegin(loop.entryPoint()), DeoptimizationReason.LoopLimitCheck, DeoptimizationAction.InvalidateRecompile, true,
+                            SpeculationLog.NO_SPECULATION, null)); // TODO gd: use speculation
+            loop.loopBegin().setOverflowGuard(overflowGuard);
+            return overflowGuard;
         }
-        assert graph.getGuardsStage().allowsFloatingGuards();
-        overflowGuard = graph.unique(new GuardNode(cond, AbstractBeginNode.prevBegin(loop.entryPoint()), DeoptimizationReason.LoopLimitCheck, DeoptimizationAction.InvalidateRecompile, true,
-                        JavaConstant.NULL_POINTER)); // TODO gd: use speculation
-        loop.loopBegin().setOverflowGuard(overflowGuard);
-        return overflowGuard;
     }
 
     public IntegerStamp getStamp() {

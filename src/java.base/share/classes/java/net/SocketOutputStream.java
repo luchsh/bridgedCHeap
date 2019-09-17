@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,26 +38,23 @@ import java.nio.channels.FileChannel;
  * @author      Jonathan Payne
  * @author      Arthur van Hoff
  */
-class SocketOutputStream extends FileOutputStream
-{
+class SocketOutputStream extends FileOutputStream {
     static {
         init();
     }
 
     private AbstractPlainSocketImpl impl = null;
     private byte temp[] = new byte[1];
-    private Socket socket = null;
 
     /**
      * Creates a new SocketOutputStream. Can only be called
      * by a Socket. This method needs to hang on to the owner Socket so
      * that the fd will not be closed.
-     * @param impl the socket output stream inplemented
+     * @param impl the socket output stream implemented
      */
     SocketOutputStream(AbstractPlainSocketImpl impl) throws IOException {
         super(impl.getFileDescriptor());
         this.impl = impl;
-        socket = impl.getSocket();
     }
 
     /**
@@ -110,10 +107,6 @@ class SocketOutputStream extends FileOutputStream
         try {
             socketWrite0(fd, b, off, len);
         } catch (SocketException se) {
-            if (se instanceof sun.net.ConnectionResetException) {
-                impl.setConnectionResetPending();
-                se = new SocketException("Connection reset");
-            }
             if (impl.isClosedOrPending()) {
                 throw new SocketException("Socket closed");
             } else {
@@ -155,21 +148,10 @@ class SocketOutputStream extends FileOutputStream
         socketWrite(b, off, len);
     }
 
-    /**
-     * Closes the stream.
-     */
-    private boolean closing = false;
     public void close() throws IOException {
-        // Prevent recursion. See BugId 4484411
-        if (closing)
-            return;
-        closing = true;
-        if (socket != null) {
-            if (!socket.isClosed())
-                socket.close();
-        } else
-            impl.close();
-        closing = false;
+        // No longer used. Socket.getOutputStream returns an
+        // OutputStream which calls Socket.close directly
+        assert false;
     }
 
     /**

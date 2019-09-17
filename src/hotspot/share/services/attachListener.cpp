@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,12 +25,16 @@
 #include "precompiled.hpp"
 #include "classfile/javaClasses.hpp"
 #include "classfile/systemDictionary.hpp"
-#include "gc/shared/vmGCOperations.hpp"
+#include "gc/shared/gcVMOperations.hpp"
 #include "memory/resourceArea.hpp"
+#include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
+#include "oops/typeArrayOop.inline.hpp"
 #include "prims/jvmtiExport.hpp"
 #include "runtime/arguments.hpp"
+#include "runtime/flags/jvmFlag.hpp"
 #include "runtime/globals.hpp"
+#include "runtime/handles.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/os.hpp"
@@ -165,12 +169,20 @@ static jint data_dump(AttachOperation* op, outputStream* out) {
 //
 static jint thread_dump(AttachOperation* op, outputStream* out) {
   bool print_concurrent_locks = false;
-  if (op->arg(0) != NULL && strcmp(op->arg(0), "-l") == 0) {
-    print_concurrent_locks = true;
+  bool print_extended_info = false;
+  if (op->arg(0) != NULL) {
+    for (int i = 0; op->arg(0)[i] != 0; ++i) {
+      if (op->arg(0)[i] == 'l') {
+        print_concurrent_locks = true;
+      }
+      if (op->arg(0)[i] == 'e') {
+        print_extended_info = true;
+      }
+    }
   }
 
   // thread stacks
-  VM_PrintThreads op1(out, print_concurrent_locks);
+  VM_PrintThreads op1(out, print_concurrent_locks, print_extended_info);
   VMThread::execute(&op1);
 
   // JNI global handles
@@ -247,8 +259,11 @@ jint dump_heap(AttachOperation* op, outputStream* out) {
 //
 // Input arguments :-
 //   arg0: "-live" or "-all"
+//   arg1: Name of the dump file or NULL
 static jint heap_inspection(AttachOperation* op, outputStream* out) {
   bool live_objects_only = true;   // default is true to retain the behavior before this change is made
+  outputStream* os = out;   // if path not specified or path is NULL, use out
+  fileStream* fs = NULL;
   const char* arg0 = op->arg(0);
   if (arg0 != NULL && (strlen(arg0) > 0)) {
     if (strcmp(arg0, "-all") != 0 && strcmp(arg0, "-live") != 0) {
@@ -257,8 +272,28 @@ static jint heap_inspection(AttachOperation* op, outputStream* out) {
     }
     live_objects_only = strcmp(arg0, "-live") == 0;
   }
-  VM_GC_HeapInspection heapop(out, live_objects_only /* request full gc */);
+
+  const char* path = op->arg(1);
+  if (path != NULL) {
+    if (path[0] == '\0') {
+      out->print_cr("No dump file specified");
+    } else {
+      // create file
+      fs = new (ResourceObj::C_HEAP, mtInternal) fileStream(path);
+      if (fs == NULL) {
+        out->print_cr("Failed to allocate space for file: %s", path);
+        return JNI_ERR;
+      }
+      os = fs;
+    }
+  }
+
+  VM_GC_HeapInspection heapop(os, live_objects_only /* request full gc */);
   VMThread::execute(&heapop);
+  if (os != NULL && os != out) {
+    out->print_cr("Heap inspection file created: %s", path);
+    delete fs;
+  }
   return JNI_OK;
 }
 
@@ -273,9 +308,9 @@ static jint set_flag(AttachOperation* op, outputStream* out) {
 
   FormatBuffer<80> err_msg("%s", "");
 
-  int ret = WriteableFlags::set_flag(op->arg(0), op->arg(1), Flag::ATTACH_ON_DEMAND, err_msg);
-  if (ret != Flag::SUCCESS) {
-    if (ret == Flag::NON_WRITABLE) {
+  int ret = WriteableFlags::set_flag(op->arg(0), op->arg(1), JVMFlag::ATTACH_ON_DEMAND, err_msg);
+  if (ret != JVMFlag::SUCCESS) {
+    if (ret == JVMFlag::NON_WRITABLE) {
       // if the flag is not manageable try to change it through
       // the platform dependent implementation
       return AttachListener::pd_set_flag(op, out);
@@ -296,7 +331,7 @@ static jint print_flag(AttachOperation* op, outputStream* out) {
     out->print_cr("flag name is missing");
     return JNI_ERR;
   }
-  Flag* f = Flag::find_flag((char*)name, strlen(name));
+  JVMFlag* f = JVMFlag::find_flag((char*)name, strlen(name));
   if (f) {
     f->print_as_flag(out);
     out->cr();
@@ -332,7 +367,9 @@ static AttachOperationFunctionInfo funcs[] = {
 static void attach_listener_thread_entry(JavaThread* thread, TRAPS) {
   os::set_priority(thread, NearMaxPriority);
 
-  thread->record_stack_base_and_size();
+  assert(thread == Thread::current(), "Must be");
+  assert(thread->stack_base() != NULL && thread->stack_size() > 0,
+         "Should already be setup");
 
   if (AttachListener::pd_init() != 0) {
     return;
@@ -404,16 +441,6 @@ bool AttachListener::has_init_error(TRAPS) {
 // Starts the Attach Listener thread
 void AttachListener::init() {
   EXCEPTION_MARK;
-  Klass* k = SystemDictionary::resolve_or_fail(vmSymbols::java_lang_Thread(), true, THREAD);
-  if (has_init_error(THREAD)) {
-    return;
-  }
-
-  InstanceKlass* klass = InstanceKlass::cast(k);
-  instanceHandle thread_oop = klass->allocate_instance_handle(THREAD);
-  if (has_init_error(THREAD)) {
-    return;
-  }
 
   const char thread_name[] = "Attach Listener";
   Handle string = java_lang_String::create_from_str(thread_name, THREAD);
@@ -423,26 +450,23 @@ void AttachListener::init() {
 
   // Initialize thread_oop to put it into the system threadGroup
   Handle thread_group (THREAD, Universe::system_thread_group());
-  JavaValue result(T_VOID);
-  JavaCalls::call_special(&result, thread_oop,
-                       klass,
-                       vmSymbols::object_initializer_name(),
+  Handle thread_oop = JavaCalls::construct_new_instance(SystemDictionary::Thread_klass(),
                        vmSymbols::threadgroup_string_void_signature(),
                        thread_group,
                        string,
                        THREAD);
-
   if (has_init_error(THREAD)) {
     return;
   }
 
   Klass* group = SystemDictionary::ThreadGroup_klass();
+  JavaValue result(T_VOID);
   JavaCalls::call_special(&result,
                         thread_group,
                         group,
                         vmSymbols::add_method_name(),
                         vmSymbols::thread_void_signature(),
-                        thread_oop,             // ARG 1
+                        thread_oop,
                         THREAD);
   if (has_init_error(THREAD)) {
     return;

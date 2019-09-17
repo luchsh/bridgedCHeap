@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,10 +22,9 @@
  *
  */
 
-#ifndef SHARE_VM_INTERPRETER_INVOCATIONCOUNTER_HPP
-#define SHARE_VM_INTERPRETER_INVOCATIONCOUNTER_HPP
+#ifndef SHARE_INTERPRETER_INVOCATIONCOUNTER_HPP
+#define SHARE_INTERPRETER_INVOCATIONCOUNTER_HPP
 
-#include "memory/allocation.hpp"
 #include "runtime/handles.hpp"
 #include "utilities/exceptions.hpp"
 
@@ -38,7 +37,7 @@
 // more significant bits. The counter is incremented before a method is activated and an
 // action is triggered when count() > limit().
 
-class InvocationCounter VALUE_OBJ_CLASS_SPEC {
+class InvocationCounter {
   friend class VMStructs;
   friend class JVMCIVMStructs;
   friend class ciReplay;
@@ -58,10 +57,6 @@ class InvocationCounter VALUE_OBJ_CLASS_SPEC {
   };
 
  public:
-  static int InterpreterInvocationLimit;        // CompileThreshold scaled for interpreter use
-  static int InterpreterBackwardBranchLimit;    // A separate threshold for on stack replacement
-  static int InterpreterProfileLimit;           // Profiling threshold scaled for interpreter use
-
   typedef address (*Action)(const methodHandle& method, TRAPS);
 
   enum PublicConstants {
@@ -96,11 +91,10 @@ class InvocationCounter VALUE_OBJ_CLASS_SPEC {
   Action action() const                          { return _action[state()]; }
   int    count() const                           { return _counter >> number_of_noncount_bits; }
 
-  int   get_InvocationLimit() const              { return InterpreterInvocationLimit >> number_of_noncount_bits; }
-  int   get_BackwardBranchLimit() const          { return InterpreterBackwardBranchLimit >> number_of_noncount_bits; }
-  int   get_ProfileLimit() const                 { return InterpreterProfileLimit >> number_of_noncount_bits; }
-
 #ifdef CC_INTERP
+  static int InterpreterInvocationLimit;        // CompileThreshold scaled for interpreter use
+  static int InterpreterBackwardBranchLimit;    // A separate threshold for on stack replacement
+
   // Test counter using scaled limits like the asm interpreter would do rather than doing
   // the shifts to normalize the counter.
   // Checks sum of invocation_counter and backedge_counter as the template interpreter does.
@@ -111,11 +105,6 @@ class InvocationCounter VALUE_OBJ_CLASS_SPEC {
   bool reached_BackwardBranchLimit(InvocationCounter *back_edge_count) const {
     return (_counter & count_mask) + (back_edge_count->_counter & count_mask) >=
            (unsigned int) InterpreterBackwardBranchLimit;
-  }
-  // Do this just like asm interpreter does for max speed.
-  bool reached_ProfileLimit(InvocationCounter *back_edge_count) const {
-    return (_counter & count_mask) + (back_edge_count->_counter & count_mask) >=
-           (unsigned int) InterpreterProfileLimit;
   }
 #endif // CC_INTERP
 
@@ -128,7 +117,7 @@ class InvocationCounter VALUE_OBJ_CLASS_SPEC {
 
   // Miscellaneous
   static ByteSize counter_offset()               { return byte_offset_of(InvocationCounter, _counter); }
-  static void reinitialize(bool delay_overflow);
+  static void reinitialize();
 
  private:
   static int         _init  [number_of_states];  // the counter limits
@@ -154,4 +143,4 @@ inline void InvocationCounter::decay() {
 }
 
 
-#endif // SHARE_VM_INTERPRETER_INVOCATIONCOUNTER_HPP
+#endif // SHARE_INTERPRETER_INVOCATIONCOUNTER_HPP

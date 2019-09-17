@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,18 +29,18 @@ import jdk.vm.ci.meta.VMConstant;
 
 final class HotSpotMetaspaceConstantImpl implements HotSpotMetaspaceConstant, VMConstant {
 
-    static HotSpotMetaspaceConstantImpl forMetaspaceObject(MetaspaceWrapperObject metaspaceObject, boolean compressed) {
+    static HotSpotMetaspaceConstantImpl forMetaspaceObject(MetaspaceObject metaspaceObject, boolean compressed) {
         return new HotSpotMetaspaceConstantImpl(metaspaceObject, compressed);
     }
 
-    static MetaspaceWrapperObject getMetaspaceObject(Constant constant) {
+    static MetaspaceObject getMetaspaceObject(Constant constant) {
         return ((HotSpotMetaspaceConstantImpl) constant).metaspaceObject;
     }
 
-    private final MetaspaceWrapperObject metaspaceObject;
+    private final MetaspaceObject metaspaceObject;
     private final boolean compressed;
 
-    private HotSpotMetaspaceConstantImpl(MetaspaceWrapperObject metaspaceObject, boolean compressed) {
+    private HotSpotMetaspaceConstantImpl(MetaspaceObject metaspaceObject, boolean compressed) {
         this.metaspaceObject = metaspaceObject;
         this.compressed = compressed;
     }
@@ -73,14 +73,17 @@ final class HotSpotMetaspaceConstantImpl implements HotSpotMetaspaceConstant, VM
         return toValueString();
     }
 
+    @Override
     public boolean isDefaultForKind() {
         return false;
     }
 
+    @Override
     public boolean isCompressed() {
         return compressed;
     }
 
+    @Override
     public Constant compress() {
         assert !isCompressed();
         HotSpotMetaspaceConstantImpl res = HotSpotMetaspaceConstantImpl.forMetaspaceObject(metaspaceObject, true);
@@ -88,6 +91,7 @@ final class HotSpotMetaspaceConstantImpl implements HotSpotMetaspaceConstant, VM
         return res;
     }
 
+    @Override
     public Constant uncompress() {
         assert isCompressed();
         HotSpotMetaspaceConstantImpl res = HotSpotMetaspaceConstantImpl.forMetaspaceObject(metaspaceObject, false);
@@ -95,6 +99,7 @@ final class HotSpotMetaspaceConstantImpl implements HotSpotMetaspaceConstant, VM
         return res;
     }
 
+    @Override
     public HotSpotResolvedObjectType asResolvedJavaType() {
         if (metaspaceObject instanceof HotSpotResolvedObjectType) {
             return (HotSpotResolvedObjectType) metaspaceObject;
@@ -102,6 +107,7 @@ final class HotSpotMetaspaceConstantImpl implements HotSpotMetaspaceConstant, VM
         return null;
     }
 
+    @Override
     public HotSpotResolvedJavaMethod asResolvedJavaMethod() {
         if (metaspaceObject instanceof HotSpotResolvedJavaMethod) {
             return (HotSpotResolvedJavaMethod) metaspaceObject;

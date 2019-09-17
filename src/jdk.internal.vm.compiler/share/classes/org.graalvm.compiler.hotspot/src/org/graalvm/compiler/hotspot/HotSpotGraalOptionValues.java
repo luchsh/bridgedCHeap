@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot;
 
 import static jdk.vm.ci.common.InitTimer.timer;
@@ -30,23 +32,22 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.Properties;
 
-import org.graalvm.collections.EconomicMap;
+import jdk.internal.vm.compiler.collections.EconomicMap;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionDescriptors;
 import org.graalvm.compiler.options.OptionKey;
 import org.graalvm.compiler.options.OptionValues;
-import org.graalvm.compiler.options.OptionValuesAccess;
 import org.graalvm.compiler.options.OptionsParser;
-import org.graalvm.compiler.serviceprovider.ServiceProvider;
 
 import jdk.vm.ci.common.InitTimer;
+import jdk.vm.ci.common.NativeImageReinitialize;
+import jdk.vm.ci.services.Services;
 
 /**
- * The {@link #HOTSPOT_OPTIONS} value contains the options values initialized in a HotSpot VM. The
+ * The {@link #defaultOptions()} method returns the options values initialized in a HotSpot VM. The
  * values are set via system properties with the {@value #GRAAL_OPTION_PROPERTY_PREFIX} prefix.
  */
-@ServiceProvider(OptionValuesAccess.class)
-public class HotSpotGraalOptionValues implements OptionValuesAccess {
+public class HotSpotGraalOptionValues {
 
     /**
      * The name of the system property specifying a file containing extra Graal option settings.
@@ -72,18 +73,31 @@ public class HotSpotGraalOptionValues implements OptionValuesAccess {
         return GRAAL_OPTION_PROPERTY_PREFIX + value.getName() + "=" + value.getValue(options);
     }
 
-    public static final OptionValues HOTSPOT_OPTIONS = initializeOptions();
+    @NativeImageReinitialize private static volatile OptionValues hotspotOptions;
+
+    public static OptionValues defaultOptions() {
+        OptionValues res = hotspotOptions;
+        if (res == null) {
+            synchronized (HotSpotGraalOptionValues.class) {
+                res = hotspotOptions;
+                if (res == null) {
+                    res = initializeOptions();
+                    hotspotOptions = res;
+                }
+            }
+        }
+        return res;
+    }
 
     /**
-     * Global options. The values for these options are initialized by parsing the file denoted by
-     * the {@code VM.getSavedProperty(String) saved} system property named
-     * {@value #GRAAL_OPTIONS_FILE_PROPERTY_NAME} if the file exists followed by parsing the options
-     * encoded in saved system properties whose names start with
-     * {@value #GRAAL_OPTION_PROPERTY_PREFIX}. Key/value pairs are parsed from the aforementioned
-     * file with {@link Properties#load(java.io.Reader)}.
+     * Gets and parses options based on {@linkplain Services#getSavedProperties() saved system
+     * properties}. The values for these options are initialized by parsing the file denoted by the
+     * {@value #GRAAL_OPTIONS_FILE_PROPERTY_NAME} property followed by parsing the options encoded
+     * in properties whose names start with {@value #GRAAL_OPTION_PROPERTY_PREFIX}. Key/value pairs
+     * are parsed from the aforementioned file with {@link Properties#load(java.io.Reader)}.
      */
     @SuppressWarnings("try")
-    private static OptionValues initializeOptions() {
+    public static EconomicMap<OptionKey<?>, Object> parseOptions() {
         EconomicMap<OptionKey<?>, Object> values = OptionValues.newOptionMap();
         try (InitTimer t = timer("InitializeOptions")) {
 
@@ -128,12 +142,17 @@ public class HotSpotGraalOptionValues implements OptionValuesAccess {
             }
 
             OptionsParser.parseOptions(optionSettings, values, loader);
-            return new OptionValues(values);
+            return values;
         }
     }
 
-    @Override
-    public OptionValues getOptions() {
-        return HOTSPOT_OPTIONS;
+    /**
+     * Substituted by
+     * {@code com.oracle.svm.graal.hotspot.libgraal.Target_org_graalvm_compiler_hotspot_HotSpotGraalOptionValues}
+     * to update {@code com.oracle.svm.core.option.RuntimeOptionValues.singleton()} instead of
+     * creating a new {@link OptionValues} object.
+     */
+    private static OptionValues initializeOptions() {
+        return new OptionValues(parseOptions());
     }
 }

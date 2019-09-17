@@ -26,7 +26,10 @@
  * @bug 6340864
  * @summary Implement vectorization optimizations in hotspot-server
  *
- * @run main/othervm/timeout=400 -Xbatch -Xmx64m compiler.c2.cr6340864.TestDoubleVect
+ * @run main/othervm/timeout=400 -Xbatch -Xmx128m compiler.c2.cr6340864.TestDoubleVect
+ * @run main/othervm/timeout=400 -Xbatch -Xmx128m -XX:MaxVectorSize=8 compiler.c2.cr6340864.TestDoubleVect
+ * @run main/othervm/timeout=400 -Xbatch -Xmx128m -XX:MaxVectorSize=16 compiler.c2.cr6340864.TestDoubleVect
+ * @run main/othervm/timeout=400 -Xbatch -Xmx128m -XX:MaxVectorSize=32 compiler.c2.cr6340864.TestDoubleVect
  */
 
 package compiler.c2.cr6340864;
@@ -83,6 +86,7 @@ public class TestDoubleVect {
       test_divc_n(a0, a1);
       test_divv(a0, a1, -VALUE);
       test_diva(a0, a1, a3);
+      test_negc(a0, a1);
     }
     // Test and verify results
     System.out.println("Verification");
@@ -336,6 +340,16 @@ public class TestDoubleVect {
       for (int i=12; i<ARRLEN; i++) {
         errn += verify("test_diva_n: ", i, a0[i], ((ADD_INIT+i)/(-VALUE)));
       }
+      test_negc(a0, a1);
+      errn += verify("test_negc: ", 0, a0[0], (Double.NaN));
+      errn += verify("test_negc: ", 1, a0[1], (Double.NEGATIVE_INFINITY));
+      errn += verify("test_negc: ", 2, a0[2], (Double.POSITIVE_INFINITY));
+      errn += verify("test_negc: ", 3, a0[3], (double)(-Double.MAX_VALUE));
+      errn += verify("test_negc: ", 4, a0[4], (double)(-Double.MIN_VALUE));
+      errn += verify("test_negc: ", 5, a0[5], (double)(-Double.MIN_NORMAL));
+      for (int i=6; i<ARRLEN; i++) {
+        errn += verify("test_negc: ", i, a0[i], (double)(-((double)(ADD_INIT+i))));
+      }
 
     }
 
@@ -466,6 +480,13 @@ public class TestDoubleVect {
     end = System.currentTimeMillis();
     System.out.println("test_diva_n: " + (end - start));
 
+    start = System.currentTimeMillis();
+    for (int i=0; i<ITERS; i++) {
+      test_negc(a0, a1);
+    }
+    end = System.currentTimeMillis();
+    System.out.println("test_negc_n: " + (end - start));
+
     return errn;
   }
 
@@ -548,6 +569,11 @@ public class TestDoubleVect {
   static void test_diva(double[] a0, double[] a1, double[] a2) {
     for (int i = 0; i < a0.length; i+=1) {
       a0[i] = (a1[i]/a2[i]);
+    }
+  }
+  static void test_negc(double[] a0, double[] a1) {
+    for (int i = 0; i < a0.length; i+=1) {
+      a0[i] = (double)(-((double)a1[i]));
     }
   }
 

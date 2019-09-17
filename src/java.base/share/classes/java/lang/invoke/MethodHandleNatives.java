@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -49,7 +49,8 @@ class MethodHandleNatives {
 
     static native void init(MemberName self, Object ref);
     static native void expand(MemberName self);
-    static native MemberName resolve(MemberName self, Class<?> caller) throws LinkageError, ClassNotFoundException;
+    static native MemberName resolve(MemberName self, Class<?> caller,
+            boolean speculativeResolve) throws LinkageError, ClassNotFoundException;
     static native int getMembers(Class<?> defc, String matchName, String matchSig,
             int matchFlags, Class<?> caller, int skip, MemberName[] results);
 
@@ -74,6 +75,7 @@ class MethodHandleNatives {
     /** Represents a context to track nmethod dependencies on CallSite instance target. */
     static class CallSiteContext implements Runnable {
         //@Injected JVM_nmethodBucket* vmdependencies;
+        //@Injected jlong last_cleanup;
 
         static CallSiteContext make(CallSite cs) {
             final CallSiteContext newContext = new CallSiteContext();
@@ -432,7 +434,7 @@ class MethodHandleNatives {
      * completely in the linker method.
      * As a corner case, if N==255, no appendix is possible.
      * In this case, the method returned must be custom-generated to
-     * to perform any needed type checking.
+     * perform any needed type checking.
      * <p>
      * If the JVM does not reify a method at a call site, but instead
      * calls {@code linkMethod}, the corresponding call represented
@@ -643,10 +645,7 @@ class MethodHandleNatives {
 
     static boolean canBeCalledVirtual(MemberName mem) {
         assert(mem.isInvocable());
-        Class<?> defc = mem.getDeclaringClass();
         switch (mem.getName()) {
-        case "checkMemberAccess":
-            return canBeCalledVirtual(mem, java.lang.SecurityManager.class);
         case "getContextClassLoader":
             return canBeCalledVirtual(mem, java.lang.Thread.class);
         }

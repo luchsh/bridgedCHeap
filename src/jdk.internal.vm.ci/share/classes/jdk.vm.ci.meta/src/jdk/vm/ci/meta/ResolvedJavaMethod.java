@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,7 +38,8 @@ public interface ResolvedJavaMethod extends JavaMethod, InvokeTarget, ModifiersP
     /**
      * Returns the bytecode of this method, if the method has code. The returned byte array does not
      * contain breakpoints or non-Java bytecodes. This may return null if the
-     * {@link #getDeclaringClass() holder} is not {@link ResolvedJavaType#isLinked() linked}.
+     * {@linkplain #getDeclaringClass() declaring class} is not
+     * {@linkplain ResolvedJavaType#isLinked() linked}.
      *
      * The contained constant pool indices may not be the ones found in the original class file but
      * they can be used with the JVMCI API (e.g. methods in {@link ConstantPool}).
@@ -60,6 +61,7 @@ public interface ResolvedJavaMethod extends JavaMethod, InvokeTarget, ModifiersP
      * Returns the {@link ResolvedJavaType} object representing the class or interface that declares
      * this method.
      */
+    @Override
     ResolvedJavaType getDeclaringClass();
 
     /**
@@ -273,14 +275,17 @@ public interface ResolvedJavaMethod extends JavaMethod, InvokeTarget, ModifiersP
             return method.isVarArgs() && index == method.getSignature().getParameterCount(false) - 1;
         }
 
+        @Override
         public <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
             return method.getParameterAnnotations(annotationClass)[index];
         }
 
+        @Override
         public Annotation[] getAnnotations() {
             return method.getParameterAnnotations()[index];
         }
 
+        @Override
         public Annotation[] getDeclaredAnnotations() {
             return getAnnotations();
         }
@@ -434,13 +439,15 @@ public interface ResolvedJavaMethod extends JavaMethod, InvokeTarget, ModifiersP
     }
 
     /**
-     * Checks whether the method has bytecodes associated with it. Methods without bytecodes are
-     * either abstract or native methods.
+     * Checks whether the method has bytecodes associated with it. Note that even if this method
+     * returns {@code true}, {@link #getCode} can return {@code null} if
+     * {@linkplain #getDeclaringClass() declaring class} is not
+     * {@linkplain ResolvedJavaType#isLinked() linked}.
      *
-     * @return whether the definition of this method is Java bytecodes
+     * @return {@code this.getCodeSize() != 0}
      */
     default boolean hasBytecodes() {
-        return isConcrete() && !isNative();
+        return getCodeSize() != 0;
     }
 
     /**
@@ -459,5 +466,11 @@ public interface ResolvedJavaMethod extends JavaMethod, InvokeTarget, ModifiersP
         return getDeclaringClass().isJavaLangObject() && getName().equals("<init>");
     }
 
+    /**
+     * Gets a speculation log that can be used when compiling this method to make new speculations
+     * and query previously failed speculations. The implementation may return a new
+     * {@link SpeculationLog} object each time this method is called so its the caller's
+     * responsibility to ensure the same speculation log is used throughout a compilation.
+     */
     SpeculationLog getSpeculationLog();
 }

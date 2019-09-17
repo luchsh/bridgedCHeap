@@ -36,6 +36,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.IllformedLocaleException;
 import java.util.List;
 import java.util.Locale;
 import java.util.MissingResourceException;
@@ -53,6 +54,7 @@ import javax.tools.StandardLocation;
 import com.sun.tools.javac.api.JavacTrees;
 import com.sun.tools.javac.file.BaseFileManager;
 import com.sun.tools.javac.file.JavacFileManager;
+import com.sun.tools.javac.jvm.Target;
 import com.sun.tools.javac.main.Arguments;
 import com.sun.tools.javac.main.CommandLine;
 import com.sun.tools.javac.main.OptionHelper;
@@ -372,7 +374,7 @@ public class Start extends ToolOption.Helper {
 
         // locale, doclet and maybe taglet, needs to be determined first
         try {
-            docletClass = preprocess(fileManager, options);
+            doclet = preprocess(fileManager, options);
         } catch (ToolException te) {
             if (!te.result.isOK()) {
                 if (te.message != null) {
@@ -390,39 +392,6 @@ public class Start extends ToolOption.Helper {
             Throwable t = oe.getCause();
             dumpStack(t == null ? oe : t);
             return oe.result;
-        }
-        if (jdk.javadoc.doclet.Doclet.class.isAssignableFrom(docletClass)) {
-            // no need to dispatch to old, safe to init now
-            initMessager();
-            messager.setLocale(locale);
-            try {
-                Object o = docletClass.getConstructor().newInstance();
-                doclet = (Doclet) o;
-            } catch (ReflectiveOperationException exc) {
-                if (apiMode) {
-                    throw new ClientCodeException(exc);
-                }
-                error("main.could_not_instantiate_class", docletClass);
-                return ERROR;
-            }
-        } else {
-            if (apiMode) {
-                com.sun.tools.javadoc.main.Start ostart
-                        = new com.sun.tools.javadoc.main.Start(context);
-                return ostart.begin(docletClass, options, fileObjects)
-                        ? OK
-                        : ERROR;
-            }
-            warn("main.legacy_api");
-            String[] array = options.toArray(new String[options.size()]);
-            int rc = com.sun.tools.javadoc.Main.execute(
-                    messager.programName,
-                    messager.getWriter(WriterKind.ERROR),
-                    messager.getWriter(WriterKind.WARNING),
-                    messager.getWriter(WriterKind.NOTICE),
-                    docletClass.getName(),
-                    array);
-            return (rc == 0) ? OK : ERROR;
         }
 
         Result result = OK;
@@ -548,6 +517,11 @@ public class Start extends ToolOption.Helper {
             ((BaseFileManager) fileManager).handleOptions(fileManagerOpts);
         }
 
+        if (fileManager.isSupportedOption(MULTIRELEASE.primaryName) == 1) {
+            Target target = Target.instance(context);
+            List<String> list = List.of(target.multiReleaseValue());
+            fileManager.handleOption(MULTIRELEASE.primaryName, list.iterator());
+        }
         compOpts.notifyListeners();
         List<String> modules = (List<String>) jdtoolOpts.computeIfAbsent(ToolOption.MODULE,
                 s -> Collections.EMPTY_LIST);
@@ -657,7 +631,7 @@ public class Start extends ToolOption.Helper {
         return idx;
     }
 
-    private Class<?> preprocess(JavaFileManager jfm,
+    private Doclet preprocess(JavaFileManager jfm,
             List<String> argv) throws ToolException, OptionException {
         // doclet specifying arguments
         String userDocletPath = null;
@@ -714,71 +688,77 @@ public class Start extends ToolOption.Helper {
             }
         }
 
-        // Step 2: a doclet is provided, nothing more to do.
-        if (docletClass != null) {
-            return docletClass;
-        }
 
         // Step 3: doclet name specified ? if so find a ClassLoader,
         // and load it.
-        if (userDocletName != null) {
-            ClassLoader cl = classLoader;
-            if (cl == null) {
-                if (!fileManager.hasLocation(DOCLET_PATH)) {
-                    List<File> paths = new ArrayList<>();
-                    if (userDocletPath != null) {
-                        for (String pathname : userDocletPath.split(File.pathSeparator)) {
-                            paths.add(new File(pathname));
-                        }
-                    }
-                    try {
-                        ((StandardJavaFileManager)fileManager).setLocation(DOCLET_PATH, paths);
-                    } catch (IOException ioe) {
-                        if (apiMode) {
-                            throw new IllegalArgumentException("Could not set location for " +
-                                    userDocletPath, ioe);
-                        }
-                        String text = messager.getText("main.doclet_could_not_set_location",
-                                userDocletPath);
-                        throw new ToolException(CMDERR, text, ioe);
-                    }
-                }
-                cl = fileManager.getClassLoader(DOCLET_PATH);
+        if(docletClass == null) {
+            if (userDocletName != null) {
+                ClassLoader cl = classLoader;
                 if (cl == null) {
-                    // despite doclet specified on cmdline no classloader found!
-                    if (apiMode) {
-                        throw new IllegalArgumentException("Could not obtain classloader to load "
-                                + userDocletPath);
+                    if (!fileManager.hasLocation(DOCLET_PATH)) {
+                        List<File> paths = new ArrayList<>();
+                        if (userDocletPath != null) {
+                            for (String pathname : userDocletPath.split(File.pathSeparator)) {
+                                paths.add(new File(pathname));
+                            }
+                        }
+                        try {
+                            ((StandardJavaFileManager)fileManager).setLocation(DOCLET_PATH, paths);
+                        } catch (IOException ioe) {
+                            if (apiMode) {
+                                throw new IllegalArgumentException("Could not set location for " +
+                                        userDocletPath, ioe);
+                            }
+                            String text = messager.getText("main.doclet_could_not_set_location",
+                                    userDocletPath);
+                            throw new ToolException(CMDERR, text, ioe);
+                        }
                     }
-                    String text = messager.getText("main.doclet_no_classloader_found",
-                            userDocletName);
-                    throw new ToolException(CMDERR, text);
+                    cl = fileManager.getClassLoader(DOCLET_PATH);
+                    if (cl == null) {
+                        // despite doclet specified on cmdline no classloader found!
+                        if (apiMode) {
+                            throw new IllegalArgumentException("Could not obtain classloader to load "
+
+                                    + userDocletPath);
+                        }
+                        String text = messager.getText("main.doclet_no_classloader_found",
+                                userDocletName);
+                        throw new ToolException(CMDERR, text);
+                    }
                 }
+                docletClass = loadDocletClass(userDocletName, cl);
+            } else if (docletName != null){
+                docletClass = loadDocletClass(docletName, getClass().getClassLoader());
+            } else {
+                docletClass = StdDoclet;
             }
+        }
+
+        if (jdk.javadoc.doclet.Doclet.class.isAssignableFrom(docletClass)) {
+            // no need to dispatch to old, safe to init now
+            initMessager();
+            messager.setLocale(locale);
             try {
-                return cl.loadClass(userDocletName);
-            } catch (ClassNotFoundException cnfe) {
+                Object o = docletClass.getConstructor().newInstance();
+                doclet = (Doclet) o;
+            } catch (ReflectiveOperationException exc) {
                 if (apiMode) {
-                    throw new IllegalArgumentException("Cannot find doclet class " + userDocletName,
-                            cnfe);
+                    throw new ClientCodeException(exc);
                 }
-                String text = messager.getText("main.doclet_class_not_found", userDocletName);
-                throw new ToolException(CMDERR, text, cnfe);
+                String text = messager.getText("main.could_not_instantiate_class", docletClass.getName());
+                throw new ToolException(ERROR, text);
             }
+        } else {
+            String text = messager.getText("main.not_a_doclet", docletClass.getName());
+            throw new ToolException(ERROR, text);
         }
-
-        // Step 4: we have a doclet, try loading it
-        if (docletName != null) {
-            return loadDocletClass(docletName);
-        }
-
-        // finally
-        return StdDoclet;
+        return doclet;
     }
 
-    private Class<?> loadDocletClass(String docletName) throws ToolException {
+    private Class<?> loadDocletClass(String docletName, ClassLoader classLoader) throws ToolException {
         try {
-            return Class.forName(docletName, true, getClass().getClassLoader());
+            return classLoader == null ? Class.forName(docletName) : classLoader.loadClass(docletName);
         } catch (ClassNotFoundException cnfe) {
             if (apiMode) {
                 throw new IllegalArgumentException("Cannot find doclet class " + docletName);
@@ -853,45 +833,16 @@ public class Start extends ToolOption.Helper {
      * then return default locale.
      */
     private Locale getLocale(String localeName) throws ToolException {
-        Locale userlocale = null;
-        if (localeName == null || localeName.isEmpty()) {
-            return Locale.getDefault();
-        }
-        int firstuscore = localeName.indexOf('_');
-        int seconduscore = -1;
-        String language = null;
-        String country = null;
-        String variant = null;
-        if (firstuscore == 2) {
-            language = localeName.substring(0, firstuscore);
-            seconduscore = localeName.indexOf('_', firstuscore + 1);
-            if (seconduscore > 0) {
-                if (seconduscore != firstuscore + 3
-                        || localeName.length() <= seconduscore + 1) {
-                    String text = messager.getText("main.malformed_locale_name", localeName);
-                    throw new ToolException(CMDERR, text);
-                }
-                country = localeName.substring(firstuscore + 1,
-                        seconduscore);
-                variant = localeName.substring(seconduscore + 1);
-            } else if (localeName.length() == firstuscore + 3) {
-                country = localeName.substring(firstuscore + 1);
-            } else {
-                String text = messager.getText("main.malformed_locale_name", localeName);
-                throw new ToolException(CMDERR, text);
-            }
-        } else if (firstuscore == -1 && localeName.length() == 2) {
-            language = localeName;
-        } else {
+        try {
+            // Tolerate, at least for a while, the older syntax accepted by javadoc,
+            // using _ as the separator
+            localeName = localeName.replace("_", "-");
+            Locale l =  new Locale.Builder().setLanguageTag(localeName).build();
+            // Ensure that a non-empty language is available for the <HTML lang=...> element
+            return (l.getLanguage().isEmpty()) ? Locale.ENGLISH : l;
+        } catch (IllformedLocaleException e) {
             String text = messager.getText("main.malformed_locale_name", localeName);
             throw new ToolException(CMDERR, text);
-        }
-        userlocale = searchLocale(language, country, variant);
-        if (userlocale == null) {
-            String text = messager.getText("main.illegal_locale_name", localeName);
-            throw new ToolException(CMDERR, text);
-        } else {
-            return userlocale;
         }
     }
 
