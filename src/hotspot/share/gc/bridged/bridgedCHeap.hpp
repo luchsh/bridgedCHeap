@@ -6,13 +6,7 @@
 #include "gc/shared/gcArguments.hpp"
 #include "gc/bridged/bridgedCHeapBarrierSet.hpp"
 
-// Abstract interface to delegate memory requests
-// we have several back-ends
-class CHeapAllocator : public CHeapObj<mtGC> {
-public:
-  virtual void* malloc(size_t size) = 0;
-  virtual void free(void* buf) = 0;
-};
+class CHeapAllocator;
 
 //
 // The Bridged CHeap
@@ -56,8 +50,8 @@ public:
   virtual bool can_elide_tlab_store_barriers() const  { return false;                   }
   virtual bool can_elide_initializing_store_barrier(oop new_obj) { return false;        }
   virtual bool card_mark_must_follow_store() const    { return false;                   }
-  virtual void collect(GCCause::Cause cause)    { DEBUG_ONLY(Unimplemented());          }
-  virtual void do_full_collection(bool clear_all_soft_refs) { DEBUG_ONLY(Unimplemented()); }
+  virtual void collect(GCCause::Cause cause)    { Unimplemented();          }
+  virtual void do_full_collection(bool clear_all_soft_refs) { Unimplemented(); }
   virtual GrowableArray<GCMemoryManager*> memory_managers() {
     return GrowableArray<GCMemoryManager*>();
   }
@@ -89,6 +83,7 @@ public:
   virtual void unregister_nmethod(nmethod* nm) { }
   virtual void flush_nmethod(nmethod* nm) { }
   virtual void verify_nmethod(nmethod* nm) { }
+  virtual bool is_oop(oop object) const { return true; }
 };
 
 // to work with JDK10's framework
@@ -96,6 +91,12 @@ class BridgedCHeapArguments : public GCArguments {
 public:
   virtual size_t conservative_max_heap_alignment() {
     return UseLargePages ? os::large_page_size() : os::vm_page_size();
+  }
+  virtual void initialize_alignments() {
+    size_t page_size = UseLargePages ? os::large_page_size() : os::vm_page_size();
+    size_t align = MAX2((size_t)os::vm_allocation_granularity(), page_size);
+    SpaceAlignment = align;
+    HeapAlignment  = align;
   }
   virtual CollectedHeap* create_heap() {
     return new BridgedCHeap();

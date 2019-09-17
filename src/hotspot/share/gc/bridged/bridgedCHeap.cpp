@@ -6,6 +6,14 @@
 
 // ------------------------------ allocators ------------------------
 
+// Abstract interface to delegate memory requests
+// we have several back-ends
+class CHeapAllocator : public CHeapObj<mtGC> {
+public:
+  virtual void* malloc(size_t size) = 0;
+  virtual void free(void* buf) = 0;
+};
+
 // Prototype of libc's malloc/free
 typedef void* (*malloc_prototype)(size_t size);
 typedef void (*free_prototype)(void* ptr);

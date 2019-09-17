@@ -49,6 +49,7 @@
 #if INCLUDE_ZGC
 #include "gc/z/zArguments.hpp"
 #endif
+#include "gc/bridged/bridgedCHeap.hpp"
 
 struct SupportedGC {
   bool&               _flag;
@@ -67,6 +68,7 @@ struct SupportedGC {
     SERIALGC_ONLY(static SerialArguments   serialArguments;)
 SHENANDOAHGC_ONLY(static ShenandoahArguments shenandoahArguments;)
          ZGC_ONLY(static ZArguments        zArguments;)
+         static BridgedCHeapArguments bridgedCHeapArguments;
 
 // Table of supported GCs, for translating between command
 // line flag, CollectedHeap::Name and GCArguments instance.
@@ -79,6 +81,7 @@ static const SupportedGC SupportedGCs[] = {
     SERIALGC_ONLY_ARG(SupportedGC(UseSerialGC,        CollectedHeap::Serial,     serialArguments,     "serial gc"))
 SHENANDOAHGC_ONLY_ARG(SupportedGC(UseShenandoahGC,    CollectedHeap::Shenandoah, shenandoahArguments, "shenandoah gc"))
          ZGC_ONLY_ARG(SupportedGC(UseZGC,             CollectedHeap::Z,          zArguments,          "z gc"))
+ SupportedGC(UseBridgedCHeap, CollectedHeap::BridgedCHeap, bridgedCHeapArguments, "bridged cheap"),
 };
 
 #define FOR_EACH_SUPPORTED_GC(var)                                          \

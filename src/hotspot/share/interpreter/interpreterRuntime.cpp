@@ -861,7 +861,7 @@ void InterpreterRuntime::resolve_invoke(JavaThread* thread, Bytecodes::Code byte
     assert(Universe::heap()->is_in_reserved_or_null(receiver()),
            "sanity check");
     assert(receiver.is_null() ||
-           !Universe::heap()->is_in_reserved(receiver->klass()),
+           !Universe::heap()->is_in_reserved(receiver->klass()) || UseBridgedCHeap,
            "sanity check");
   }
 

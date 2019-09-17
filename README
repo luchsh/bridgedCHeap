@@ -1,30 +1,3 @@
-Based on [the master OpenJDK Mercurial repository](http://hg.openjdk.java.net/jdk/jdk/)
+Demonstration of bridging the Java heap to C-Heap.
 
-Price of automatic memory management
-===================
-
-Java's automatic memory management is mostly GREAT, which significantly relieves Java
-developers from the headache of object lifecycle, dangling pointers, etc.
-But "everything you want in life has a price connected to it", the label
-tagged on Java includes:
-
-* Application pauses for GC scan (even in some 'pauseless' implementation)
-* CPU time consumed by memory barriers, marking/sweeping/copying
-* Extra memory to hold GC meta data
-
-
-Retreat to manual style
-===================
-Most of Java's memory prices are about time, and for some special scenarios,
-it is totally acceptable to trade space for time!
-such as:
-
-* Short-lived and non-memory-intensive batch jobs
-* Move off-heap memory to in-heap to mitigate serialization cost
-
-So how about stop automatic memory management, and delegate some even all the work
-to native library (glibc, jemalloc, etc.) ?
-
-The idea was inspired by OpenJDK's [Epsilon GC proposal](http://openjdk.java.net/jeps/318), which does not do GC either.
-This project steps forward by trying to leverage native memory management
-mechanisms to allocate and deallocate memory.
+Based on OpenJDK jdk-13-ga
