@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,9 +29,10 @@
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
 #include "oops/objArrayOop.inline.hpp"
-#include "prims/whitebox.hpp"
+#include "prims/whitebox.inline.hpp"
 #include "prims/wbtestmethods/parserTests.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
+#include "runtime/jniHandles.inline.hpp"
 #include "services/diagnosticArgument.hpp"
 #include "services/diagnosticFramework.hpp"
 
@@ -50,7 +51,7 @@
 static const char* lookup_diagnosticArgumentEnum(const char* field_name, oop object) {
   Thread* THREAD = Thread::current();
   const char* enum_sig = "Lsun/hotspot/parser/DiagnosticCommand$DiagnosticArgumentType;";
-  TempNewSymbol enumSigSymbol = SymbolTable::lookup(enum_sig, (int) strlen(enum_sig), THREAD);
+  TempNewSymbol enumSigSymbol = SymbolTable::new_symbol(enum_sig);
   int offset = WhiteBox::offset_for_field(field_name, object, enumSigSymbol);
   oop enumOop = object->obj_field(offset);
 

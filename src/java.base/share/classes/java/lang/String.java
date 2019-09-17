@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1994, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,22 +28,32 @@ package java.lang;
 import java.io.ObjectStreamField;
 import java.io.UnsupportedEncodingException;
 import java.lang.annotation.Native;
+import java.lang.invoke.MethodHandles;
+import java.lang.constant.Constable;
+import java.lang.constant.ConstantDesc;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Formatter;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Spliterator;
 import java.util.StringJoiner;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import jdk.internal.HotSpotIntrinsicCandidate;
 import jdk.internal.vm.annotation.Stable;
+
+import static java.util.function.Predicate.not;
 
 /**
  * The {@code String} class represents character strings. All
@@ -66,7 +76,7 @@ import jdk.internal.vm.annotation.Stable;
  *     System.out.println("abc");
  *     String cde = "cde";
  *     System.out.println("abc" + cde);
- *     String c = "abc".substring(2,3);
+ *     String c = "abc".substring(2, 3);
  *     String d = cde.substring(1, 2);
  * </pre></blockquote>
  * <p>
@@ -122,7 +132,8 @@ import jdk.internal.vm.annotation.Stable;
  */
 
 public final class String
-    implements java.io.Serializable, Comparable<String>, CharSequence {
+    implements java.io.Serializable, Comparable<String>, CharSequence,
+               Constable, ConstantDesc {
 
     /**
      * The value is used for character storage.
@@ -153,6 +164,12 @@ public final class String
 
     /** Cache the hash code for the string */
     private int hash; // Default to 0
+
+    /**
+     * Cache if the hash has been calculated as actually being zero, enabling
+     * us to avoid recalculating this.
+     */
+    private boolean hashIsZero; // Default to false;
 
     /** use serialVersionUID from JDK 1.0.2 for interoperability */
     private static final long serialVersionUID = -6849794470754667710L;
@@ -1004,9 +1021,8 @@ public final class String
         }
         if (anObject instanceof String) {
             String aString = (String)anObject;
-            if (coder() == aString.coder()) {
-                return isLatin1() ? StringLatin1.equals(value, aString.value)
-                                  : StringUTF16.equals(value, aString.value);
+            if (!COMPACT_STRINGS || this.coder == aString.coder) {
+                return StringLatin1.equals(value, aString.value);
             }
         }
         return false;
@@ -1041,7 +1057,8 @@ public final class String
         }
         byte v1[] = value;
         byte v2[] = sb.getValue();
-        if (coder() == sb.getCoder()) {
+        byte coder = coder();
+        if (coder == sb.getCoder()) {
             int n = v1.length;
             for (int i = 0; i < n; i++) {
                 if (v1[i] != v2[i]) {
@@ -1049,7 +1066,7 @@ public final class String
                 }
             }
         } else {
-            if (!isLatin1()) {  // utf16 str and latin1 abs can never be "equal"
+            if (coder != LATIN1) {  // utf16 str and latin1 abs can never be "equal"
                 return false;
             }
             return StringUTF16.contentEquals(v1, v2, len);
@@ -1193,12 +1210,13 @@ public final class String
     public int compareTo(String anotherString) {
         byte v1[] = value;
         byte v2[] = anotherString.value;
-        if (coder() == anotherString.coder()) {
-            return isLatin1() ? StringLatin1.compareTo(v1, v2)
-                              : StringUTF16.compareTo(v1, v2);
+        byte coder = coder();
+        if (coder == anotherString.coder()) {
+            return coder == LATIN1 ? StringLatin1.compareTo(v1, v2)
+                                   : StringUTF16.compareTo(v1, v2);
         }
-        return isLatin1() ? StringLatin1.compareToUTF16(v1, v2)
-                          : StringUTF16.compareToLatin1(v1, v2);
+        return coder == LATIN1 ? StringLatin1.compareToUTF16(v1, v2)
+                               : StringUTF16.compareToLatin1(v1, v2);
      }
 
     /**
@@ -1222,12 +1240,13 @@ public final class String
         public int compare(String s1, String s2) {
             byte v1[] = s1.value;
             byte v2[] = s2.value;
-            if (s1.coder() == s2.coder()) {
-                return s1.isLatin1() ? StringLatin1.compareToCI(v1, v2)
-                                     : StringUTF16.compareToCI(v1, v2);
+            byte coder = s1.coder();
+            if (coder == s2.coder()) {
+                return coder == LATIN1 ? StringLatin1.compareToCI(v1, v2)
+                                       : StringUTF16.compareToCI(v1, v2);
             }
-            return s1.isLatin1() ? StringLatin1.compareToCI_UTF16(v1, v2)
-                                 : StringUTF16.compareToCI_Latin1(v1, v2);
+            return coder == LATIN1 ? StringLatin1.compareToCI_UTF16(v1, v2)
+                                   : StringUTF16.compareToCI_Latin1(v1, v2);
         }
 
         /** Replaces the de-serialized object. */
@@ -1301,7 +1320,8 @@ public final class String
              (ooffset > (long)other.length() - len)) {
             return false;
         }
-        if (coder() == other.coder()) {
+        byte coder = coder();
+        if (coder == other.coder()) {
             if (!isLatin1() && (len > 0)) {
                 toffset = toffset << 1;
                 ooffset = ooffset << 1;
@@ -1313,7 +1333,7 @@ public final class String
                 }
             }
         } else {
-            if (coder() == LATIN1) {
+            if (coder == LATIN1) {
                 while (len-- > 0) {
                     if (StringLatin1.getChar(tv, toffset++) !=
                         StringUTF16.getChar(ov, ooffset++)) {
@@ -1395,12 +1415,13 @@ public final class String
         }
         byte tv[] = value;
         byte ov[] = other.value;
-        if (coder() == other.coder()) {
-            return isLatin1()
+        byte coder = coder();
+        if (coder == other.coder()) {
+            return coder == LATIN1
               ? StringLatin1.regionMatchesCI(tv, toffset, ov, ooffset, len)
               : StringUTF16.regionMatchesCI(tv, toffset, ov, ooffset, len);
         }
-        return isLatin1()
+        return coder == LATIN1
               ? StringLatin1.regionMatchesCI_UTF16(tv, toffset, ov, ooffset, len)
               : StringUTF16.regionMatchesCI_Latin1(tv, toffset, ov, ooffset, len);
     }
@@ -1431,15 +1452,16 @@ public final class String
         byte pa[] = prefix.value;
         int po = 0;
         int pc = pa.length;
-        if (coder() == prefix.coder()) {
-            int to = isLatin1() ? toffset : toffset << 1;
+        byte coder = coder();
+        if (coder == prefix.coder()) {
+            int to = (coder == LATIN1) ? toffset : toffset << 1;
             while (po < pc) {
                 if (ta[to++] != pa[po++]) {
                     return false;
                 }
             }
         } else {
-            if (isLatin1()) {  // && pcoder == UTF16
+            if (coder == LATIN1) {  // && pcoder == UTF16
                 return false;
             }
             // coder == UTF16 && pcoder == LATIN1)
@@ -1498,10 +1520,23 @@ public final class String
      * @return  a hash code value for this object.
      */
     public int hashCode() {
+        // The hash or hashIsZero fields are subject to a benign data race,
+        // making it crucial to ensure that any observable result of the
+        // calculation in this method stays correct under any possible read of
+        // these fields. Necessary restrictions to allow this to be correct
+        // without explicit memory fences or similar concurrency primitives is
+        // that we can ever only write to one of these two fields for a given
+        // String instance, and that the computation is idempotent and derived
+        // from immutable state
         int h = hash;
-        if (h == 0 && value.length > 0) {
-            hash = h = isLatin1() ? StringLatin1.hashCode(value)
-                                  : StringUTF16.hashCode(value);
+        if (h == 0 && !hashIsZero) {
+            h = isLatin1() ? StringLatin1.hashCode(value)
+                           : StringUTF16.hashCode(value);
+            if (h == 0) {
+                hashIsZero = true;
+            } else {
+                hash = h;
+            }
         }
         return h;
     }
@@ -1659,11 +1694,12 @@ public final class String
      *          or {@code -1} if there is no such occurrence.
      */
     public int indexOf(String str) {
-        if (coder() == str.coder()) {
+        byte coder = coder();
+        if (coder == str.coder()) {
             return isLatin1() ? StringLatin1.indexOf(value, str.value)
                               : StringUTF16.indexOf(value, str.value);
         }
-        if (coder() == LATIN1) {  // str.coder == UTF16
+        if (coder == LATIN1) {  // str.coder == UTF16
             return -1;
         }
         return StringUTF16.indexOfLatin1(value, str.value);
@@ -1933,23 +1969,10 @@ public final class String
      *          characters followed by the string argument's characters.
      */
     public String concat(String str) {
-        int olen = str.length();
-        if (olen == 0) {
+        if (str.isEmpty()) {
             return this;
         }
-        if (coder() == str.coder()) {
-            byte[] val = this.value;
-            byte[] oval = str.value;
-            int len = val.length + oval.length;
-            byte[] buf = Arrays.copyOf(val, len);
-            System.arraycopy(oval, 0, buf, val.length, oval.length);
-            return new String(buf, coder);
-        }
-        int len = length();
-        byte[] buf = StringUTF16.newBytesFor(len + olen);
-        getBytes(buf, 0, UTF16);
-        str.getBytes(buf, len, UTF16);
-        return new String(buf, UTF16);
+        return StringConcatHelper.simpleConcat(this, str);
     }
 
     /**
@@ -2138,27 +2161,48 @@ public final class String
      * @since 1.5
      */
     public String replace(CharSequence target, CharSequence replacement) {
-        String tgtStr = target.toString();
+        String trgtStr = target.toString();
         String replStr = replacement.toString();
-        int j = indexOf(tgtStr);
-        if (j < 0) {
-            return this;
-        }
-        int tgtLen = tgtStr.length();
-        int tgtLen1 = Math.max(tgtLen, 1);
         int thisLen = length();
+        int trgtLen = trgtStr.length();
+        int replLen = replStr.length();
 
-        int newLenHint = thisLen - tgtLen + replStr.length();
-        if (newLenHint < 0) {
-            throw new OutOfMemoryError();
+        if (trgtLen > 0) {
+            if (trgtLen == 1 && replLen == 1) {
+                return replace(trgtStr.charAt(0), replStr.charAt(0));
+            }
+
+            boolean thisIsLatin1 = this.isLatin1();
+            boolean trgtIsLatin1 = trgtStr.isLatin1();
+            boolean replIsLatin1 = replStr.isLatin1();
+            String ret = (thisIsLatin1 && trgtIsLatin1 && replIsLatin1)
+                    ? StringLatin1.replace(value, thisLen,
+                                           trgtStr.value, trgtLen,
+                                           replStr.value, replLen)
+                    : StringUTF16.replace(value, thisLen, thisIsLatin1,
+                                          trgtStr.value, trgtLen, trgtIsLatin1,
+                                          replStr.value, replLen, replIsLatin1);
+            if (ret != null) {
+                return ret;
+            }
+            return this;
+
+        } else { // trgtLen == 0
+            int resultLen;
+            try {
+                resultLen = Math.addExact(thisLen, Math.multiplyExact(
+                        Math.addExact(thisLen, 1), replLen));
+            } catch (ArithmeticException ignored) {
+                throw new OutOfMemoryError();
+            }
+
+            StringBuilder sb = new StringBuilder(resultLen);
+            sb.append(replStr);
+            for (int i = 0; i < thisLen; ++i) {
+                sb.append(charAt(i)).append(replStr);
+            }
+            return sb.toString();
         }
-        StringBuilder sb = new StringBuilder(newLenHint);
-        int i = 0;
-        do {
-            sb.append(this, i, j).append(replStr);
-            i = j + tgtLen;
-        } while (j < thisLen && (j = indexOf(tgtStr, j + tgtLen1)) > 0);
-        return sb.append(this, i, thisLen).toString();
     }
 
     /**
@@ -2179,14 +2223,23 @@ public final class String
      *
      * <p> The {@code limit} parameter controls the number of times the
      * pattern is applied and therefore affects the length of the resulting
-     * array.  If the limit <i>n</i> is greater than zero then the pattern
-     * will be applied at most <i>n</i>&nbsp;-&nbsp;1 times, the array's
-     * length will be no greater than <i>n</i>, and the array's last entry
-     * will contain all input beyond the last matched delimiter.  If <i>n</i>
-     * is non-positive then the pattern will be applied as many times as
-     * possible and the array can have any length.  If <i>n</i> is zero then
-     * the pattern will be applied as many times as possible, the array can
-     * have any length, and trailing empty strings will be discarded.
+     * array.
+     * <ul>
+     *    <li><p>
+     *    If the <i>limit</i> is positive then the pattern will be applied
+     *    at most <i>limit</i>&nbsp;-&nbsp;1 times, the array's length will be
+     *    no greater than <i>limit</i>, and the array's last entry will contain
+     *    all input beyond the last matched delimiter.</p></li>
+     *
+     *    <li><p>
+     *    If the <i>limit</i> is zero then the pattern will be applied as
+     *    many times as possible, the array can have any length, and trailing
+     *    empty strings will be discarded.</p></li>
+     *
+     *    <li><p>
+     *    If the <i>limit</i> is negative then the pattern will be applied
+     *    as many times as possible and the array can have any length.</p></li>
+     * </ul>
      *
      * <p> The string {@code "boo:and:foo"}, for example, yields the
      * following results with these parameters:
@@ -2297,7 +2350,7 @@ public final class String
             // Construct result
             int resultSize = list.size();
             if (limit == 0) {
-                while (resultSize > 0 && list.get(resultSize - 1).length() == 0) {
+                while (resultSize > 0 && list.get(resultSize - 1).isEmpty()) {
                     resultSize--;
                 }
             }
@@ -2599,40 +2652,527 @@ public final class String
     }
 
     /**
-     * Returns a string whose value is this string, with any leading and trailing
-     * whitespace removed.
+     * Returns a string whose value is this string, with all leading
+     * and trailing space removed, where space is defined
+     * as any character whose codepoint is less than or equal to
+     * {@code 'U+0020'} (the space character).
      * <p>
      * If this {@code String} object represents an empty character
      * sequence, or the first and last characters of character sequence
      * represented by this {@code String} object both have codes
-     * greater than {@code '\u005Cu0020'} (the space character), then a
+     * that are not space (as defined above), then a
      * reference to this {@code String} object is returned.
      * <p>
-     * Otherwise, if there is no character with a code greater than
-     * {@code '\u005Cu0020'} in the string, then a
-     * {@code String} object representing an empty string is
-     * returned.
+     * Otherwise, if all characters in this string are space (as
+     * defined above), then a  {@code String} object representing an
+     * empty string is returned.
      * <p>
      * Otherwise, let <i>k</i> be the index of the first character in the
-     * string whose code is greater than {@code '\u005Cu0020'}, and let
+     * string whose code is not a space (as defined above) and let
      * <i>m</i> be the index of the last character in the string whose code
-     * is greater than {@code '\u005Cu0020'}. A {@code String}
+     * is not a space (as defined above). A {@code String}
      * object is returned, representing the substring of this string that
      * begins with the character at index <i>k</i> and ends with the
      * character at index <i>m</i>-that is, the result of
      * {@code this.substring(k, m + 1)}.
      * <p>
-     * This method may be used to trim whitespace (as defined above) from
+     * This method may be used to trim space (as defined above) from
      * the beginning and end of a string.
      *
-     * @return  A string whose value is this string, with any leading and trailing white
-     *          space removed, or this string if it has no leading or
-     *          trailing white space.
+     * @return  a string whose value is this string, with all leading
+     *          and trailing space removed, or this string if it
+     *          has no leading or trailing space.
      */
     public String trim() {
         String ret = isLatin1() ? StringLatin1.trim(value)
                                 : StringUTF16.trim(value);
         return ret == null ? this : ret;
+    }
+
+    /**
+     * Returns a string whose value is this string, with all leading
+     * and trailing {@linkplain Character#isWhitespace(int) white space}
+     * removed.
+     * <p>
+     * If this {@code String} object represents an empty string,
+     * or if all code points in this string are
+     * {@linkplain Character#isWhitespace(int) white space}, then an empty string
+     * is returned.
+     * <p>
+     * Otherwise, returns a substring of this string beginning with the first
+     * code point that is not a {@linkplain Character#isWhitespace(int) white space}
+     * up to and including the last code point that is not a
+     * {@linkplain Character#isWhitespace(int) white space}.
+     * <p>
+     * This method may be used to strip
+     * {@linkplain Character#isWhitespace(int) white space} from
+     * the beginning and end of a string.
+     *
+     * @return  a string whose value is this string, with all leading
+     *          and trailing white space removed
+     *
+     * @see Character#isWhitespace(int)
+     *
+     * @since 11
+     */
+    public String strip() {
+        String ret = isLatin1() ? StringLatin1.strip(value)
+                                : StringUTF16.strip(value);
+        return ret == null ? this : ret;
+    }
+
+    /**
+     * Returns a string whose value is this string, with all leading
+     * {@linkplain Character#isWhitespace(int) white space} removed.
+     * <p>
+     * If this {@code String} object represents an empty string,
+     * or if all code points in this string are
+     * {@linkplain Character#isWhitespace(int) white space}, then an empty string
+     * is returned.
+     * <p>
+     * Otherwise, returns a substring of this string beginning with the first
+     * code point that is not a {@linkplain Character#isWhitespace(int) white space}
+     * up to and including the last code point of this string.
+     * <p>
+     * This method may be used to trim
+     * {@linkplain Character#isWhitespace(int) white space} from
+     * the beginning of a string.
+     *
+     * @return  a string whose value is this string, with all leading white
+     *          space removed
+     *
+     * @see Character#isWhitespace(int)
+     *
+     * @since 11
+     */
+    public String stripLeading() {
+        String ret = isLatin1() ? StringLatin1.stripLeading(value)
+                                : StringUTF16.stripLeading(value);
+        return ret == null ? this : ret;
+    }
+
+    /**
+     * Returns a string whose value is this string, with all trailing
+     * {@linkplain Character#isWhitespace(int) white space} removed.
+     * <p>
+     * If this {@code String} object represents an empty string,
+     * or if all characters in this string are
+     * {@linkplain Character#isWhitespace(int) white space}, then an empty string
+     * is returned.
+     * <p>
+     * Otherwise, returns a substring of this string beginning with the first
+     * code point of this string up to and including the last code point
+     * that is not a {@linkplain Character#isWhitespace(int) white space}.
+     * <p>
+     * This method may be used to trim
+     * {@linkplain Character#isWhitespace(int) white space} from
+     * the end of a string.
+     *
+     * @return  a string whose value is this string, with all trailing white
+     *          space removed
+     *
+     * @see Character#isWhitespace(int)
+     *
+     * @since 11
+     */
+    public String stripTrailing() {
+        String ret = isLatin1() ? StringLatin1.stripTrailing(value)
+                                : StringUTF16.stripTrailing(value);
+        return ret == null ? this : ret;
+    }
+
+    /**
+     * Returns {@code true} if the string is empty or contains only
+     * {@linkplain Character#isWhitespace(int) white space} codepoints,
+     * otherwise {@code false}.
+     *
+     * @return {@code true} if the string is empty or contains only
+     *         {@linkplain Character#isWhitespace(int) white space} codepoints,
+     *         otherwise {@code false}
+     *
+     * @see Character#isWhitespace(int)
+     *
+     * @since 11
+     */
+    public boolean isBlank() {
+        return indexOfNonWhitespace() == length();
+    }
+
+    /**
+     * Returns a stream of lines extracted from this string,
+     * separated by line terminators.
+     * <p>
+     * A <i>line terminator</i> is one of the following:
+     * a line feed character {@code "\n"} (U+000A),
+     * a carriage return character {@code "\r"} (U+000D),
+     * or a carriage return followed immediately by a line feed
+     * {@code "\r\n"} (U+000D U+000A).
+     * <p>
+     * A <i>line</i> is either a sequence of zero or more characters
+     * followed by a line terminator, or it is a sequence of one or
+     * more characters followed by the end of the string. A
+     * line does not include the line terminator.
+     * <p>
+     * The stream returned by this method contains the lines from
+     * this string in the order in which they occur.
+     *
+     * @apiNote This definition of <i>line</i> implies that an empty
+     *          string has zero lines and that there is no empty line
+     *          following a line terminator at the end of a string.
+     *
+     * @implNote This method provides better performance than
+     *           split("\R") by supplying elements lazily and
+     *           by faster search of new line terminators.
+     *
+     * @return  the stream of lines extracted from this string
+     *
+     * @since 11
+     */
+    public Stream<String> lines() {
+        return isLatin1() ? StringLatin1.lines(value) : StringUTF16.lines(value);
+    }
+
+    /**
+     * Adjusts the indentation of each line of this string based on the value of
+     * {@code n}, and normalizes line termination characters.
+     * <p>
+     * This string is conceptually separated into lines using
+     * {@link String#lines()}. Each line is then adjusted as described below
+     * and then suffixed with a line feed {@code "\n"} (U+000A). The resulting
+     * lines are then concatenated and returned.
+     * <p>
+     * If {@code n > 0} then {@code n} spaces (U+0020) are inserted at the
+     * beginning of each line.
+     * <p>
+     * If {@code n < 0} then up to {@code n}
+     * {@linkplain Character#isWhitespace(int) white space characters} are removed
+     * from the beginning of each line. If a given line does not contain
+     * sufficient white space then all leading
+     * {@linkplain Character#isWhitespace(int) white space characters} are removed.
+     * Each white space character is treated as a single character. In
+     * particular, the tab character {@code "\t"} (U+0009) is considered a
+     * single character; it is not expanded.
+     * <p>
+     * If {@code n == 0} then the line remains unchanged. However, line
+     * terminators are still normalized.
+     *
+     * @param n  number of leading
+     *           {@linkplain Character#isWhitespace(int) white space characters}
+     *           to add or remove
+     *
+     * @return string with indentation adjusted and line endings normalized
+     *
+     * @see String#lines()
+     * @see String#isBlank()
+     * @see Character#isWhitespace(int)
+     *
+     * @since 12
+     */
+    public String indent(int n) {
+        if (isEmpty()) {
+            return "";
+        }
+        Stream<String> stream = lines();
+        if (n > 0) {
+            final String spaces = " ".repeat(n);
+            stream = stream.map(s -> spaces + s);
+        } else if (n == Integer.MIN_VALUE) {
+            stream = stream.map(s -> s.stripLeading());
+        } else if (n < 0) {
+            stream = stream.map(s -> s.substring(Math.min(-n, s.indexOfNonWhitespace())));
+        }
+        return stream.collect(Collectors.joining("\n", "", "\n"));
+    }
+
+    private int indexOfNonWhitespace() {
+        return isLatin1() ? StringLatin1.indexOfNonWhitespace(value)
+                          : StringUTF16.indexOfNonWhitespace(value);
+    }
+
+    private int lastIndexOfNonWhitespace() {
+        return isLatin1() ? StringLatin1.lastIndexOfNonWhitespace(value)
+                          : StringUTF16.lastIndexOfNonWhitespace(value);
+    }
+
+    /**
+     * Returns a string whose value is this string, with incidental
+     * {@linkplain Character#isWhitespace(int) white space} removed from
+     * the beginning and end of every line.
+     * <p>
+     * Incidental {@linkplain Character#isWhitespace(int) white space}
+     * is often present in a text block to align the content with the opening
+     * delimiter. For example, in the following code, dots represent incidental
+     * {@linkplain Character#isWhitespace(int) white space}:
+     * <blockquote><pre>
+     * String html = """
+     * ..............&lt;html&gt;
+     * ..............    &lt;body&gt;
+     * ..............        &lt;p&gt;Hello, world&lt;/p&gt;
+     * ..............    &lt;/body&gt;
+     * ..............&lt;/html&gt;
+     * ..............""";
+     * </pre></blockquote>
+     * This method treats the incidental
+     * {@linkplain Character#isWhitespace(int) white space} as indentation to be
+     * stripped, producing a string that preserves the relative indentation of
+     * the content. Using | to visualize the start of each line of the string:
+     * <blockquote><pre>
+     * |&lt;html&gt;
+     * |    &lt;body&gt;
+     * |        &lt;p&gt;Hello, world&lt;/p&gt;
+     * |    &lt;/body&gt;
+     * |&lt;/html&gt;
+     * </pre></blockquote>
+     * First, the individual lines of this string are extracted as if by using
+     * {@link String#lines()}.
+     * <p>
+     * Then, the <i>minimum indentation</i> (min) is determined as follows.
+     * For each non-blank line (as defined by {@link String#isBlank()}), the
+     * leading {@linkplain Character#isWhitespace(int) white space} characters are
+     * counted. The leading {@linkplain Character#isWhitespace(int) white space}
+     * characters on the last line are also counted even if
+     * {@linkplain String#isBlank() blank}. The <i>min</i> value is the smallest
+     * of these counts.
+     * <p>
+     * For each {@linkplain String#isBlank() non-blank} line, <i>min</i> leading
+     * {@linkplain Character#isWhitespace(int) white space} characters are removed,
+     * and any trailing {@linkplain Character#isWhitespace(int) white space}
+     * characters are removed. {@linkplain String#isBlank() Blank} lines are
+     * replaced with the empty string.
+     *
+     * <p>
+     * Finally, the lines are joined into a new string, using the LF character
+     * {@code "\n"} (U+000A) to separate lines.
+     *
+     * @apiNote
+     * This method's primary purpose is to shift a block of lines as far as
+     * possible to the left, while preserving relative indentation. Lines
+     * that were indented the least will thus have no leading
+     * {@linkplain Character#isWhitespace(int) white space}.
+     * The line count of the result will be the same as line count of this
+     * string.
+     * If this string ends with a line terminator then the result will end
+     * with a line terminator.
+     *
+     * @implNote
+     * This method treats all {@linkplain Character#isWhitespace(int) white space}
+     * characters as having equal width. As long as the indentation on every
+     * line is consistently composed of the same character sequences, then the
+     * result will be as described above.
+     *
+     * @return string with incidental indentation removed and line
+     *         terminators normalized
+     *
+     * @see String#lines()
+     * @see String#isBlank()
+     * @see String#indent(int)
+     * @see Character#isWhitespace(int)
+     *
+     * @since 13
+     *
+     * @deprecated  This method is associated with text blocks, a preview language feature.
+     *              Text blocks and/or this method may be changed or removed in a future release.
+     */
+    @Deprecated(forRemoval=true, since="13")
+    public String stripIndent() {
+        int length = length();
+        if (length == 0) {
+            return "";
+        }
+        char lastChar = charAt(length - 1);
+        boolean optOut = lastChar == '\n' || lastChar == '\r';
+        List<String> lines = lines().collect(Collectors.toList());
+        final int outdent = optOut ? 0 : outdent(lines);
+        return lines.stream()
+            .map(line -> {
+                int firstNonWhitespace = line.indexOfNonWhitespace();
+                int lastNonWhitespace = line.lastIndexOfNonWhitespace();
+                int incidentalWhitespace = Math.min(outdent, firstNonWhitespace);
+                return firstNonWhitespace > lastNonWhitespace
+                    ? "" : line.substring(incidentalWhitespace, lastNonWhitespace);
+            })
+            .collect(Collectors.joining("\n", "", optOut ? "\n" : ""));
+    }
+
+    private static int outdent(List<String> lines) {
+        // Note: outdent is guaranteed to be zero or positive number.
+        // If there isn't a non-blank line then the last must be blank
+        int outdent = Integer.MAX_VALUE;
+        for (String line : lines) {
+            int leadingWhitespace = line.indexOfNonWhitespace();
+            if (leadingWhitespace != line.length()) {
+                outdent = Integer.min(outdent, leadingWhitespace);
+            }
+        }
+        String lastLine = lines.get(lines.size() - 1);
+        if (lastLine.isBlank()) {
+            outdent = Integer.min(outdent, lastLine.length());
+        }
+        return outdent;
+    }
+
+    /**
+     * Returns a string whose value is this string, with escape sequences
+     * translated as if in a string literal.
+     * <p>
+     * Escape sequences are translated as follows;
+     * <table class="striped">
+     *   <caption style="display:none">Translation</caption>
+     *   <thead>
+     *   <tr>
+     *     <th scope="col">Escape</th>
+     *     <th scope="col">Name</th>
+     *     <th scope="col">Translation</th>
+     *   </tr>
+     *   </thead>
+     *   <tbody>
+     *   <tr>
+     *     <th scope="row">{@code \u005Cb}</th>
+     *     <td>backspace</td>
+     *     <td>{@code U+0008}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005Ct}</th>
+     *     <td>horizontal tab</td>
+     *     <td>{@code U+0009}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005Cn}</th>
+     *     <td>line feed</td>
+     *     <td>{@code U+000A}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005Cf}</th>
+     *     <td>form feed</td>
+     *     <td>{@code U+000C}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005Cr}</th>
+     *     <td>carriage return</td>
+     *     <td>{@code U+000D}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005C"}</th>
+     *     <td>double quote</td>
+     *     <td>{@code U+0022}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005C'}</th>
+     *     <td>single quote</td>
+     *     <td>{@code U+0027}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005C\u005C}</th>
+     *     <td>backslash</td>
+     *     <td>{@code U+005C}</td>
+     *   </tr>
+     *   <tr>
+     *     <th scope="row">{@code \u005C0 - \u005C377}</th>
+     *     <td>octal escape</td>
+     *     <td>code point equivalents</td>
+     *   </tr>
+     *   </tbody>
+     * </table>
+     *
+     * @implNote
+     * This method does <em>not</em> translate Unicode escapes such as "{@code \u005cu2022}".
+     * Unicode escapes are translated by the Java compiler when reading input characters and
+     * are not part of the string literal specification.
+     *
+     * @throws IllegalArgumentException when an escape sequence is malformed.
+     *
+     * @return String with escape sequences translated.
+     *
+     * @jls 3.10.7 Escape Sequences
+     *
+     * @since 13
+     *
+     * @deprecated  This method is associated with text blocks, a preview language feature.
+     *              Text blocks and/or this method may be changed or removed in a future release.
+     */
+    @Deprecated(forRemoval=true, since="13")
+    public String translateEscapes() {
+        if (isEmpty()) {
+            return "";
+        }
+        char[] chars = toCharArray();
+        int length = chars.length;
+        int from = 0;
+        int to = 0;
+        while (from < length) {
+            char ch = chars[from++];
+            if (ch == '\\') {
+                ch = from < length ? chars[from++] : '\0';
+                switch (ch) {
+                case 'b':
+                    ch = '\b';
+                    break;
+                case 'f':
+                    ch = '\f';
+                    break;
+                case 'n':
+                    ch = '\n';
+                    break;
+                case 'r':
+                    ch = '\r';
+                    break;
+                case 't':
+                    ch = '\t';
+                    break;
+                case '\'':
+                case '\"':
+                case '\\':
+                    // as is
+                    break;
+                case '0': case '1': case '2': case '3':
+                case '4': case '5': case '6': case '7':
+                    int limit = Integer.min(from + (ch <= '3' ? 2 : 1), length);
+                    int code = ch - '0';
+                    while (from < limit) {
+                        ch = chars[from];
+                        if (ch < '0' || '7' < ch) {
+                            break;
+                        }
+                        from++;
+                        code = (code << 3) | (ch - '0');
+                    }
+                    ch = (char)code;
+                    break;
+                default: {
+                    String msg = String.format(
+                        "Invalid escape sequence: \\%c \\\\u%04X",
+                        ch, (int)ch);
+                    throw new IllegalArgumentException(msg);
+                }
+                }
+            }
+
+            chars[to++] = ch;
+        }
+
+        return new String(chars, 0, to);
+    }
+
+    /**
+     * This method allows the application of a function to {@code this}
+     * string. The function should expect a single String argument
+     * and produce an {@code R} result.
+     * <p>
+     * Any exception thrown by {@code f()} will be propagated to the
+     * caller.
+     *
+     * @param f    functional interface to a apply
+     *
+     * @param <R>  class of the result
+     *
+     * @return     the result of applying the function to this string
+     *
+     * @see java.util.function.Function
+     *
+     * @since 12
+     */
+    public <R> R transform(Function<? super String, ? extends R> f) {
+        return f.apply(this);
     }
 
     /**
@@ -2647,7 +3187,7 @@ public final class String
     /**
      * Returns a stream of {@code int} zero-extending the {@code char} values
      * from this sequence.  Any char which maps to a <a
-     * href="{@docRoot}/java/lang/Character.html#unicode">surrogate code
+     * href="{@docRoot}/java.base/java/lang/Character.html#unicode">surrogate code
      * point</a> is passed through uninterpreted.
      *
      * @return an IntStream of char values from this sequence
@@ -2773,6 +3313,30 @@ public final class String
      */
     public static String format(Locale l, String format, Object... args) {
         return new Formatter(l).format(format, args).toString();
+    }
+
+    /**
+     * Formats using this string as the format string, and the supplied
+     * arguments.
+     *
+     * @implSpec This method is equivalent to {@code String.format(this, args)}.
+     *
+     * @param  args
+     *         Arguments referenced by the format specifiers in this string.
+     *
+     * @return  A formatted string
+     *
+     * @see  java.lang.String#format(String,Object...)
+     * @see  java.util.Formatter
+     *
+     * @since 13
+     *
+     * @deprecated  This method is associated with text blocks, a preview language feature.
+     *              Text blocks and/or this method may be changed or removed in a future release.
+     */
+    @Deprecated(forRemoval=true, since="13")
+    public String formatted(Object... args) {
+        return new Formatter().format(this, args).toString();
     }
 
     /**
@@ -2963,6 +3527,55 @@ public final class String
      */
     public native String intern();
 
+    /**
+     * Returns a string whose value is the concatenation of this
+     * string repeated {@code count} times.
+     * <p>
+     * If this string is empty or count is zero then the empty
+     * string is returned.
+     *
+     * @param   count number of times to repeat
+     *
+     * @return  A string composed of this string repeated
+     *          {@code count} times or the empty string if this
+     *          string is empty or count is zero
+     *
+     * @throws  IllegalArgumentException if the {@code count} is
+     *          negative.
+     *
+     * @since 11
+     */
+    public String repeat(int count) {
+        if (count < 0) {
+            throw new IllegalArgumentException("count is negative: " + count);
+        }
+        if (count == 1) {
+            return this;
+        }
+        final int len = value.length;
+        if (len == 0 || count == 0) {
+            return "";
+        }
+        if (len == 1) {
+            final byte[] single = new byte[count];
+            Arrays.fill(single, value[0]);
+            return new String(single, coder);
+        }
+        if (Integer.MAX_VALUE / count < len) {
+            throw new OutOfMemoryError("Repeating " + len + " bytes String " + count +
+                    " times will produce a String exceeding maximum size.");
+        }
+        final int limit = len * count;
+        final byte[] multiple = new byte[limit];
+        System.arraycopy(value, 0, multiple, 0, len);
+        int copied = len;
+        for (; copied < limit - copied; copied <<= 1) {
+            System.arraycopy(multiple, 0, multiple, copied, copied);
+        }
+        System.arraycopy(multiple, 0, multiple, copied, limit - copied);
+        return new String(multiple, coder);
+    }
+
     ////////////////////////////////////////////////////////////////
 
     /**
@@ -3050,7 +3663,7 @@ public final class String
         return value;
     }
 
-    private boolean isLatin1() {
+    boolean isLatin1() {
         return COMPACT_STRINGS && coder == LATIN1;
     }
 
@@ -3108,4 +3721,54 @@ public final class String
                 "begin " + begin + ", end " + end + ", length " + length);
         }
     }
+
+    /**
+     * Returns the string representation of the {@code codePoint}
+     * argument.
+     *
+     * @param   codePoint a {@code codePoint}.
+     * @return  a string of length {@code 1} or {@code 2} containing
+     *          as its single character the argument {@code codePoint}.
+     * @throws IllegalArgumentException if the specified
+     *          {@code codePoint} is not a {@linkplain Character#isValidCodePoint
+     *          valid Unicode code point}.
+     */
+    static String valueOfCodePoint(int codePoint) {
+        if (COMPACT_STRINGS && StringLatin1.canEncode(codePoint)) {
+            return new String(StringLatin1.toBytes((char)codePoint), LATIN1);
+        } else if (Character.isBmpCodePoint(codePoint)) {
+            return new String(StringUTF16.toBytes((char)codePoint), UTF16);
+        } else if (Character.isSupplementaryCodePoint(codePoint)) {
+            return new String(StringUTF16.toBytesSupplementary(codePoint), UTF16);
+        }
+
+        throw new IllegalArgumentException(
+            format("Not a valid Unicode code point: 0x%X", codePoint));
+    }
+
+    /**
+     * Returns an {@link Optional} containing the nominal descriptor for this
+     * instance, which is the instance itself.
+     *
+     * @return an {@link Optional} describing the {@linkplain String} instance
+     * @since 12
+     */
+    @Override
+    public Optional<String> describeConstable() {
+        return Optional.of(this);
+    }
+
+    /**
+     * Resolves this instance as a {@link ConstantDesc}, the result of which is
+     * the instance itself.
+     *
+     * @param lookup ignored
+     * @return the {@linkplain String} instance
+     * @since 12
+     */
+    @Override
+    public String resolveConstantDesc(MethodHandles.Lookup lookup) {
+        return this;
+    }
+
 }

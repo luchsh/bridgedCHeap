@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,7 +41,7 @@
 #include "runtime/arguments.hpp"
 #include "runtime/extendedPC.hpp"
 #include "runtime/frame.inline.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/mutexLocker.hpp"
@@ -505,7 +505,7 @@ JVM_handle_solaris_signal(int sig, siginfo_t* info, void* ucVoid,
       }
 #endif  // COMPILER2
 
-      else if (sig == SIGSEGV && info->si_code > 0 && !MacroAssembler::needs_explicit_null_check((intptr_t)info->si_addr)) {
+      else if (sig == SIGSEGV && info->si_code > 0 && MacroAssembler::uses_implicit_null_check(info->si_addr)) {
         // Determination of interpreter/vtable stub/compiled code null exception
         stub = SharedRuntime::continuation_for_implicit_exception(thread, pc, SharedRuntime::IMPLICIT_NULL);
       }
@@ -518,17 +518,6 @@ JVM_handle_solaris_signal(int sig, siginfo_t* info, void* ucVoid,
       if (addr != (address)-1) {
         stub = addr;
       }
-    }
-
-    // Check to see if we caught the safepoint code in the
-    // process of write protecting the memory serialization page.
-    // It write enables the page immediately after protecting it
-    // so just return.
-    if ((sig == SIGSEGV) &&
-        os::is_memory_serialize_page(thread, (address)info->si_addr)) {
-      // Block current thread until the memory serialize page permission restored.
-      os::block_on_serialize_page_trap();
-      return true;
     }
   }
 
@@ -666,8 +655,8 @@ void os::print_context(outputStream *st, const void *context) {
   // this at the end, and hope for the best.
   ExtendedPC epc = os::Solaris::ucontext_get_ExtendedPC(uc);
   address pc = epc.pc();
-  st->print_cr("Instructions: (pc=" PTR_FORMAT ")", pc);
-  print_hex_dump(st, pc - 32, pc + 32, sizeof(char));
+  print_instructions(st, pc, sizeof(char));
+  st->cr();
 }
 
 void os::print_register_info(outputStream *st, const void *context) {

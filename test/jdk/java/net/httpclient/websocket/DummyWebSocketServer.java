@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,9 @@
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.StandardSocketOptions;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -42,14 +44,16 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static java.lang.String.format;
 import static java.lang.System.err;
 import static java.nio.charset.StandardCharsets.ISO_8859_1;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
 
@@ -80,19 +84,41 @@ import static java.util.Objects.requireNonNull;
  *     Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
  *     Sec-WebSocket-Protocol: chat
  */
-public final class DummyWebSocketServer implements Closeable {
+public class DummyWebSocketServer implements Closeable {
 
     private final AtomicBoolean started = new AtomicBoolean();
     private final Thread thread;
     private volatile ServerSocketChannel ssc;
     private volatile InetSocketAddress address;
+    private ByteBuffer read = ByteBuffer.allocate(16384);
+    private final CountDownLatch readReady = new CountDownLatch(1);
 
-    public DummyWebSocketServer() {
-        this(defaultMapping());
+    private static class Credentials {
+        private final String name;
+        private final String password;
+        private Credentials(String name, String password) {
+            this.name = name;
+            this.password = password;
+        }
+        public String name() { return name; }
+        public String password() { return password; }
     }
 
-    public DummyWebSocketServer(Function<List<String>, List<String>> mapping) {
+    public DummyWebSocketServer() {
+        this(defaultMapping(), null, null);
+    }
+
+    public DummyWebSocketServer(String username, String password) {
+        this(defaultMapping(), username, password);
+    }
+
+    public DummyWebSocketServer(BiFunction<List<String>,Credentials,List<String>> mapping,
+                                String username,
+                                String password) {
         requireNonNull(mapping);
+        Credentials credentials = username != null ?
+                new Credentials(username, password) : null;
+
         thread = new Thread(() -> {
             try {
                 while (!Thread.currentThread().isInterrupted()) {
@@ -100,30 +126,36 @@ public final class DummyWebSocketServer implements Closeable {
                     SocketChannel channel = ssc.accept();
                     err.println("Accepted: " + channel);
                     try {
+                        channel.setOption(StandardSocketOptions.TCP_NODELAY, true);
                         channel.configureBlocking(true);
-                        StringBuilder request = new StringBuilder();
-                        if (!readRequest(channel, request)) {
-                            throw new IOException("Bad request:" + request);
-                        }
-                        List<String> strings = asList(request.toString().split("\r\n"));
-                        List<String> response = mapping.apply(strings);
-                        writeResponse(channel, response);
-                        // Read until the thread is interrupted or an error occurred
-                        // or the input is shutdown
-                        ByteBuffer b = ByteBuffer.allocate(1024);
-                        while (channel.read(b) != -1) {
-                            b.clear();
+                        while (true) {
+                            StringBuilder request = new StringBuilder();
+                            if (!readRequest(channel, request)) {
+                                throw new IOException("Bad request:[" + request + "]");
+                            }
+                            List<String> strings = asList(request.toString().split("\r\n"));
+                            List<String> response = mapping.apply(strings, credentials);
+                            writeResponse(channel, response);
+
+                            if (response.get(0).startsWith("HTTP/1.1 401")) {
+                                err.println("Sent 401 Authentication response " + channel);
+                                continue;
+                            } else {
+                                serve(channel);
+                                break;
+                            }
                         }
                     } catch (IOException e) {
                         err.println("Error in connection: " + channel + ", " + e);
                     } finally {
                         err.println("Closed: " + channel);
                         close(channel);
+                        readReady.countDown();
                     }
                 }
             } catch (ClosedByInterruptException ignored) {
-            } catch (IOException e) {
-                err.println(e);
+            } catch (Exception e) {
+                e.printStackTrace(err);
             } finally {
                 close(ssc);
                 err.println("Stopped at: " + getURI());
@@ -131,6 +163,58 @@ public final class DummyWebSocketServer implements Closeable {
         });
         thread.setName("DummyWebSocketServer");
         thread.setDaemon(false);
+    }
+
+    protected void read(SocketChannel ch) throws IOException {
+        // Read until the thread is interrupted or an error occurred
+        // or the input is shutdown
+        ByteBuffer b = ByteBuffer.allocate(65536);
+        while (ch.read(b) != -1) {
+            b.flip();
+            if (read.remaining() < b.remaining()) {
+                int required = read.capacity() - read.remaining() + b.remaining();
+                int log2required = 32 - Integer.numberOfLeadingZeros(required - 1);
+                ByteBuffer newBuffer = ByteBuffer.allocate(1 << log2required);
+                newBuffer.put(read.flip());
+                read = newBuffer;
+            }
+            read.put(b);
+            b.clear();
+        }
+    }
+
+    protected void write(SocketChannel ch) throws IOException { }
+
+    protected final void serve(SocketChannel channel)
+            throws InterruptedException
+    {
+        Thread reader = new Thread(() -> {
+            try {
+                read(channel);
+            } catch (IOException ignored) { }
+        });
+        Thread writer = new Thread(() -> {
+            try {
+                write(channel);
+            } catch (IOException ignored) { }
+        });
+        reader.start();
+        writer.start();
+        try {
+            reader.join();
+        } finally {
+            reader.interrupt();
+            try {
+                writer.join();
+            } finally {
+                writer.interrupt();
+            }
+        }
+    }
+
+    public ByteBuffer read() throws InterruptedException {
+        readReady.await();
+        return read.duplicate().asReadOnlyBuffer().flip();
     }
 
     public void open() throws IOException {
@@ -141,11 +225,12 @@ public final class DummyWebSocketServer implements Closeable {
         ssc = ServerSocketChannel.open();
         try {
             ssc.configureBlocking(true);
-            ssc.bind(new InetSocketAddress("localhost", 0));
+            ssc.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
             address = (InetSocketAddress) ssc.getLocalAddress();
             thread.start();
         } catch (IOException e) {
             close(ssc);
+            throw e;
         }
         err.println("Started at: " + getURI());
     }
@@ -161,7 +246,7 @@ public final class DummyWebSocketServer implements Closeable {
         if (!started.get()) {
             throw new IllegalStateException("Not yet started");
         }
-        return URI.create("ws://" + address.getHostName() + ":" + address.getPort());
+        return URI.create("ws://localhost:" + address.getPort());
     }
 
     private boolean readRequest(SocketChannel channel, StringBuilder request)
@@ -201,8 +286,8 @@ public final class DummyWebSocketServer implements Closeable {
         }
     }
 
-    private static Function<List<String>, List<String>> defaultMapping() {
-        return request -> {
+    private static BiFunction<List<String>,Credentials,List<String>> defaultMapping() {
+        return (request, credentials) -> {
             List<String> response = new LinkedList<>();
             Iterator<String> iterator = request.iterator();
             if (!iterator.hasNext()) {
@@ -254,14 +339,57 @@ public final class DummyWebSocketServer implements Closeable {
             sha1.update(x.getBytes(ISO_8859_1));
             String v = Base64.getEncoder().encodeToString(sha1.digest());
             response.add("Sec-WebSocket-Accept: " + v);
+
+            // check authorization credentials, if required by the server
+            if (credentials != null && !authorized(credentials, requestHeaders)) {
+                response.clear();
+                response.add("HTTP/1.1 401 Unauthorized");
+                response.add("Content-Length: 0");
+                response.add("WWW-Authenticate: Basic realm=\"dummy server realm\"");
+            }
+
             return response;
         };
+    }
+
+    // Checks credentials in the request against those allowable by the server.
+    private static boolean authorized(Credentials credentials,
+                                      Map<String,List<String>> requestHeaders) {
+        List<String> authorization = requestHeaders.get("Authorization");
+        if (authorization == null)
+            return false;
+
+        if (authorization.size() != 1) {
+            throw new IllegalStateException("Authorization unexpected count:" + authorization);
+        }
+        String header = authorization.get(0);
+        if (!header.startsWith("Basic "))
+            throw new IllegalStateException("Authorization not Basic: " + header);
+
+        header = header.substring("Basic ".length());
+        String values = new String(Base64.getDecoder().decode(header), UTF_8);
+        int sep = values.indexOf(':');
+        if (sep < 1) {
+            throw new IllegalStateException("Authorization not colon: " +  values);
+        }
+        String name = values.substring(0, sep);
+        String password = values.substring(sep + 1);
+
+        if (name.equals(credentials.name()) && password.equals(credentials.password()))
+            return true;
+
+        return false;
     }
 
     protected static String expectHeader(Map<String, List<String>> headers,
                                          String name,
                                          String value) {
         List<String> v = headers.get(name);
+        if (v == null) {
+            throw new IllegalStateException(
+                    format("Expected '%s' header, not present in %s",
+                           name, headers));
+        }
         if (!v.contains(value)) {
             throw new IllegalStateException(
                     format("Expected '%s: %s', actual: '%s: %s'",

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -50,7 +50,7 @@ import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.swing.plaf.FontUIResource;
-import sun.awt.AppContext;
+
 import sun.awt.FontConfiguration;
 import sun.awt.SunToolkit;
 import sun.awt.util.ThreadGroupUtils;
@@ -132,10 +132,9 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
      public static final int FONTFORMAT_NONE = -1;
      public static final int FONTFORMAT_TRUETYPE = 0;
      public static final int FONTFORMAT_TYPE1 = 1;
-     public static final int FONTFORMAT_T2K = 2;
-     public static final int FONTFORMAT_TTC = 3;
-     public static final int FONTFORMAT_COMPOSITE = 4;
-     public static final int FONTFORMAT_NATIVE = 5;
+     public static final int FONTFORMAT_TTC = 2;
+     public static final int FONTFORMAT_COMPOSITE = 3;
+     public static final int FONTFORMAT_NATIVE = 4;
 
      /* Pool of 20 font file channels chosen because some UTF-8 locale
       * composite fonts can use up to 16 platform fonts (including the
@@ -146,7 +145,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
       */
      // MACOSX begin -- need to access these in subclass
      protected static final int CHANNELPOOLSIZE = 20;
-     protected FileFont fontFileCache[] = new FileFont[CHANNELPOOLSIZE];
+     protected FileFont[] fontFileCache = new FileFont[CHANNELPOOLSIZE];
      // MACOSX end
      private int lastPoolIndex = 0;
 
@@ -188,12 +187,9 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
     private boolean loaded1dot0Fonts = false;
     boolean loadedAllFonts = false;
     boolean loadedAllFontFiles = false;
-    HashMap<String,String> jreFontMap;
-    HashSet<String> jreLucidaFontFiles;
     String[] jreOtherFontFiles;
     boolean noOtherJREFontFiles = false; // initial assumption.
 
-    public static final String lucidaFontName = "Lucida Sans Regular";
     public static String jreLibDirName;
     public static String jreFontDirName;
     private static HashSet<String> missingFontFiles = null;
@@ -260,77 +256,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         return t1Filter;
     }
 
-    @Override
-    public boolean usingPerAppContextComposites() {
-        return _usingPerAppContextComposites;
-    }
-
-    private void initJREFontMap() {
-
-        /* Key is familyname+style value as an int.
-         * Value is filename containing the font.
-         * If no mapping exists, it means there is no font file for the style
-         * If the mapping exists but the file doesn't exist in the deferred
-         * list then it means its not installed.
-         * This looks like a lot of code and strings but if it saves even
-         * a single file being opened at JRE start-up there's a big payoff.
-         * Lucida Sans is probably the only important case as the others
-         * are rarely used. Consider removing the other mappings if there's
-         * no evidence they are useful in practice.
-         */
-        jreFontMap = new HashMap<String,String>();
-        jreLucidaFontFiles = new HashSet<String>();
-        if (isOpenJDK()) {
-            return;
-        }
-        /* Lucida Sans Family */
-        jreFontMap.put("lucida sans0",   "LucidaSansRegular.ttf");
-        jreFontMap.put("lucida sans1",   "LucidaSansDemiBold.ttf");
-        /* Lucida Sans full names (map Bold and DemiBold to same file) */
-        jreFontMap.put("lucida sans regular0", "LucidaSansRegular.ttf");
-        jreFontMap.put("lucida sans regular1", "LucidaSansDemiBold.ttf");
-        jreFontMap.put("lucida sans bold1", "LucidaSansDemiBold.ttf");
-        jreFontMap.put("lucida sans demibold1", "LucidaSansDemiBold.ttf");
-
-        /* Lucida Sans Typewriter Family */
-        jreFontMap.put("lucida sans typewriter0",
-                       "LucidaTypewriterRegular.ttf");
-        jreFontMap.put("lucida sans typewriter1", "LucidaTypewriterBold.ttf");
-        /* Typewriter full names (map Bold and DemiBold to same file) */
-        jreFontMap.put("lucida sans typewriter regular0",
-                       "LucidaTypewriter.ttf");
-        jreFontMap.put("lucida sans typewriter regular1",
-                       "LucidaTypewriterBold.ttf");
-        jreFontMap.put("lucida sans typewriter bold1",
-                       "LucidaTypewriterBold.ttf");
-        jreFontMap.put("lucida sans typewriter demibold1",
-                       "LucidaTypewriterBold.ttf");
-
-        /* Lucida Bright Family */
-        jreFontMap.put("lucida bright0", "LucidaBrightRegular.ttf");
-        jreFontMap.put("lucida bright1", "LucidaBrightDemiBold.ttf");
-        jreFontMap.put("lucida bright2", "LucidaBrightItalic.ttf");
-        jreFontMap.put("lucida bright3", "LucidaBrightDemiItalic.ttf");
-        /* Lucida Bright full names (map Bold and DemiBold to same file) */
-        jreFontMap.put("lucida bright regular0", "LucidaBrightRegular.ttf");
-        jreFontMap.put("lucida bright regular1", "LucidaBrightDemiBold.ttf");
-        jreFontMap.put("lucida bright regular2", "LucidaBrightItalic.ttf");
-        jreFontMap.put("lucida bright regular3", "LucidaBrightDemiItalic.ttf");
-        jreFontMap.put("lucida bright bold1", "LucidaBrightDemiBold.ttf");
-        jreFontMap.put("lucida bright bold3", "LucidaBrightDemiItalic.ttf");
-        jreFontMap.put("lucida bright demibold1", "LucidaBrightDemiBold.ttf");
-        jreFontMap.put("lucida bright demibold3","LucidaBrightDemiItalic.ttf");
-        jreFontMap.put("lucida bright italic2", "LucidaBrightItalic.ttf");
-        jreFontMap.put("lucida bright italic3", "LucidaBrightDemiItalic.ttf");
-        jreFontMap.put("lucida bright bold italic3",
-                       "LucidaBrightDemiItalic.ttf");
-        jreFontMap.put("lucida bright demibold italic3",
-                       "LucidaBrightDemiItalic.ttf");
-        for (String ffile : jreFontMap.values()) {
-            jreLucidaFontFiles.add(ffile);
-        }
-    }
-
     static {
 
         java.security.AccessController.doPrivileged(
@@ -354,8 +279,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
                jreLibDirName =
                    System.getProperty("java.home","") + File.separator + "lib";
                jreFontDirName = jreLibDirName + File.separator + "fonts";
-               File lucidaFile =
-                   new File(jreFontDirName + File.separator + FontUtilities.LUCIDA_FILE_NAME);
 
                return null;
            }
@@ -381,7 +304,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
     @SuppressWarnings("unchecked")
     protected SunFontManager() {
 
-        initJREFontMap();
         java.security.AccessController.doPrivileged(
                 new java.security.PrivilegedAction<Object>() {
                     public Object run() {
@@ -425,7 +347,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
                          * handle two fonts of the same name, so the JRE one
                          * must be the first one registered. Pass "true" to
                          * registerFonts method as on-screen these JRE fonts
-                         * always go through the T2K rasteriser.
+                         * always go through the JDK rasteriser.
                          */
                         if (FontUtilities.isLinux) {
                             /* Linux font configuration uses these fonts */
@@ -438,11 +360,10 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
                          * that might be specified.
                          */
                         fontConfig = createFontConfiguration();
-                        if (isOpenJDK()) {
-                            String[] fontInfo = getDefaultPlatformFont();
-                            defaultFontName = fontInfo[0];
-                            defaultFontFileName = fontInfo[1];
-                        }
+
+                        String[] fontInfo = getDefaultPlatformFont();
+                        defaultFontName = fontInfo[0];
+                        defaultFontFileName = fontInfo[1];
 
                         String extraFontPath = fontConfig.getExtraFontPath();
 
@@ -724,7 +645,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
 
         String fontName = f.fullName;
         String familyName = f.familyName;
-        if (fontName == null || "".equals(fontName)) {
+        if (fontName == null || fontName.isEmpty()) {
             return null;
         }
         if (compositeFonts.containsKey(fontName)) {
@@ -919,47 +840,20 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         return deferredFontFiles.containsKey(fileName);
     }
 
-    /* We keep a map of the files which contain the Lucida fonts so we
-     * don't need to search for them.
-     * But since we know what fonts these files contain, we can also avoid
-     * opening them to look for a font name we don't recognise - see
-     * findDeferredFont().
-     * For typical cases where the font isn't a JRE one the overhead is
-     * this method call, HashMap.get() and null reference test, then
-     * a boolean test of noOtherJREFontFiles.
-     */
-    public
-    /*private*/ PhysicalFont findJREDeferredFont(String name, int style) {
-
-        PhysicalFont physicalFont;
-        String nameAndStyle = name.toLowerCase(Locale.ENGLISH) + style;
-        String fileName = jreFontMap.get(nameAndStyle);
-        if (fileName != null) {
-            fileName = jreFontDirName + File.separator + fileName;
-            if (deferredFontFiles.get(fileName) != null) {
-                physicalFont = initialiseDeferredFont(fileName);
-                if (physicalFont != null &&
-                    (physicalFont.getFontName(null).equalsIgnoreCase(name) ||
-                     physicalFont.getFamilyName(null).equalsIgnoreCase(name))
-                    && physicalFont.style == style) {
-                    return physicalFont;
-                }
-            }
-        }
+    PhysicalFont findJREDeferredFont(String name, int style) {
 
         /* Iterate over the deferred font files looking for any in the
          * jre directory that we didn't recognise, open each of these.
          * In almost all installations this will quickly fall through
-         * because only the Lucidas will be present and jreOtherFontFiles
-         * will be empty.
+         * because jreOtherFontFiles will be empty.
          * noOtherJREFontFiles is used so we can skip this block as soon
-         * as its determined that its not needed - almost always after the
+         * as its determined that it's not needed - almost always after the
          * very first time through.
          */
         if (noOtherJREFontFiles) {
             return null;
         }
-        synchronized (jreLucidaFontFiles) {
+        synchronized (jreFontDirName) {
             if (jreOtherFontFiles == null) {
                 HashSet<String> otherFontFiles = new HashSet<String>();
                 for (String deferredFile : deferredFontFiles.keySet()) {
@@ -969,9 +863,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
                     /* skip names which aren't absolute, aren't in the JRE
                      * directory, or are known Lucida fonts.
                      */
-                    if (dir == null ||
-                        !dir.equals(jreFontDirName) ||
-                        jreLucidaFontFiles.contains(fname)) {
+                    if (dir == null || !dir.equals(jreFontDirName)) {
                         continue;
                     }
                     otherFontFiles.add(deferredFile);
@@ -983,12 +875,12 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
             }
 
             for (int i=0; i<jreOtherFontFiles.length;i++) {
-                fileName = jreOtherFontFiles[i];
+                String fileName = jreOtherFontFiles[i];
                 if (fileName == null) {
                     continue;
                 }
                 jreOtherFontFiles[i] = null;
-                physicalFont = initialiseDeferredFont(fileName);
+                PhysicalFont physicalFont = initialiseDeferredFont(fileName);
                 if (physicalFont != null &&
                     (physicalFont.getFontName(null).equalsIgnoreCase(name) ||
                      physicalFont.getFamilyName(null).equalsIgnoreCase(name))
@@ -1001,17 +893,8 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         return null;
     }
 
-    /* This skips JRE installed fonts. */
     private PhysicalFont findOtherDeferredFont(String name, int style) {
         for (String fileName : deferredFontFiles.keySet()) {
-            File file = new File(fileName);
-            String dir = file.getParent();
-            String fname = file.getName();
-            if (dir != null &&
-                dir.equals(jreFontDirName) &&
-                jreLucidaFontFiles.contains(fname)) {
-                continue;
-            }
             PhysicalFont physicalFont = initialiseDeferredFont(fileName);
             if (physicalFont != null &&
                 (physicalFont.getFontName(null).equalsIgnoreCase(name) ||
@@ -1024,7 +907,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
     }
 
     private PhysicalFont findDeferredFont(String name, int style) {
-
         PhysicalFont physicalFont = findJREDeferredFont(name, style);
         if (physicalFont != null) {
             return physicalFont;
@@ -1196,11 +1078,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
              * misconfiguration and this is probably a reasonable substitution.
              */
             defaultPhysicalFont = (PhysicalFont)
-                findFont2D("Lucida Sans Regular", Font.PLAIN, NO_FALLBACK);
-            if (defaultPhysicalFont == null) {
-                defaultPhysicalFont = (PhysicalFont)
-                    findFont2D("Arial", Font.PLAIN, NO_FALLBACK);
-            }
+                findFont2D(getDefaultFontFaceName(), Font.PLAIN, NO_FALLBACK);
             if (defaultPhysicalFont == null) {
                 /* Because of the findFont2D call above, if we reach here, we
                  * know all fonts have already been loaded, just accept any
@@ -2053,7 +1931,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
     public Font2D findFont2D(String name, int style, int fallback) {
         String lowerCaseName = name.toLowerCase(Locale.ENGLISH);
         String mapName = lowerCaseName + dotStyleStr(style);
-        Font2D font;
 
         /* If preferLocaleFonts() or preferProportionalFonts() has been
          * called we may be using an alternate set of composite fonts in this
@@ -2061,19 +1938,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
          * this is so, and gives access to the alternate composite for the
          * name.
          */
-        if (_usingPerAppContextComposites) {
-            @SuppressWarnings("unchecked")
-            ConcurrentHashMap<String, Font2D> altNameCache =
-                (ConcurrentHashMap<String, Font2D>)
-                AppContext.getAppContext().get(CompositeFont.class);
-            if (altNameCache != null) {
-                font = altNameCache.get(mapName);
-            } else {
-                font = null;
-            }
-        } else {
-            font = fontNameCache.get(mapName);
-        }
+        Font2D font = fontNameCache.get(mapName);
         if (font != null) {
             return font;
         }
@@ -2114,6 +1979,9 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
             font = family.getFontWithExactStyleMatch(style);
             if (font == null) {
                 font = findDeferredFont(name, style);
+            }
+            if (font == null) {
+                font = findFontFromPlatform(lowerCaseName, style);
             }
             if (font == null) {
                 font = family.getFont(style);
@@ -2197,9 +2065,9 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
                 fontNameCache.put(mapName, font);
                 return font;
             }
-
-            /* Don't want Windows to return a Lucida Sans font from
-             * C:\Windows\Fonts
+            /* Don't want Windows to return a font from C:\Windows\Fonts
+             * if someone has installed a font with the same name
+             * in the JRE.
              */
             if (deferredFontFiles.size() > 0) {
                 font = findJREDeferredFont(lowerCaseName, style);
@@ -2278,25 +2146,9 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
          * cache for these.
          */
 
-        if (fontsAreRegistered || fontsAreRegisteredPerAppContext) {
-            Hashtable<String, FontFamily> familyTable = null;
-            Hashtable<String, Font2D> nameTable;
-
-            if (fontsAreRegistered) {
-                familyTable = createdByFamilyName;
-                nameTable = createdByFullName;
-            } else {
-                AppContext appContext = AppContext.getAppContext();
-                @SuppressWarnings("unchecked")
-                Hashtable<String,FontFamily> tmp1 =
-                    (Hashtable<String,FontFamily>)appContext.get(regFamilyKey);
-                familyTable = tmp1;
-
-                @SuppressWarnings("unchecked")
-                Hashtable<String, Font2D> tmp2 =
-                    (Hashtable<String,Font2D>)appContext.get(regFullNameKey);
-                nameTable = tmp2;
-            }
+        if (fontsAreRegistered) {
+            Hashtable<String, FontFamily> familyTable = createdByFamilyName;
+            Hashtable<String, Font2D> nameTable = createdByFullName;
 
             family = familyTable.get(lowerCaseName);
             if (family != null) {
@@ -2801,9 +2653,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
      * Calling the methods below is "heavyweight" but it is expected that
      * these methods will be called very rarely.
      *
-     * If _usingPerAppContextComposites is true, we are in "applet"
-     * (eg browser) environment and at least one context has selected
-     * an alternate composite font behaviour.
      * If _usingAlternateComposites is true, we are not in an "applet"
      * environment and the (single) application has selected
      * an alternate composite font behaviour.
@@ -2815,21 +2664,13 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
      * but that may have to wait. The results should be correct, just not
      * optimal.
      */
-    private static final Object altJAFontKey       = new Object();
-    private static final Object localeFontKey       = new Object();
-    private static final Object proportionalFontKey = new Object();
-    private boolean _usingPerAppContextComposites = false;
     private boolean _usingAlternateComposites = false;
 
-    /* These values are used only if we are running as a standalone
-     * application, as determined by maybeMultiAppContext();
-     */
     private static boolean gAltJAFont = false;
     private boolean gLocalePref = false;
     private boolean gPropPref = false;
 
-    /* This method doesn't check if alternates are selected in this app
-     * context. Its used by the FontMetrics caching code which in such
+    /* Its used by the FontMetrics caching code which in such
      * a case cannot retrieve a cached metrics solely on the basis of
      * the Font.equals() method since it needs to also check if the Font2D
      * is the same.
@@ -2841,26 +2682,8 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
      * logical font definitions we may need to revisit this if GTK reports
      * combined metrics instead. For now though this test can be simple.
      */
-    public boolean maybeUsingAlternateCompositeFonts() {
-       return _usingAlternateComposites || _usingPerAppContextComposites;
-    }
-
     public boolean usingAlternateCompositeFonts() {
-        return (_usingAlternateComposites ||
-                (_usingPerAppContextComposites &&
-                AppContext.getAppContext().get(CompositeFont.class) != null));
-    }
-
-    private static boolean maybeMultiAppContext() {
-        Boolean appletSM = (Boolean)
-            java.security.AccessController.doPrivileged(
-                new java.security.PrivilegedAction<Object>() {
-                        public Object run() {
-                            SecurityManager sm = System.getSecurityManager();
-                            return sm instanceof sun.applet.AppletSecurity;
-                        }
-                    });
-        return appletSM.booleanValue();
+        return _usingAlternateComposites;
     }
 
     /* Modifies the behaviour of a subsequent call to preferLocaleFonts()
@@ -2875,22 +2698,11 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         if (!FontUtilities.isWindows) {
             return;
         }
-
-        if (!maybeMultiAppContext()) {
-            gAltJAFont = true;
-        } else {
-            AppContext appContext = AppContext.getAppContext();
-            appContext.put(altJAFontKey, altJAFontKey);
-        }
+        gAltJAFont = true;
     }
 
     public boolean usingAlternateFontforJALocales() {
-        if (!maybeMultiAppContext()) {
-            return gAltJAFont;
-        } else {
-            AppContext appContext = AppContext.getAppContext();
-            return appContext.get(altJAFontKey) == altJAFontKey;
-        }
+        return gAltJAFont;
     }
 
     public synchronized void preferLocaleFonts() {
@@ -2901,29 +2713,12 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         if (!FontConfiguration.willReorderForStartupLocale()) {
             return;
         }
-
-        if (!maybeMultiAppContext()) {
-            if (gLocalePref == true) {
-                return;
-            }
-            gLocalePref = true;
-            createCompositeFonts(fontNameCache, gLocalePref, gPropPref);
-            _usingAlternateComposites = true;
-        } else {
-            AppContext appContext = AppContext.getAppContext();
-            if (appContext.get(localeFontKey) == localeFontKey) {
-                return;
-            }
-            appContext.put(localeFontKey, localeFontKey);
-            boolean acPropPref =
-                appContext.get(proportionalFontKey) == proportionalFontKey;
-            ConcurrentHashMap<String, Font2D>
-                altNameCache = new ConcurrentHashMap<String, Font2D> ();
-            /* If there is an existing hashtable, we can drop it. */
-            appContext.put(CompositeFont.class, altNameCache);
-            _usingPerAppContextComposites = true;
-            createCompositeFonts(altNameCache, true, acPropPref);
+        if (gLocalePref == true) {
+            return;
         }
+        gLocalePref = true;
+        createCompositeFonts(fontNameCache, gLocalePref, gPropPref);
+        _usingAlternateComposites = true;
     }
 
     public synchronized void preferProportionalFonts() {
@@ -2937,29 +2732,12 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         if (!FontConfiguration.hasMonoToPropMap()) {
             return;
         }
-
-        if (!maybeMultiAppContext()) {
-            if (gPropPref == true) {
-                return;
-            }
-            gPropPref = true;
-            createCompositeFonts(fontNameCache, gLocalePref, gPropPref);
-            _usingAlternateComposites = true;
-        } else {
-            AppContext appContext = AppContext.getAppContext();
-            if (appContext.get(proportionalFontKey) == proportionalFontKey) {
-                return;
-            }
-            appContext.put(proportionalFontKey, proportionalFontKey);
-            boolean acLocalePref =
-                appContext.get(localeFontKey) == localeFontKey;
-            ConcurrentHashMap<String, Font2D>
-                altNameCache = new ConcurrentHashMap<String, Font2D> ();
-            /* If there is an existing hashtable, we can drop it. */
-            appContext.put(CompositeFont.class, altNameCache);
-            _usingPerAppContextComposites = true;
-            createCompositeFonts(altNameCache, acLocalePref, true);
+        if (gPropPref == true) {
+            return;
         }
+        gPropPref = true;
+        createCompositeFonts(fontNameCache, gLocalePref, gPropPref);
+        _usingAlternateComposites = true;
     }
 
     private static HashSet<String> installedNames = null;
@@ -2982,13 +2760,10 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         return installedNames;
     }
 
-    /* Keys are used to lookup per-AppContext Hashtables */
-    private static final Object regFamilyKey  = new Object();
-    private static final Object regFullNameKey = new Object();
+    private static final Object regFamilyLock  = new Object();
     private Hashtable<String,FontFamily> createdByFamilyName;
     private Hashtable<String,Font2D>     createdByFullName;
     private boolean fontsAreRegistered = false;
-    private boolean fontsAreRegisteredPerAppContext = false;
 
     public boolean registerFont(Font font) {
         /* This method should not be called with "null".
@@ -2999,7 +2774,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         }
 
         /* Initialise these objects only once we start to use this API */
-        synchronized (regFamilyKey) {
+        synchronized (regFamilyLock) {
             if (createdByFamilyName == null) {
                 createdByFamilyName = new Hashtable<String,FontFamily>();
                 createdByFullName = new Hashtable<String,Font2D>();
@@ -3036,31 +2811,10 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         }
 
         /* Checks passed, now register the font */
-        Hashtable<String,FontFamily> familyTable;
-        Hashtable<String,Font2D> fullNameTable;
-        if (!maybeMultiAppContext()) {
-            familyTable = createdByFamilyName;
-            fullNameTable = createdByFullName;
-            fontsAreRegistered = true;
-        } else {
-            AppContext appContext = AppContext.getAppContext();
-            @SuppressWarnings("unchecked")
-            Hashtable<String,FontFamily> tmp1 =
-                (Hashtable<String,FontFamily>)appContext.get(regFamilyKey);
-            familyTable = tmp1;
-            @SuppressWarnings("unchecked")
-            Hashtable<String,Font2D> tmp2 =
-                (Hashtable<String,Font2D>)appContext.get(regFullNameKey);
-            fullNameTable = tmp2;
+        Hashtable<String, FontFamily> familyTable = createdByFamilyName;
+        Hashtable<String, Font2D> fullNameTable = createdByFullName;
+        fontsAreRegistered = true;
 
-            if (familyTable == null) {
-                familyTable = new Hashtable<String,FontFamily>();
-                fullNameTable = new Hashtable<String,Font2D>();
-                appContext.put(regFamilyKey, familyTable);
-                appContext.put(regFullNameKey, fullNameTable);
-            }
-            fontsAreRegisteredPerAppContext = true;
-        }
         /* Create the FontFamily and add font to the tables */
         Font2D font2D = FontUtilities.getFont2D(font);
         int style = font2D.getStyle();
@@ -3106,12 +2860,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         Hashtable<String,FontFamily> familyTable;
         if (fontsAreRegistered) {
             familyTable = createdByFamilyName;
-        } else if (fontsAreRegisteredPerAppContext) {
-            AppContext appContext = AppContext.getAppContext();
-            @SuppressWarnings("unchecked")
-            Hashtable<String,FontFamily> tmp =
-                (Hashtable<String,FontFamily>)appContext.get(regFamilyKey);
-            familyTable = tmp;
         } else {
             return null;
         }
@@ -3136,12 +2884,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         Hashtable<String,Font2D> nameTable;
         if (fontsAreRegistered) {
             nameTable = createdByFullName;
-        } else if (fontsAreRegisteredPerAppContext) {
-            AppContext appContext = AppContext.getAppContext();
-            @SuppressWarnings("unchecked")
-            Hashtable<String,Font2D> tmp =
-                (Hashtable<String,Font2D>)appContext.get(regFullNameKey);
-            nameTable = tmp;
         } else {
             return null;
         }
@@ -3285,10 +3027,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
         return fontPath;
     }
 
-    public static boolean isOpenJDK() {
-        return FontUtilities.isOpenJDK;
-    }
-
     protected void loadFonts() {
         if (discoveredAllFonts) {
             return;
@@ -3379,22 +3117,7 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
      * or relative as needed by registerFontFile.
      */
     public synchronized String getDefaultFontFile() {
-        if (defaultFontFileName == null) {
-            initDefaultFonts();
-        }
         return defaultFontFileName;
-    }
-
-    private void initDefaultFonts() {
-        if (!isOpenJDK()) {
-            defaultFontName = lucidaFontName;
-            if (useAbsoluteFontFileNames()) {
-                defaultFontFileName =
-                    jreFontDirName + File.separator + FontUtilities.LUCIDA_FILE_NAME;
-            } else {
-                defaultFontFileName = FontUtilities.LUCIDA_FILE_NAME;
-            }
-        }
     }
 
     /**
@@ -3420,9 +3143,6 @@ public abstract class SunFontManager implements FontSupport, FontManagerForSGE {
      * for this platform.
      */
     public synchronized String getDefaultFontFaceName() {
-        if (defaultFontName == null) {
-            initDefaultFonts();
-        }
         return defaultFontName;
     }
 

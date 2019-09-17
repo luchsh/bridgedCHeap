@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes;
 
 import static org.graalvm.compiler.debug.GraalError.shouldNotReachHere;
@@ -37,9 +39,9 @@ import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
-import org.graalvm.collections.EconomicMap;
-import org.graalvm.collections.EconomicSet;
-import org.graalvm.collections.Equivalence;
+import jdk.internal.vm.compiler.collections.EconomicMap;
+import jdk.internal.vm.compiler.collections.EconomicSet;
+import jdk.internal.vm.compiler.collections.Equivalence;
 import org.graalvm.compiler.core.common.Fields;
 import org.graalvm.compiler.core.common.PermanentBailoutException;
 import org.graalvm.compiler.core.common.util.TypeReader;
@@ -130,6 +132,7 @@ public class GraphDecoder {
                         nodeStartOffsets[i] = encodedGraph.getStartOffset() - reader.getUVInt();
                     }
                     encodedGraph.nodeStartOffsets = nodeStartOffsets;
+                    graph.setGuardsStage((StructuredGraph.GuardsStage) readObject(this));
                 }
             } else {
                 reader = null;
@@ -146,6 +149,15 @@ public class GraphDecoder {
         public boolean isInlinedMethod() {
             return false;
         }
+
+        public NodeSourcePosition getCallerBytecodePosition() {
+            return getCallerBytecodePosition(null);
+        }
+
+        public NodeSourcePosition getCallerBytecodePosition(NodeSourcePosition position) {
+            return position;
+        }
+
     }
 
     /** Decoding state maintained for each loop in the encoded graph. */
@@ -866,33 +878,37 @@ public class GraphDecoder {
                 registerNode(outerScope, proxyOrderId, phiInput, true, false);
                 replacement = phiInput;
 
-            } else if (!merge.isPhiAtMerge(existing)) {
-                /* Now we have two different values, so we need to create a phi node. */
-                PhiNode phi;
-                if (proxy instanceof ValueProxyNode) {
-                    phi = graph.addWithoutUnique(new ValuePhiNode(proxy.stamp(NodeView.DEFAULT), merge));
-                } else if (proxy instanceof GuardProxyNode) {
-                    phi = graph.addWithoutUnique(new GuardPhiNode(merge));
-                } else {
-                    throw GraalError.shouldNotReachHere();
-                }
-                /* Add the inputs from all previous exits. */
-                for (int j = 0; j < merge.phiPredecessorCount() - 1; j++) {
-                    phi.addInput(existing);
-                }
-                /* Add the input from this exit. */
-                phi.addInput(phiInput);
-                registerNode(outerScope, proxyOrderId, phi, true, false);
-                replacement = phi;
-                phiCreated = true;
-
             } else {
-                /* Phi node has been created before, so just add the new input. */
-                PhiNode phi = (PhiNode) existing;
-                phi.addInput(phiInput);
-                replacement = phi;
-            }
+                // Fortify: Suppress Null Dereference false positive
+                assert merge != null;
 
+                if (!merge.isPhiAtMerge(existing)) {
+                    /* Now we have two different values, so we need to create a phi node. */
+                    PhiNode phi;
+                    if (proxy instanceof ValueProxyNode) {
+                        phi = graph.addWithoutUnique(new ValuePhiNode(proxy.stamp(NodeView.DEFAULT), merge));
+                    } else if (proxy instanceof GuardProxyNode) {
+                        phi = graph.addWithoutUnique(new GuardPhiNode(merge));
+                    } else {
+                        throw GraalError.shouldNotReachHere();
+                    }
+                    /* Add the inputs from all previous exits. */
+                    for (int j = 0; j < merge.phiPredecessorCount() - 1; j++) {
+                        phi.addInput(existing);
+                    }
+                    /* Add the input from this exit. */
+                    phi.addInput(phiInput);
+                    registerNode(outerScope, proxyOrderId, phi, true, false);
+                    replacement = phi;
+                    phiCreated = true;
+
+                } else {
+                    /* Phi node has been created before, so just add the new input. */
+                    PhiNode phi = (PhiNode) existing;
+                    phi.addInput(phiInput);
+                    replacement = phi;
+                }
+            }
             proxy.replaceAtUsagesAndDelete(replacement);
         }
 
@@ -1001,7 +1017,7 @@ public class GraphDecoder {
     }
 
     protected void readProperties(MethodScope methodScope, Node node) {
-        node.setNodeSourcePosition((NodeSourcePosition) readObject(methodScope));
+        NodeSourcePosition position = (NodeSourcePosition) readObject(methodScope);
         Fields fields = node.getNodeClass().getData();
         for (int pos = 0; pos < fields.getCount(); pos++) {
             if (fields.getType(pos).isPrimitive()) {
@@ -1010,6 +1026,13 @@ public class GraphDecoder {
             } else {
                 Object value = readObject(methodScope);
                 fields.putObject(node, pos, value);
+            }
+        }
+        if (graph.trackNodeSourcePosition() && position != null) {
+            NodeSourcePosition callerBytecodePosition = methodScope.getCallerBytecodePosition(position);
+            node.setNodeSourcePosition(callerBytecodePosition);
+            if (node instanceof DeoptimizingGuard) {
+                ((DeoptimizingGuard) node).addCallerToNoDeoptSuccessorPosition(callerBytecodePosition.getCaller());
             }
         }
     }
@@ -1252,7 +1275,11 @@ public class GraphDecoder {
         long readerByteIndex = methodScope.reader.getByteIndex();
         methodScope.reader.setByteIndex(methodScope.encodedGraph.nodeStartOffsets[nodeOrderId]);
         NodeClass<?> nodeClass = methodScope.encodedGraph.getNodeClasses()[methodScope.reader.getUVInt()];
-        node = (FixedNode) graph.add(nodeClass.allocateInstance());
+        Node stubNode = nodeClass.allocateInstance();
+        if (graph.trackNodeSourcePosition()) {
+            stubNode.setNodeSourcePosition(NodeSourcePosition.placeholder(graph.method()));
+        }
+        node = (FixedNode) graph.add(stubNode);
         /* Properties and edges are not filled yet, the node remains uninitialized. */
         methodScope.reader.setByteIndex(readerByteIndex);
 
@@ -1300,7 +1327,7 @@ public class GraphDecoder {
     }
 
     protected Object readObject(MethodScope methodScope) {
-        return methodScope.encodedGraph.getObjects()[methodScope.reader.getUVInt()];
+        return methodScope.encodedGraph.getObject(methodScope.reader.getUVInt());
     }
 
     /**
@@ -1379,6 +1406,15 @@ class LoopDetector implements Runnable {
     public void run() {
         DebugContext debug = graph.getDebug();
         debug.dump(DebugContext.DETAILED_LEVEL, graph, "Before loop detection");
+
+        if (methodScope.loopExplosionHead == null) {
+            /*
+             * The to-be-exploded loop was not reached during partial evaluation (e.g., because
+             * there was a deoptimization beforehand), or the method might not even contain a loop.
+             * This is an uncommon case, but not an error.
+             */
+            return;
+        }
 
         List<Loop> orderedLoops = findLoops();
         assert orderedLoops.get(orderedLoops.size() - 1) == irreducibleLoopHandler : "outermost loop must be the last element in the list";
@@ -1782,6 +1818,7 @@ class LoopDetector implements Runnable {
             }
         }
         assert loopVariableIndex != -1;
+        assert explosionHeadValue != null;
 
         ValuePhiNode loopVariablePhi;
         SortedMap<Integer, AbstractBeginNode> dispatchTable = new TreeMap<>();

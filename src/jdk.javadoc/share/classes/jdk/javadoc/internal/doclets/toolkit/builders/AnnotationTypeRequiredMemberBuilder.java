@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,8 +34,9 @@ import jdk.javadoc.internal.doclets.toolkit.AnnotationTypeRequiredMemberWriter;
 import jdk.javadoc.internal.doclets.toolkit.BaseConfiguration;
 import jdk.javadoc.internal.doclets.toolkit.Content;
 import jdk.javadoc.internal.doclets.toolkit.DocletException;
-import jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberMap;
+import jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberTable;
 
+import static jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberTable.Kind.*;
 
 /**
  * Builds documentation for required annotation type members.
@@ -50,15 +51,6 @@ import jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberMap;
  */
 public class AnnotationTypeRequiredMemberBuilder extends AbstractMemberBuilder {
 
-    /**
-     * The annotation type whose members are being documented.
-     */
-    protected TypeElement typeElement;
-
-    /**
-     * The visible members for the given class.
-     */
-    protected VisibleMemberMap visibleMemberMap;
 
     /**
      * The writer to output the member documentation.
@@ -68,7 +60,7 @@ public class AnnotationTypeRequiredMemberBuilder extends AbstractMemberBuilder {
     /**
      * The list of members being documented.
      */
-    protected List<Element> members;
+    protected List<? extends Element> members;
 
     /**
      * The index of the current member that is being documented at this point
@@ -87,12 +79,10 @@ public class AnnotationTypeRequiredMemberBuilder extends AbstractMemberBuilder {
     protected AnnotationTypeRequiredMemberBuilder(Context context,
             TypeElement typeElement,
             AnnotationTypeRequiredMemberWriter writer,
-            VisibleMemberMap.Kind memberType) {
-        super(context);
-        this.typeElement = typeElement;
+            VisibleMemberTable.Kind memberType) {
+        super(context, typeElement);
         this.writer = writer;
-        this.visibleMemberMap = configuration.getVisibleMemberMap(typeElement, memberType);
-        this.members = this.visibleMemberMap.getMembers(typeElement);
+        this.members = getVisibleMembers(memberType);
     }
 
 
@@ -108,8 +98,7 @@ public class AnnotationTypeRequiredMemberBuilder extends AbstractMemberBuilder {
             Context context, TypeElement typeElement,
             AnnotationTypeRequiredMemberWriter writer) {
         return new AnnotationTypeRequiredMemberBuilder(context, typeElement,
-                    writer,
-                    VisibleMemberMap.Kind.ANNOTATION_TYPE_MEMBER_REQUIRED);
+                writer, ANNOTATION_TYPE_MEMBER_REQUIRED);
     }
 
     /**
@@ -153,20 +142,19 @@ public class AnnotationTypeRequiredMemberBuilder extends AbstractMemberBuilder {
         }
         if (hasMembersToDocument()) {
             writer.addAnnotationDetailsMarker(memberDetailsTree);
-            Element lastMember = members.get((members.size() - 1));
+            Content annotationDetailsTreeHeader = writer.getAnnotationDetailsTreeHeader(typeElement);
+            Content detailsTree = writer.getMemberTreeHeader();
+
             for (Element member : members) {
                 currentMember = member;
-                Content detailsTree = writer.getMemberTreeHeader();
-                writer.addAnnotationDetailsTreeHeader(typeElement, detailsTree);
                 Content annotationDocTree = writer.getAnnotationDocTreeHeader(
                         currentMember, detailsTree);
 
                 buildAnnotationTypeMemberChildren(annotationDocTree);
 
-                detailsTree.addContent(writer.getAnnotationDoc(
-                        annotationDocTree, currentMember == lastMember));
-                memberDetailsTree.addContent(writer.getAnnotationDetails(detailsTree));
+                detailsTree.add(writer.getAnnotationDoc(annotationDocTree));
             }
+            memberDetailsTree.add(writer.getAnnotationDetails(annotationDetailsTreeHeader, detailsTree));
         }
     }
 
@@ -183,7 +171,7 @@ public class AnnotationTypeRequiredMemberBuilder extends AbstractMemberBuilder {
      * @param annotationDocTree the content tree to which the documentation will be added
      */
     protected void buildSignature(Content annotationDocTree) {
-        annotationDocTree.addContent(writer.getSignature(currentMember));
+        annotationDocTree.add(writer.getSignature(currentMember));
     }
 
     /**

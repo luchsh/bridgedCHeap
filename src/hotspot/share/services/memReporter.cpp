@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,7 @@
 #include "memory/allocation.hpp"
 #include "services/mallocTracker.hpp"
 #include "services/memReporter.hpp"
+#include "services/threadStackTracker.hpp"
 #include "services/virtualMemoryTracker.hpp"
 #include "utilities/globalDefinitions.hpp"
 
@@ -46,11 +47,13 @@ void MemReporterBase::print_total(size_t reserved, size_t committed) const {
 void MemReporterBase::print_malloc(size_t amount, size_t count, MEMFLAGS flag) const {
   const char* scale = current_scale();
   outputStream* out = output();
+  const char* alloc_type = (flag == mtThreadStack) ? "" : "malloc=";
+
   if (flag != mtNone) {
-    out->print("(malloc=" SIZE_FORMAT "%s type=%s",
+    out->print("(%s" SIZE_FORMAT "%s type=%s", alloc_type,
       amount_in_current_scale(amount), scale, NMTUtil::flag_to_name(flag));
   } else {
-    out->print("(malloc=" SIZE_FORMAT "%s",
+    out->print("(%s" SIZE_FORMAT "%s", alloc_type,
       amount_in_current_scale(amount), scale);
   }
 
@@ -126,10 +129,17 @@ void MemSummaryReporter::report_summary_of_type(MEMFLAGS flag,
 
   // Count thread's native stack in "Thread" category
   if (flag == mtThread) {
-    const VirtualMemory* thread_stack_usage =
-      (const VirtualMemory*)_vm_snapshot->by_type(mtThreadStack);
-    reserved_amount  += thread_stack_usage->reserved();
-    committed_amount += thread_stack_usage->committed();
+    if (ThreadStackTracker::track_as_vm()) {
+      const VirtualMemory* thread_stack_usage =
+        (const VirtualMemory*)_vm_snapshot->by_type(mtThreadStack);
+      reserved_amount  += thread_stack_usage->reserved();
+      committed_amount += thread_stack_usage->committed();
+    } else {
+      const MallocMemory* thread_stack_usage =
+        (const MallocMemory*)_malloc_snapshot->by_type(mtThreadStack);
+      reserved_amount += thread_stack_usage->malloc_size();
+      committed_amount += thread_stack_usage->malloc_size();
+    }
   } else if (flag == mtNMT) {
     // Count malloc headers in "NMT" category
     reserved_amount  += _malloc_snapshot->malloc_overhead()->size();
@@ -150,12 +160,22 @@ void MemSummaryReporter::report_summary_of_type(MEMFLAGS flag,
       out->print_cr("%27s (  instance classes #" SIZE_FORMAT ", array classes #" SIZE_FORMAT ")",
         " ", _instance_class_count, _array_class_count);
     } else if (flag == mtThread) {
-      // report thread count
-      out->print_cr("%27s (thread #" SIZE_FORMAT ")", " ", _malloc_snapshot->thread_count());
-      const VirtualMemory* thread_stack_usage =
-       _vm_snapshot->by_type(mtThreadStack);
-      out->print("%27s (stack: ", " ");
-      print_total(thread_stack_usage->reserved(), thread_stack_usage->committed());
+      if (ThreadStackTracker::track_as_vm()) {
+        const VirtualMemory* thread_stack_usage =
+         _vm_snapshot->by_type(mtThreadStack);
+        // report thread count
+        out->print_cr("%27s (thread #" SIZE_FORMAT ")", " ", ThreadStackTracker::thread_count());
+        out->print("%27s (stack: ", " ");
+        print_total(thread_stack_usage->reserved(), thread_stack_usage->committed());
+      } else {
+        MallocMemory* thread_stack_memory = _malloc_snapshot->by_type(mtThreadStack);
+        const char* scale = current_scale();
+        // report thread count
+        assert(ThreadStackTracker::thread_count() == 0, "Not used");
+        out->print_cr("%27s (thread #" SIZE_FORMAT ")", " ", thread_stack_memory->malloc_count());
+        out->print("%27s (Stack: " SIZE_FORMAT "%s", " ",
+          amount_in_current_scale(thread_stack_memory->malloc_size()), scale);
+      }
       out->print_cr(")");
     }
 
@@ -197,18 +217,18 @@ void MemSummaryReporter::report_metadata(Metaspace::MetadataType type) const {
 
   outputStream* out = output();
   const char* scale = current_scale();
-  size_t committed   = MetaspaceAux::committed_bytes(type);
-  size_t used = MetaspaceAux::used_bytes(type);
-  size_t free = (MetaspaceAux::capacity_bytes(type) - used)
-              + MetaspaceAux::free_chunks_total_bytes(type)
-              + MetaspaceAux::free_bytes(type);
+  size_t committed   = MetaspaceUtils::committed_bytes(type);
+  size_t used = MetaspaceUtils::used_bytes(type);
+  size_t free = (MetaspaceUtils::capacity_bytes(type) - used)
+              + MetaspaceUtils::free_chunks_total_bytes(type)
+              + MetaspaceUtils::free_in_vs_bytes(type);
 
   assert(committed >= used + free, "Sanity");
   size_t waste = committed - (used + free);
 
   out->print_cr("%27s (  %s)", " ", name);
   out->print("%27s (    ", " ");
-  print_total(MetaspaceAux::reserved_bytes(type), committed);
+  print_total(MetaspaceUtils::reserved_bytes(type), committed);
   out->print_cr(")");
   out->print_cr("%27s (    used=" SIZE_FORMAT "%s)", " ", amount_in_current_scale(used), scale);
   out->print_cr("%27s (    free=" SIZE_FORMAT "%s)", " ", amount_in_current_scale(free), scale);
@@ -240,7 +260,7 @@ void MemDetailReporter::report_malloc_sites() {
     const NativeCallStack* stack = malloc_site->call_stack();
     stack->print_on(out);
     out->print("%29s", " ");
-    MEMFLAGS flag = malloc_site->flags();
+    MEMFLAGS flag = malloc_site->flag();
     assert((flag >= 0 && flag < (int)mt_number_of_types) && flag != mtNone,
       "Must have a valid memory type");
     print_malloc(malloc_site->size(), malloc_site->count(),flag);
@@ -266,6 +286,10 @@ void MemDetailReporter::report_virtual_memory_allocation_sites()  {
     stack->print_on(out);
     out->print("%28s (", " ");
     print_total(virtual_memory_site->reserved(), virtual_memory_site->committed());
+    MEMFLAGS flag = virtual_memory_site->flag();
+    if (flag != mtNone) {
+      out->print(" Type=%s", NMTUtil::flag_to_name(flag));
+    }
     out->print_cr(")\n");
   }
 }
@@ -291,7 +315,7 @@ void MemDetailReporter::report_virtual_memory_region(const ReservedMemoryRegion*
   outputStream* out = output();
   const char* scale = current_scale();
   const NativeCallStack*  stack = reserved_rgn->call_stack();
-  bool all_committed = reserved_rgn->all_committed();
+  bool all_committed = reserved_rgn->size() == reserved_rgn->committed_size();
   const char* region_type = (all_committed ? "reserved and committed" : "reserved");
   out->print_cr(" ");
   print_virtual_memory_region(region_type, reserved_rgn->base(), reserved_rgn->size());
@@ -303,7 +327,17 @@ void MemDetailReporter::report_virtual_memory_region(const ReservedMemoryRegion*
     stack->print_on(out, 4);
   }
 
-  if (all_committed) return;
+  if (all_committed) {
+    CommittedRegionIterator itr = reserved_rgn->iterate_committed_regions();
+    const CommittedMemoryRegion* committed_rgn = itr.next();
+    if (committed_rgn->size() == reserved_rgn->size() && committed_rgn->call_stack()->equals(*stack)) {
+      // One region spanning the entire reserved region, with the same stack trace.
+      // Don't print this regions because the "reserved and committed" line above
+      // already indicates that the region is comitted.
+      assert(itr.next() == NULL, "Unexpectedly more than one regions");
+      return;
+    }
+  }
 
   CommittedRegionIterator itr = reserved_rgn->iterate_committed_regions();
   const CommittedMemoryRegion* committed_rgn;
@@ -354,10 +388,11 @@ void MemSummaryDiffReporter::print_malloc_diff(size_t current_amount, size_t cur
     size_t early_amount, size_t early_count, MEMFLAGS flags) const {
   const char* scale = current_scale();
   outputStream* out = output();
+  const char* alloc_type = (flags == mtThread) ? "" : "malloc=";
 
-  out->print("malloc=" SIZE_FORMAT "%s", amount_in_current_scale(current_amount), scale);
-  // Report type only if it is valid
-  if (flags != mtNone) {
+  out->print("%s" SIZE_FORMAT "%s", alloc_type, amount_in_current_scale(current_amount), scale);
+  // Report type only if it is valid and not under "thread" category
+  if (flags != mtNone && flags != mtThread) {
     out->print(" type=%s", NMTUtil::flag_to_name(flags));
   }
 
@@ -483,15 +518,25 @@ void MemSummaryDiffReporter::diff_summary_of_type(MEMFLAGS flag,
       }
       out->print_cr(")");
 
-      // report thread stack
-      const VirtualMemory* current_thread_stack =
-          _current_baseline.virtual_memory(mtThreadStack);
-      const VirtualMemory* early_thread_stack =
-        _early_baseline.virtual_memory(mtThreadStack);
-
       out->print("%27s (stack: ", " ");
-      print_virtual_memory_diff(current_thread_stack->reserved(), current_thread_stack->committed(),
-        early_thread_stack->reserved(), early_thread_stack->committed());
+      if (ThreadStackTracker::track_as_vm()) {
+        // report thread stack
+        const VirtualMemory* current_thread_stack =
+          _current_baseline.virtual_memory(mtThreadStack);
+        const VirtualMemory* early_thread_stack =
+          _early_baseline.virtual_memory(mtThreadStack);
+
+        print_virtual_memory_diff(current_thread_stack->reserved(), current_thread_stack->committed(),
+          early_thread_stack->reserved(), early_thread_stack->committed());
+      } else {
+        const MallocMemory* current_thread_stack =
+          _current_baseline.malloc_memory(mtThreadStack);
+        const MallocMemory* early_thread_stack =
+          _early_baseline.malloc_memory(mtThreadStack);
+
+        print_malloc_diff(current_thread_stack->malloc_size(), current_thread_stack->malloc_count(),
+          early_thread_stack->malloc_size(), early_thread_stack->malloc_count(), flag);
+      }
       out->print_cr(")");
     }
 
@@ -680,19 +725,25 @@ void MemDetailDiffReporter::diff_virtual_memory_sites() const {
 
 void MemDetailDiffReporter::new_malloc_site(const MallocSite* malloc_site) const {
   diff_malloc_site(malloc_site->call_stack(), malloc_site->size(), malloc_site->count(),
-    0, 0, malloc_site->flags());
+    0, 0, malloc_site->flag());
 }
 
 void MemDetailDiffReporter::old_malloc_site(const MallocSite* malloc_site) const {
   diff_malloc_site(malloc_site->call_stack(), 0, 0, malloc_site->size(),
-    malloc_site->count(), malloc_site->flags());
+    malloc_site->count(), malloc_site->flag());
 }
 
 void MemDetailDiffReporter::diff_malloc_site(const MallocSite* early,
   const MallocSite* current)  const {
-  assert(early->flags() == current->flags(), "Must be the same memory type");
-  diff_malloc_site(current->call_stack(), current->size(), current->count(),
-    early->size(), early->count(), early->flags());
+  if (early->flag() != current->flag()) {
+    // If malloc site type changed, treat it as deallocation of old type and
+    // allocation of new type.
+    old_malloc_site(early);
+    new_malloc_site(current);
+  } else {
+    diff_malloc_site(current->call_stack(), current->size(), current->count(),
+      early->size(), early->count(), early->flag());
+  }
 }
 
 void MemDetailDiffReporter::diff_malloc_site(const NativeCallStack* stack, size_t current_size,
@@ -715,21 +766,22 @@ void MemDetailDiffReporter::diff_malloc_site(const NativeCallStack* stack, size_
 
 
 void MemDetailDiffReporter::new_virtual_memory_site(const VirtualMemoryAllocationSite* site) const {
-  diff_virtual_memory_site(site->call_stack(), site->reserved(), site->committed(), 0, 0);
+  diff_virtual_memory_site(site->call_stack(), site->reserved(), site->committed(), 0, 0, site->flag());
 }
 
 void MemDetailDiffReporter::old_virtual_memory_site(const VirtualMemoryAllocationSite* site) const {
-  diff_virtual_memory_site(site->call_stack(), 0, 0, site->reserved(), site->committed());
+  diff_virtual_memory_site(site->call_stack(), 0, 0, site->reserved(), site->committed(), site->flag());
 }
 
 void MemDetailDiffReporter::diff_virtual_memory_site(const VirtualMemoryAllocationSite* early,
   const VirtualMemoryAllocationSite* current) const {
+  assert(early->flag() == current->flag(), "Should be the same");
   diff_virtual_memory_site(current->call_stack(), current->reserved(), current->committed(),
-    early->reserved(), early->committed());
+    early->reserved(), early->committed(), current->flag());
 }
 
 void MemDetailDiffReporter::diff_virtual_memory_site(const NativeCallStack* stack, size_t current_reserved,
-  size_t current_committed, size_t early_reserved, size_t early_committed) const  {
+  size_t current_committed, size_t early_reserved, size_t early_committed, MEMFLAGS flag) const  {
   outputStream* out = output();
 
   // no change
@@ -743,6 +795,9 @@ void MemDetailDiffReporter::diff_virtual_memory_site(const NativeCallStack* stac
   print_virtual_memory_diff(current_reserved, current_committed,
     early_reserved, early_committed);
 
+  if (flag != mtNone) {
+    out->print(" Type=%s", NMTUtil::flag_to_name(flag));
+  }
+
   out->print_cr(")\n");
  }
-

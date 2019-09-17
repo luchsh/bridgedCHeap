@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,9 +25,13 @@
 
 package jdk.javadoc.internal.doclets.formats.html;
 
-import java.io.*;
-import java.util.*;
-import java.util.zip.*;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.Writer;
+import java.util.Collection;
+import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ExecutableElement;
@@ -37,10 +41,12 @@ import javax.lang.model.element.TypeElement;
 import javax.lang.model.util.SimpleElementVisitor9;
 
 import com.sun.source.doctree.DocTree;
-import jdk.javadoc.internal.doclets.formats.html.markup.HtmlConstants;
+import jdk.javadoc.internal.doclets.formats.html.markup.Entity;
 import jdk.javadoc.internal.doclets.formats.html.markup.HtmlStyle;
 import jdk.javadoc.internal.doclets.formats.html.markup.HtmlTag;
 import jdk.javadoc.internal.doclets.formats.html.markup.HtmlTree;
+import jdk.javadoc.internal.doclets.formats.html.markup.Navigation;
+import jdk.javadoc.internal.doclets.formats.html.markup.Navigation.PageMode;
 import jdk.javadoc.internal.doclets.formats.html.markup.StringContent;
 import jdk.javadoc.internal.doclets.toolkit.Content;
 import jdk.javadoc.internal.doclets.toolkit.util.DocFile;
@@ -71,6 +77,8 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
      */
     protected IndexBuilder indexbuilder;
 
+    protected Navigation navBar;
+
     /**
      * This constructor will be used by {@link SplitIndexWriter}. Initializes
      * path to this file and relative path from this file.
@@ -84,17 +92,7 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
                                   IndexBuilder indexbuilder) {
         super(configuration, path);
         this.indexbuilder = indexbuilder;
-    }
-
-    /**
-     * Get the index label for navigation bar.
-     *
-     * @return a content tree for the tree label
-     */
-    @Override
-    protected Content getNavLinkIndex() {
-        Content li = HtmlTree.LI(HtmlStyle.navBarCell1Rev, contents.indexLabel);
-        return li;
+        this.navBar = new Navigation(null, configuration, fixedNavDiv, PageMode.INDEX, path);
     }
 
     /**
@@ -114,7 +112,7 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
             for (Element element : memberlist) {
                 addDescription(dl, element);
             }
-            contentTree.addContent(dl);
+            contentTree.add(dl);
         }
     }
 
@@ -127,7 +125,7 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
             for (SearchIndexItem sii : searchList) {
                 addDescription(sii, dl);
             }
-            contentTree.addContent(dl);
+            contentTree.add(dl);
         }
     }
 
@@ -168,16 +166,16 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
                 i++;
             }
         }
-        contentTree.addContent(dl);
+        contentTree.add(dl);
     }
 
     protected void addHeading(Character uc, Content contentTree) {
         String unicode = uc.toString();
-        contentTree.addContent(getMarkerAnchorForIndex(unicode));
+        contentTree.add(getMarkerAnchorForIndex(unicode));
         Content headContent = new StringContent(unicode);
-        Content heading = HtmlTree.HEADING(HtmlConstants.CONTENT_HEADING, false,
+        Content heading = HtmlTree.HEADING(Headings.CONTENT_HEADING, false,
                 HtmlStyle.title, headContent);
-        contentTree.addContent(heading);
+        contentTree.add(heading);
     }
 
     protected void addDescription(Content dl, Element element) {
@@ -228,15 +226,15 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
         String moduleName = utils.getFullyQualifiedName(mdle);
         Content link = getModuleLink(mdle, new StringContent(moduleName));
         si.setLabel(moduleName);
-        si.setCategory(resources.getText("doclet.Modules"));
+        si.setCategory(SearchIndexItem.Category.MODULES);
         Content dt = HtmlTree.DT(link);
-        dt.addContent(" - ");
-        dt.addContent(contents.module_);
-        dt.addContent(" " + moduleName);
-        dlTree.addContent(dt);
+        dt.add(" - ");
+        dt.add(contents.module_);
+        dt.add(" " + moduleName);
+        dlTree.add(dt);
         Content dd = new HtmlTree(HtmlTag.DD);
         addSummaryComment(mdle, dd);
-        dlTree.addContent(dd);
+        dlTree.add(dd);
     }
 
     /**
@@ -252,15 +250,15 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
             si.setContainingModule(utils.getFullyQualifiedName(utils.containingModule(pkg)));
         }
         si.setLabel(utils.getPackageName(pkg));
-        si.setCategory(resources.getText("doclet.Packages"));
+        si.setCategory(SearchIndexItem.Category.PACKAGES);
         Content dt = HtmlTree.DT(link);
-        dt.addContent(" - ");
-        dt.addContent(contents.package_);
-        dt.addContent(" " + utils.getPackageName(pkg));
-        dlTree.addContent(dt);
+        dt.add(" - ");
+        dt.add(contents.package_);
+        dt.add(" " + utils.getPackageName(pkg));
+        dlTree.add(dt);
         Content dd = new HtmlTree(HtmlTag.DD);
         addSummaryComment(pkg, dd);
-        dlTree.addContent(dd);
+        dlTree.add(dd);
     }
 
     /**
@@ -275,14 +273,14 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
                         LinkInfoImpl.Kind.INDEX, typeElement).strong(true));
         si.setContainingPackage(utils.getPackageName(utils.containingPackage(typeElement)));
         si.setLabel(utils.getSimpleName(typeElement));
-        si.setCategory(resources.getText("doclet.Types"));
+        si.setCategory(SearchIndexItem.Category.TYPES);
         Content dt = HtmlTree.DT(link);
-        dt.addContent(" - ");
+        dt.add(" - ");
         addClassInfo(typeElement, dt);
-        dlTree.addContent(dt);
+        dlTree.add(dt);
         Content dd = new HtmlTree(HtmlTag.DD);
         addComment(typeElement, dd);
-        dlTree.addContent(dd);
+        dlTree.add(dd);
     }
 
     /**
@@ -293,7 +291,7 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
      * @param contentTree the content tree to which the class info will be added
      */
     protected void addClassInfo(TypeElement te, Content contentTree) {
-        contentTree.addContent(contents.getContent("doclet.in",
+        contentTree.add(contents.getContent("doclet.in",
                 utils.getTypeElementName(te, false),
                 getPackageLink(utils.containingPackage(te),
                     utils.getPackageName(utils.containingPackage(te)))
@@ -316,23 +314,23 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
             ExecutableElement ee = (ExecutableElement)member;
             name = name + utils.flatSignature(ee);
             si.setLabel(name);
-            if (!((utils.signature(ee)).equals(utils.flatSignature(ee)))) {
-                si.setUrl(links.getName(getAnchor(ee)));
+            String url = HtmlTree.encodeURL(links.getName(getAnchor(ee)));
+            if (!name.equals(url)) {
+                si.setUrl(url);
             }
-
         }  else {
             si.setLabel(name);
         }
-        si.setCategory(resources.getText("doclet.Members"));
+        si.setCategory(SearchIndexItem.Category.MEMBERS);
         Content span = HtmlTree.SPAN(HtmlStyle.memberNameLink,
                 getDocLink(LinkInfoImpl.Kind.INDEX, member, name));
         Content dt = HtmlTree.DT(span);
-        dt.addContent(" - ");
+        dt.add(" - ");
         addMemberDesc(member, dt);
-        dlTree.addContent(dt);
+        dlTree.add(dt);
         Content dd = new HtmlTree(HtmlTag.DD);
         addComment(member, dd);
-        dlTree.addContent(dd);
+        dlTree.add(dd);
     }
 
     protected void addDescription(SearchIndexItem sii, Content dlTree) {
@@ -340,16 +338,16 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
         siiPath += sii.getUrl();
         HtmlTree labelLink = HtmlTree.A(siiPath, new StringContent(sii.getLabel()));
         Content dt = HtmlTree.DT(HtmlTree.SPAN(HtmlStyle.searchTagLink, labelLink));
-        dt.addContent(" - ");
-        dt.addContent(contents.getContent("doclet.Search_tag_in", sii.getHolder()));
-        dlTree.addContent(dt);
+        dt.add(" - ");
+        dt.add(contents.getContent("doclet.Search_tag_in", sii.getHolder()));
+        dlTree.add(dt);
         Content dd = new HtmlTree(HtmlTag.DD);
         if (sii.getDescription().isEmpty()) {
-            dd.addContent(Contents.SPACE);
+            dd.add(Entity.NO_BREAK_SPACE);
         } else {
-            dd.addContent(sii.getDescription());
+            dd.add(sii.getDescription());
         }
-        dlTree.addContent(dd);
+        dlTree.add(dd);
     }
 
     /**
@@ -367,17 +365,17 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
         HtmlTree div = new HtmlTree(HtmlTag.DIV);
         div.setStyle(HtmlStyle.deprecationBlock);
         if (utils.isDeprecated(element)) {
-            div.addContent(span);
+            div.add(span);
             tags = utils.getBlockTags(element, DocTree.Kind.DEPRECATED);
             if (!tags.isEmpty())
                 addInlineDeprecatedComment(element, tags.get(0), div);
-            contentTree.addContent(div);
+            contentTree.add(div);
         } else {
             TypeElement encl = utils.getEnclosingTypeElement(element);
             while (encl != null) {
                 if (utils.isDeprecated(encl)) {
-                    div.addContent(span);
-                    contentTree.addContent(div);
+                    div.add(span);
+                    contentTree.add(div);
                     break;
                 }
                 encl = utils.getEnclosingTypeElement(encl);
@@ -400,15 +398,15 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
             Content resource = contents.getContent(utils.isStatic(member)
                     ? "doclet.Static_variable_in"
                     : "doclet.Variable_in", classdesc);
-            contentTree.addContent(resource);
+            contentTree.add(resource);
         } else if (utils.isConstructor(member)) {
-            contentTree.addContent(
+            contentTree.add(
                     contents.getContent("doclet.Constructor_for", classdesc));
         } else if (utils.isMethod(member)) {
             Content resource = contents.getContent(utils.isStatic(member)
                     ? "doclet.Static_method_in"
                     : "doclet.Method_in", classdesc);
-            contentTree.addContent(resource);
+            contentTree.add(resource);
         }
         addPreQualifiedClassLink(LinkInfoImpl.Kind.INDEX, containing,
                 false, contentTree);
@@ -442,8 +440,20 @@ public class AbstractIndexWriter extends HtmlDocletWriter {
             createSearchIndexFile(DocPaths.MODULE_SEARCH_INDEX_JSON, DocPaths.MODULE_SEARCH_INDEX_ZIP,
                     DocPaths.MODULE_SEARCH_INDEX_JS, configuration.moduleSearchIndex, "moduleSearchIndex");
         }
+        if (!configuration.packages.isEmpty()) {
+            SearchIndexItem si = new SearchIndexItem();
+            si.setCategory(SearchIndexItem.Category.PACKAGES);
+            si.setLabel(resources.getText("doclet.All_Packages"));
+            si.setUrl(DocPaths.ALLPACKAGES_INDEX.getPath());
+            configuration.packageSearchIndex.add(si);
+        }
         createSearchIndexFile(DocPaths.PACKAGE_SEARCH_INDEX_JSON, DocPaths.PACKAGE_SEARCH_INDEX_ZIP,
                 DocPaths.PACKAGE_SEARCH_INDEX_JS, configuration.packageSearchIndex, "packageSearchIndex");
+        SearchIndexItem si = new SearchIndexItem();
+        si.setCategory(SearchIndexItem.Category.TYPES);
+        si.setLabel(resources.getText("doclet.All_Classes"));
+        si.setUrl(DocPaths.ALLCLASSES_INDEX.getPath());
+        configuration.typeSearchIndex.add(si);
         createSearchIndexFile(DocPaths.TYPE_SEARCH_INDEX_JSON, DocPaths.TYPE_SEARCH_INDEX_ZIP,
                 DocPaths.TYPE_SEARCH_INDEX_JS, configuration.typeSearchIndex, "typeSearchIndex");
         createSearchIndexFile(DocPaths.MEMBER_SEARCH_INDEX_JSON, DocPaths.MEMBER_SEARCH_INDEX_ZIP,

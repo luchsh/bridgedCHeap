@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,7 +31,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -42,13 +41,15 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import jdk.internal.misc.VM;
 import jdk.internal.module.ModuleReferenceImpl;
 import jdk.internal.module.ModuleTarget;
+import jdk.internal.vm.annotation.Stable;
 
 /**
  * A configuration that is the result of <a href="package-summary.html#resolution">
  * resolution</a> or resolution with
- * <a href="{@docRoot}/java/lang/module/Configuration.html#service-binding">service binding</a>.
+ * <a href="{@docRoot}/java.base/java/lang/module/Configuration.html#service-binding">service binding</a>.
  *
  * <p> A configuration encapsulates the <em>readability graph</em> that is the
  * output of resolution. A readability graph is a directed graph whose vertices
@@ -74,7 +75,7 @@ import jdk.internal.module.ModuleTarget;
  * ModuleLayer.boot().configuration()}. The configuration for the boot layer
  * will often be the parent when creating new configurations. </p>
  *
- * <h3> Example </h3>
+ * <h2> Example </h2>
  *
  * <p> The following example uses the {@link
  * #resolve(ModuleFinder,ModuleFinder,Collection) resolve} method to resolve a
@@ -104,7 +105,17 @@ import jdk.internal.module.ModuleTarget;
 public final class Configuration {
 
     // @see Configuration#empty()
-    private static final Configuration EMPTY_CONFIGURATION = new Configuration();
+    // EMPTY_CONFIGURATION may be initialized from the CDS archive.
+    private static @Stable Configuration EMPTY_CONFIGURATION;
+
+    static {
+        // Initialize EMPTY_CONFIGURATION from the archive.
+        VM.initializeFromArchive(Configuration.class);
+        // Create a new empty Configuration if there is no archived version.
+        if (EMPTY_CONFIGURATION == null) {
+            EMPTY_CONFIGURATION = new Configuration();
+        }
+    }
 
     // parent configurations, in search order
     private final List<Configuration> parents;
@@ -119,10 +130,10 @@ public final class Configuration {
     String targetPlatform() { return targetPlatform; }
 
     private Configuration() {
-        this.parents = Collections.emptyList();
-        this.graph = Collections.emptyMap();
-        this.modules = Collections.emptySet();
-        this.nameToModule = Collections.emptyMap();
+        this.parents = List.of();
+        this.graph = Map.of();
+        this.modules = Set.of();
+        this.nameToModule = Map.of();
         this.targetPlatform = null;
     }
 
@@ -140,7 +151,7 @@ public final class Configuration {
             i++;
         }
 
-        this.parents = Collections.unmodifiableList(parents);
+        this.parents = List.copyOf(parents);
         this.graph = g;
         this.modules = Set.of(moduleArray);
         this.nameToModule = Map.ofEntries(nameEntries);
@@ -554,7 +565,7 @@ public final class Configuration {
 
     Set<ModuleDescriptor> descriptors() {
         if (modules.isEmpty()) {
-            return Collections.emptySet();
+            return Set.of();
         } else {
             return modules.stream()
                     .map(ResolvedModule::reference)
@@ -564,7 +575,8 @@ public final class Configuration {
     }
 
     Set<ResolvedModule> reads(ResolvedModule m) {
-        return Collections.unmodifiableSet(graph.get(m));
+        // The sets stored in the graph are already immutable sets
+        return Set.copyOf(graph.get(m));
     }
 
     /**
@@ -590,13 +602,12 @@ public final class Configuration {
                 // push in reverse order
                 for (int i = layer.parents.size() - 1; i >= 0; i--) {
                     Configuration parent = layer.parents.get(i);
-                    if (!visited.contains(parent)) {
-                        visited.add(parent);
+                    if (visited.add(parent)) {
                         stack.push(parent);
                     }
                 }
             }
-            this.allConfigurations = Collections.unmodifiableList(allConfigurations);
+            this.allConfigurations = allConfigurations; // no need to do defensive copy
         }
         return allConfigurations.stream();
     }

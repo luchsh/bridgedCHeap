@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,10 +39,9 @@
 package java.util;
 
 import java.io.Serializable;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.time.ZoneId;
-import java.util.Properties;
+
+import jdk.internal.util.StaticProperty;
 import sun.security.action.GetPropertyAction;
 import sun.util.calendar.ZoneInfo;
 import sun.util.calendar.ZoneInfoFile;
@@ -115,7 +114,7 @@ import sun.util.locale.provider.TimeZoneNameUtility;
  * </pre></blockquote>
  * For example, TimeZone.getTimeZone("GMT-8").getID() returns "GMT-08:00".
  *
- * <h3>Three-letter time zone IDs</h3>
+ * <h2>Three-letter time zone IDs</h2>
  *
  * For compatibility with JDK 1.1.x, some other three-letter time zone IDs
  * (such as "PST", "CTT", "AST") are also supported. However, <strong>their
@@ -667,7 +666,7 @@ public abstract class TimeZone implements Serializable, Cloneable {
         // if the time zone ID is not set (yet), perform the
         // platform to Java time zone ID mapping.
         if (zoneID == null || zoneID.isEmpty()) {
-            String javaHome = props.getProperty("java.home");
+            String javaHome = StaticProperty.javaHome();
             try {
                 zoneID = getSystemTimeZoneID(javaHome);
                 if (zoneID == null) {
@@ -783,9 +782,6 @@ public abstract class TimeZone implements Serializable, Cloneable {
 
     static final String         GMT_ID        = "GMT";
     private static final int    GMT_ID_LENGTH = 3;
-
-    // a static TimeZone we can reference if no AppContext is in place
-    private static volatile TimeZone mainAppContextDefault;
 
     /**
      * Parses a custom time zone identifier and returns a corresponding zone.

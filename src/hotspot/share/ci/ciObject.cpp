@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,9 +24,10 @@
 
 #include "precompiled.hpp"
 #include "ci/ciObject.hpp"
-#include "ci/ciUtilities.hpp"
+#include "ci/ciUtilities.inline.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "oops/oop.inline.hpp"
+#include "runtime/jniHandles.inline.hpp"
 
 // ciObject
 //
@@ -58,7 +59,7 @@ ciObject::ciObject(oop o) {
     _handle = JNIHandles::make_global(obj);
   }
   _klass = NULL;
-  init_flags_from(o);
+  assert(oopDesc::is_oop_or_null(o), "Checking");
 }
 
 // ------------------------------------------------------------------
@@ -72,7 +73,7 @@ ciObject::ciObject(Handle h) {
     _handle = JNIHandles::make_global(h);
   }
   _klass = NULL;
-  init_flags_from(h());
+  assert(oopDesc::is_oop_or_null(h()), "Checking");
 }
 
 // ------------------------------------------------------------------
@@ -95,6 +96,14 @@ ciObject::ciObject() {
   ASSERT_IN_VM;
   _handle = NULL;
   _klass = NULL;
+}
+
+// ------------------------------------------------------------------
+// ciObject::get_oop
+//
+// Get the oop of this ciObject.
+oop ciObject::get_oop() const {
+  return JNIHandles::resolve_non_null(_handle);
 }
 
 // ------------------------------------------------------------------
@@ -156,15 +165,7 @@ int ciObject::hash() {
 // to discourage use of the JNI handle.
 jobject ciObject::constant_encoding() {
   assert(is_null_object() || handle() != NULL, "cannot embed null pointer");
-  assert(can_be_constant(), "oop must be NULL or perm");
   return handle();
-}
-
-// ------------------------------------------------------------------
-// ciObject::can_be_constant
-bool ciObject::can_be_constant() {
-  if (ScavengeRootsInCode >= 1)  return true;  // now everybody can encode as a constant
-  return handle() == NULL;
 }
 
 // ------------------------------------------------------------------
@@ -184,24 +185,11 @@ bool ciObject::should_be_constant() {
     }
   if (klass()->is_subclass_of(env->MethodHandle_klass()) ||
       klass()->is_subclass_of(env->CallSite_klass())) {
-    assert(ScavengeRootsInCode >= 1, "must be");
     // We want to treat these aggressively.
     return true;
   }
 
   return handle() == NULL;
-}
-
-// ------------------------------------------------------------------
-// ciObject::should_be_constant()
-void ciObject::init_flags_from(oop x) {
-  int flags = 0;
-  if (x != NULL) {
-    assert(Universe::heap()->is_in_reserved(x), "must be");
-    if (x->is_scavengable())
-      flags |= SCAVENGABLE_FLAG;
-  }
-  _ident |= flags;
 }
 
 // ------------------------------------------------------------------
@@ -214,9 +202,7 @@ void ciObject::init_flags_from(oop x) {
 void ciObject::print(outputStream* st) {
   st->print("<%s", type_string());
   GUARDED_VM_ENTRY(print_impl(st);)
-  st->print(" ident=%d %s address=" INTPTR_FORMAT ">", ident(),
-        is_scavengable() ? "SCAVENGABLE" : "",
-        p2i((address)this));
+  st->print(" ident=%d address=" INTPTR_FORMAT ">", ident(), p2i(this));
 }
 
 // ------------------------------------------------------------------

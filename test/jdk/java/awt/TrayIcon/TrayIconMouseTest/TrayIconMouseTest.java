@@ -31,13 +31,14 @@ import java.awt.image.BufferedImage;
 /*
  * @test
  * @bug 6384991
+ * @key headful
  * @summary Check if ActionEvent is triggered by a TrayIcon when
  *          it is double clicked with mouse button 1 on windows
  *          or single clicked with button 3 on Mac OS X
  *          or single clicked with button 1 on rest.
  * @modules java.desktop/java.awt:open
  * @library /java/awt/patchlib
- * @library ../../../../lib/testlibrary ../
+ * @library /lib/client ../
  * @build java.desktop/java.awt.Helper
  * @build ExtendedRobot SystemTrayIconHelper
  * @run main TrayIconMouseTest

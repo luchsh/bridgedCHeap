@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
 
 #include "precompiled.hpp"
 #include "asm/assembler.inline.hpp"
+#include "asm/macroAssembler.inline.hpp"
 #include "code/compiledIC.hpp"
 #include "code/debugInfo.hpp"
 #include "code/debugInfoRec.hpp"
@@ -1105,12 +1106,17 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
 #endif
 
   // Create an array of unused labels, one for each basic block, if printing is enabled
-#ifndef PRODUCT
+#if defined(SUPPORT_OPTO_ASSEMBLY)
   int *node_offsets      = NULL;
   uint node_offset_limit = unique();
 
-  if (print_assembly())
-    node_offsets         = NEW_RESOURCE_ARRAY(int, node_offset_limit);
+  if (print_assembly()) {
+    node_offsets = NEW_RESOURCE_ARRAY(int, node_offset_limit);
+  }
+  if (node_offsets != NULL) {
+    // We need to initialize. Unused array elements may contain garbage and mess up PrintOptoAssembly.
+    memset(node_offsets, 0, node_offset_limit*sizeof(int));
+  }
 #endif
 
   NonSafepointEmitter non_safepoints(this);  // emit non-safepoints lazily
@@ -1380,9 +1386,10 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
       }
 
       // Save the offset for the listing
-#ifndef PRODUCT
-      if (node_offsets && n->_idx < node_offset_limit)
+#if defined(SUPPORT_OPTO_ASSEMBLY)
+      if ((node_offsets != NULL) && (n->_idx < node_offset_limit)) {
         node_offsets[n->_idx] = cb->insts_size();
+      }
 #endif
 
       // "Normal" instruction case
@@ -1423,15 +1430,16 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
 
       // See if this instruction has a delay slot
       if (valid_bundle_info(n) && node_bundling(n)->use_unconditional_delay()) {
-        assert(delay_slot != NULL, "expecting delay slot node");
+        guarantee(delay_slot != NULL, "expecting delay slot node");
 
         // Back up 1 instruction
         cb->set_insts_end(cb->insts_end() - Pipeline::instr_unit_size());
 
         // Save the offset for the listing
-#ifndef PRODUCT
-        if (node_offsets && delay_slot->_idx < node_offset_limit)
+#if defined(SUPPORT_OPTO_ASSEMBLY)
+        if ((node_offsets != NULL) && (delay_slot->_idx < node_offset_limit)) {
           node_offsets[delay_slot->_idx] = cb->insts_size();
+        }
 #endif
 
         // Support a SafePoint in the delay slot
@@ -1540,7 +1548,14 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
     return;
   }
 
-#ifndef PRODUCT
+#if defined(SUPPORT_ABSTRACT_ASSEMBLY) || defined(SUPPORT_ASSEMBLY) || defined(SUPPORT_OPTO_ASSEMBLY)
+  if (print_assembly()) {
+    tty->cr();
+    tty->print_cr("============================= C2-compiled nmethod ==============================");
+  }
+#endif
+
+#if defined(SUPPORT_OPTO_ASSEMBLY)
   // Dump the assembly code, including basic-block numbers
   if (print_assembly()) {
     ttyLocker ttyl;  // keep the following output all in one block
@@ -1554,9 +1569,15 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
                    "");
       }
       if (method() != NULL) {
+        tty->print_cr("----------------------------------- MetaData -----------------------------------");
         method()->print_metadata();
+      } else if (stub_name() != NULL) {
+        tty->print_cr("----------------------------- RuntimeStub %s -------------------------------", stub_name());
       }
+      tty->cr();
+      tty->print_cr("--------------------------------- OptoAssembly ---------------------------------");
       dump_asm(node_offsets, node_offset_limit);
+      tty->print_cr("--------------------------------------------------------------------------------");
       if (xtty != NULL) {
         // print_metadata and dump_asm above may safepoint which makes us loose the ttylock.
         // Retake lock too make sure the end tag is coherent, and that xmlStream->pop_tag is done
@@ -1567,7 +1588,6 @@ void Compile::fill_buffer(CodeBuffer* cb, uint* blk_starts) {
     }
   }
 #endif
-
 }
 
 void Compile::FillExceptionTables(uint cnt, uint *call_returns, uint *inct_starts, Label *blk_labels) {
@@ -1671,14 +1691,14 @@ Scheduling::Scheduling(Arena *arena, Compile &compile)
   : _arena(arena),
     _cfg(compile.cfg()),
     _regalloc(compile.regalloc()),
-    _reg_node(arena),
-    _bundle_instr_count(0),
-    _bundle_cycle_number(0),
     _scheduled(arena),
     _available(arena),
+    _reg_node(arena),
+    _pinch_free_list(arena),
     _next_node(NULL),
-    _bundle_use(0, 0, resource_count, &_bundle_use_elements[0]),
-    _pinch_free_list(arena)
+    _bundle_instr_count(0),
+    _bundle_cycle_number(0),
+    _bundle_use(0, 0, resource_count, &_bundle_use_elements[0])
 #ifndef PRODUCT
   , _branches(0)
   , _unconditional_delays(0)
@@ -1703,7 +1723,9 @@ Scheduling::Scheduling(Arena *arena, Compile &compile)
   _current_latency = NEW_ARENA_ARRAY(arena, unsigned short, node_max);
 
   // Clear the arrays
-  memset(_node_bundling_base, 0, node_max * sizeof(Bundle));
+  for (uint i = 0; i < node_max; i++) {
+    ::new (&_node_bundling_base[i]) Bundle();
+  }
   memset(_node_latency,       0, node_max * sizeof(unsigned short));
   memset(_uses,               0, node_max * sizeof(short));
   memset(_current_latency,    0, node_max * sizeof(unsigned short));
@@ -2390,12 +2412,9 @@ void Scheduling::DoScheduling() {
     }
     assert(!last->is_Mach() || last->as_Mach()->ideal_Opcode() != Op_Con, "");
     if( last->is_Catch() ||
-       // Exclude unreachable path case when Halt node is in a separate block.
-       (_bb_end > 1 && last->is_Mach() && last->as_Mach()->ideal_Opcode() == Op_Halt) ) {
-      // There must be a prior call.  Skip it.
-      while( !bb->get_node(--_bb_end)->is_MachCall() ) {
-        assert( bb->get_node(_bb_end)->is_MachProj(), "skipping projections after expected call" );
-      }
+       (last->is_Mach() && last->as_Mach()->ideal_Opcode() == Op_Halt) ) {
+      // There might be a prior call.  Skip it.
+      while (_bb_start < _bb_end && bb->get_node(--_bb_end)->is_MachProj());
     } else if( last->is_MachNullCheck() ) {
       // Backup so the last null-checked memory instruction is
       // outside the schedulable range. Skip over the nullcheck,
@@ -2575,7 +2594,7 @@ void Scheduling::anti_do_def( Block *b, Node *def, OptoReg::Name def_reg, int is
   }
 
   Node *kill = def;             // Rename 'def' to more descriptive 'kill'
-  debug_only( def = (Node*)0xdeadbeef; )
+  debug_only( def = (Node*)((intptr_t)0xdeadbeef); )
 
   // After some number of kills there _may_ be a later def
   Node *later_def = NULL;

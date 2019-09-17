@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,14 +22,19 @@
  *
  */
 
-#ifndef SHARE_VM_CLASSFILE_PACKAGEENTRY_HPP
-#define SHARE_VM_CLASSFILE_PACKAGEENTRY_HPP
+#ifndef SHARE_CLASSFILE_PACKAGEENTRY_HPP
+#define SHARE_CLASSFILE_PACKAGEENTRY_HPP
 
 #include "classfile/moduleEntry.hpp"
 #include "oops/symbol.hpp"
 #include "utilities/growableArray.hpp"
 #include "utilities/hashtable.hpp"
+#include "utilities/macros.hpp"
 #include "utilities/ostream.hpp"
+#if INCLUDE_JFR
+#include "jfr/support/jfrTraceIdExtension.hpp"
+#endif
+
 
 // A PackageEntry basically represents a Java package.  It contains:
 //   - Symbol* containing the package's name.
@@ -104,7 +109,7 @@ private:
   // Contains list of modules this package is qualifiedly exported to.  Access
   // to this list is protected by the Module_lock.
   GrowableArray<ModuleEntry*>* _qualified_exports;
-  TRACE_DEFINE_TRACE_ID_FIELD;
+  JFR_ONLY(DEFINE_TRACE_ID_FIELD;)
 
   // Initial size of a package entry's list of qualified exports.
   enum {QUAL_EXP_SIZE = 43};
@@ -197,9 +202,9 @@ public:
   }
 
   // iteration of qualified exports
-  void package_exports_do(ModuleClosure* const f);
+  void package_exports_do(ModuleClosure* f);
 
-  TRACE_DEFINE_TRACE_ID_METHODS;
+  JFR_ONLY(DEFINE_TRACE_ID_METHODS;)
 
   // Purge dead weak references out of exported list when any given class loader is unloaded.
   void purge_qualified_exports();
@@ -241,15 +246,25 @@ public:
     return (PackageEntry*)Hashtable<Symbol*, mtModule>::bucket(i);
   }
 
-  // Create package in loader's package entry table and return the entry.
-  // If entry already exists, return null.  Assume Module lock was taken by caller.
-  PackageEntry* locked_create_entry_or_null(Symbol* name, ModuleEntry* module);
+  // Create package entry in loader's package entry table.  Assume Module
+  // lock was taken by caller.
+  void locked_create_entry(Symbol* name, ModuleEntry* module);
 
-  // lookup Package with loader's package entry table, if not found add
+  // Create package entry in loader's package entry table if it does not
+  // already exist.  Assume Module lock was taken by caller.
+  void locked_create_entry_if_not_exist(Symbol* name, ModuleEntry* module);
+
+  // Lookup Package with loader's package entry table, add it if not found.
+  // This will acquire the Module lock.
   PackageEntry* lookup(Symbol* name, ModuleEntry* module);
 
-  // Only lookup Package within loader's package entry table.  The table read is lock-free.
+  // Only lookup Package within loader's package entry table.
+  // This will acquire the Module lock.
   PackageEntry* lookup_only(Symbol* Package);
+
+  // Only lookup Package within loader's package entry table.  Assume Module lock
+  // was taken by caller.
+  PackageEntry* locked_lookup_only(Symbol* Package);
 
   void verify_javabase_packages(GrowableArray<Symbol*> *pkg_list);
 
@@ -260,4 +275,4 @@ public:
   void verify();
 };
 
-#endif // SHARE_VM_CLASSFILE_PACKAGEENTRY_HPP
+#endif // SHARE_CLASSFILE_PACKAGEENTRY_HPP

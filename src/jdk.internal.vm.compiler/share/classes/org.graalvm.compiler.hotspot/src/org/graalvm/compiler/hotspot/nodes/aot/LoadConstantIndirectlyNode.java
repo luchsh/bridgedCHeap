@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.nodes.aot;
 
 import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_4;
@@ -41,6 +43,7 @@ import org.graalvm.compiler.nodes.spi.LIRLowerable;
 import org.graalvm.compiler.nodes.spi.NodeLIRBuilderTool;
 import org.graalvm.compiler.nodes.util.GraphUtil;
 
+import jdk.vm.ci.hotspot.HotSpotConstantPoolObject;
 import jdk.vm.ci.hotspot.HotSpotMetaspaceConstant;
 import jdk.vm.ci.hotspot.HotSpotObjectConstant;
 import jdk.vm.ci.meta.Constant;
@@ -81,7 +84,7 @@ public class LoadConstantIndirectlyNode extends FloatingNode implements Canonica
     public void generate(NodeLIRBuilderTool gen) {
         assert constant != null : "Expected the value to fold: " + value;
         Value result;
-        if (constant instanceof HotSpotObjectConstant) {
+        if (constant instanceof HotSpotObjectConstant || constant instanceof HotSpotConstantPoolObject) {
             result = ((HotSpotLIRGenerator) gen.getLIRGeneratorTool()).emitLoadObjectAddress(constant);
         } else if (constant instanceof HotSpotMetaspaceConstant) {
             result = ((HotSpotLIRGenerator) gen.getLIRGeneratorTool()).emitLoadMetaspaceAddress(constant, action);

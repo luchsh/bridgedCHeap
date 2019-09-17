@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2012, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -55,27 +55,31 @@
 // Return TRUE or FALSE if the loop should be unswitched
 // (ie. clone loop with an invariant test that does not exit the loop)
 bool IdealLoopTree::policy_unswitching( PhaseIdealLoop *phase ) const {
-  if( !LoopUnswitching ) {
+  if (!LoopUnswitching) {
     return false;
   }
   if (!_head->is_Loop()) {
     return false;
   }
 
+  // If nodes are depleted, some transform has miscalculated its needs.
+  assert(!phase->exceeding_node_budget(), "sanity");
+
   // check for vectorized loops, any unswitching was already applied
-  if (_head->is_CountedLoop() && _head->as_CountedLoop()->do_unroll_only()) {
+  if (_head->is_CountedLoop() && _head->as_CountedLoop()->is_unroll_only()) {
     return false;
   }
 
-  int nodes_left = phase->C->max_node_limit() - phase->C->live_nodes();
-  if ((int)(2 * _body.size()) > nodes_left) {
-    return false; // Too speculative if running low on nodes.
-  }
   LoopNode* head = _head->as_Loop();
   if (head->unswitch_count() + 1 > head->unswitch_max()) {
     return false;
   }
-  return phase->find_unswitching_candidate(this) != NULL;
+  if (phase->find_unswitching_candidate(this) == NULL) {
+    return false;
+  }
+
+  // Too speculative if running low on nodes.
+  return phase->may_require_nodes(est_loop_clone_sz(2));
 }
 
 //------------------------------find_unswitching_candidate-----------------------------
@@ -112,7 +116,7 @@ IfNode* PhaseIdealLoop::find_unswitching_candidate(const IdealLoopTree *loop) co
 // Clone loop with an invariant test (that does not exit) and
 // insert a clone of the test that selects which version to
 // execute.
-void PhaseIdealLoop::do_unswitching (IdealLoopTree *loop, Node_List &old_new) {
+void PhaseIdealLoop::do_unswitching(IdealLoopTree *loop, Node_List &old_new) {
 
   // Find first invariant test that doesn't exit the loop
   LoopNode *head = loop->_head->as_Loop();
@@ -138,9 +142,19 @@ void PhaseIdealLoop::do_unswitching (IdealLoopTree *loop, Node_List &old_new) {
   Node* uniqc = proj_true->unique_ctrl_out();
   Node* entry = head->skip_strip_mined()->in(LoopNode::EntryControl);
   Node* predicate = find_predicate(entry);
+  if (predicate != NULL) {
+    entry = skip_loop_predicates(entry);
+  }
   if (predicate != NULL && UseLoopPredicate) {
     // We may have two predicates, find first.
-    entry = find_predicate(entry->in(0)->in(0));
+    Node* n = find_predicate(entry);
+    if (n != NULL) {
+      predicate = n;
+      entry = skip_loop_predicates(entry);
+    }
+  }
+  if (predicate != NULL && UseProfiledLoopPredicate) {
+    entry = find_predicate(entry);
     if (entry != NULL) predicate = entry;
   }
   if (predicate != NULL) predicate = predicate->in(0);

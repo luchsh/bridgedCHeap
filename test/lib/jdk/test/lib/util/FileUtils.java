@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,18 +25,31 @@ package jdk.test.lib.util;
 
 import jdk.test.lib.Platform;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.io.UncheckedIOException;
+import java.lang.ProcessBuilder.Redirect;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Instant;
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.TimeUnit;
-
 
 /**
  * Common library for various test file utility functions.
@@ -227,4 +240,138 @@ public final class FileUtils {
         }
         return areFileSystemsAccessible;
     }
+
+    /**
+     * Checks whether all file systems are accessible. This is performed
+     * by checking free disk space on all mounted file systems via a
+     * separate, spawned process. File systems are considered to be
+     * accessible if this process completes successfully before a given
+     * fixed duration has elapsed.
+     *
+     * @implNote On Unix this executes the {@code df} command in a separate
+     * process and on Windows always returns {@code true}.
+     *
+     * @return whether file systems appear to be accessible
+     *
+     * @throws RuntimeException if there are duplicate mount points or some
+     * other execution problem occurs
+     */
+    public static boolean areAllMountPointsAccessible() {
+        final AtomicBoolean areMountPointsOK = new AtomicBoolean(true);
+        if (!IS_WINDOWS) {
+            Thread thr = new Thread(() -> {
+                try {
+                    Process proc = new ProcessBuilder("df").start();
+                    BufferedReader reader = new BufferedReader
+                        (new InputStreamReader(proc.getInputStream()));
+                    // Skip the first line as it is the "df" output header.
+                    if (reader.readLine() != null ) {
+                        String prevMountPoint = null, mountPoint = null;
+                        while ((mountPoint = reader.readLine()) != null) {
+                            if (prevMountPoint != null &&
+                                mountPoint.equals(prevMountPoint)) {
+                                throw new RuntimeException
+                                    ("System configuration error: " +
+                                    "duplicate mount point " + mountPoint +
+                                    " detected");
+                            }
+                            prevMountPoint = mountPoint;
+                        }
+                    }
+
+                    try {
+                        proc.waitFor(90, TimeUnit.SECONDS);
+                    } catch (InterruptedException ignored) {
+                    }
+                    try {
+                        int exitValue = proc.exitValue();
+                        if (exitValue != 0) {
+                            System.err.printf("df process exited with %d != 0%n",
+                                exitValue);
+                            areMountPointsOK.set(false);
+                        }
+                    } catch (IllegalThreadStateException ignored) {
+                        System.err.println("df command apparently hung");
+                        areMountPointsOK.set(false);
+                    }
+                } catch (IOException ioe) {
+                    throw new RuntimeException(ioe);
+                };
+            });
+
+            final AtomicReference throwableReference =
+                new AtomicReference<Throwable>();
+            thr.setUncaughtExceptionHandler(
+                new Thread.UncaughtExceptionHandler() {
+                    public void uncaughtException(Thread t, Throwable e) {
+                        throwableReference.set(e);
+                    }
+                });
+
+            thr.start();
+            try {
+                thr.join(120*1000L);
+            } catch (InterruptedException ie) {
+                throw new RuntimeException(ie);
+            }
+
+            Throwable uncaughtException = (Throwable)throwableReference.get();
+            if (uncaughtException != null) {
+                throw new RuntimeException(uncaughtException);
+            }
+
+            if (thr.isAlive()) {
+                throw new RuntimeException("df thread did not join in time");
+            }
+        }
+
+        return areMountPointsOK.get();
+    }
+
+    /**
+     * List the open file descriptors (if supported by the 'lsof' command).
+     * @param ps a printStream to send the output to
+     * @throws UncheckedIOException if an error occurs
+     */
+    public static void listFileDescriptors(PrintStream ps) {
+
+        Optional<String[]> lsof = Arrays.stream(lsCommands)
+                .filter(args -> Files.isExecutable(Path.of(args[0])))
+                .findFirst();
+        lsof.ifPresent(args -> {
+            try {
+                ps.printf("Open File Descriptors:%n");
+                long pid = ProcessHandle.current().pid();
+                ProcessBuilder pb = new ProcessBuilder(args[0], args[1], Integer.toString((int) pid));
+                pb.redirectErrorStream(true);   // combine stderr and stdout
+                pb.redirectOutput(Redirect.PIPE);
+
+                Process p = pb.start();
+                Instant start = Instant.now();
+                p.getInputStream().transferTo(ps);
+
+                try {
+                    int timeout = 10;
+                    if (!p.waitFor(timeout, TimeUnit.SECONDS)) {
+                        System.out.printf("waitFor timed out: %d%n", timeout);
+                    }
+                } catch (InterruptedException ie) {
+                    throw new IOException("interrupted", ie);
+                }
+                ps.println();
+            } catch (IOException ioe) {
+                throw new UncheckedIOException("error listing file descriptors", ioe);
+            }
+        });
+    }
+
+    // Possible command locations and arguments
+    static String[][] lsCommands = new String[][] {
+            {"/usr/bin/lsof", "-p"},
+            {"/usr/sbin/lsof", "-p"},
+            {"/bin/lsof", "-p"},
+            {"/sbin/lsof", "-p"},
+            {"/usr/local/bin/lsof", "-p"},
+            {"/usr/bin/pfiles", "-F"},   // Solaris
+    };
 }

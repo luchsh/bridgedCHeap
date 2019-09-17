@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,7 +28,8 @@ package java.util;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
-import jdk.internal.misc.SharedSecrets;
+import jdk.internal.access.SharedSecrets;
+import jdk.internal.util.ArraysSupport;
 
 /**
  * Resizable-array implementation of the {@code List} interface.  Implements
@@ -92,7 +93,7 @@ import jdk.internal.misc.SharedSecrets;
  * should be used only to detect bugs.</i>
  *
  * <p>This class is a member of the
- * <a href="{@docRoot}/java/util/package-summary.html#CollectionsFramework">
+ * <a href="{@docRoot}/java.base/java/util/package-summary.html#CollectionsFramework">
  * Java Collections Framework</a>.
  *
  * @param <E> the type of elements in this list
@@ -219,14 +220,6 @@ public class ArrayList<E> extends AbstractList<E>
     }
 
     /**
-     * The maximum size of array to allocate (unless necessary).
-     * Some VMs reserve some header words in an array.
-     * Attempts to allocate larger arrays may result in
-     * OutOfMemoryError: Requested array size exceeds VM limit
-     */
-    private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
-
-    /**
      * Increases the capacity to ensure that it can hold at least the
      * number of elements specified by the minimum capacity argument.
      *
@@ -234,45 +227,19 @@ public class ArrayList<E> extends AbstractList<E>
      * @throws OutOfMemoryError if minCapacity is less than zero
      */
     private Object[] grow(int minCapacity) {
-        return elementData = Arrays.copyOf(elementData,
-                                           newCapacity(minCapacity));
+        int oldCapacity = elementData.length;
+        if (oldCapacity > 0 || elementData != DEFAULTCAPACITY_EMPTY_ELEMENTDATA) {
+            int newCapacity = ArraysSupport.newLength(oldCapacity,
+                    minCapacity - oldCapacity, /* minimum growth */
+                    oldCapacity >> 1           /* preferred growth */);
+            return elementData = Arrays.copyOf(elementData, newCapacity);
+        } else {
+            return elementData = new Object[Math.max(DEFAULT_CAPACITY, minCapacity)];
+        }
     }
 
     private Object[] grow() {
         return grow(size + 1);
-    }
-
-    /**
-     * Returns a capacity at least as large as the given minimum capacity.
-     * Returns the current capacity increased by 50% if that suffices.
-     * Will not return a capacity greater than MAX_ARRAY_SIZE unless
-     * the given minimum capacity is greater than MAX_ARRAY_SIZE.
-     *
-     * @param minCapacity the desired minimum capacity
-     * @throws OutOfMemoryError if minCapacity is less than zero
-     */
-    private int newCapacity(int minCapacity) {
-        // overflow-conscious code
-        int oldCapacity = elementData.length;
-        int newCapacity = oldCapacity + (oldCapacity >> 1);
-        if (newCapacity - minCapacity <= 0) {
-            if (elementData == DEFAULTCAPACITY_EMPTY_ELEMENTDATA)
-                return Math.max(DEFAULT_CAPACITY, minCapacity);
-            if (minCapacity < 0) // overflow
-                throw new OutOfMemoryError();
-            return minCapacity;
-        }
-        return (newCapacity - MAX_ARRAY_SIZE <= 0)
-            ? newCapacity
-            : hugeCapacity(minCapacity);
-    }
-
-    private static int hugeCapacity(int minCapacity) {
-        if (minCapacity < 0) // overflow
-            throw new OutOfMemoryError();
-        return (minCapacity > MAX_ARRAY_SIZE)
-            ? Integer.MAX_VALUE
-            : MAX_ARRAY_SIZE;
     }
 
     /**
@@ -314,14 +281,23 @@ public class ArrayList<E> extends AbstractList<E>
      * or -1 if there is no such index.
      */
     public int indexOf(Object o) {
+        return indexOfRange(o, 0, size);
+    }
+
+    int indexOfRange(Object o, int start, int end) {
+        Object[] es = elementData;
         if (o == null) {
-            for (int i = 0; i < size; i++)
-                if (elementData[i]==null)
+            for (int i = start; i < end; i++) {
+                if (es[i] == null) {
                     return i;
+                }
+            }
         } else {
-            for (int i = 0; i < size; i++)
-                if (o.equals(elementData[i]))
+            for (int i = start; i < end; i++) {
+                if (o.equals(es[i])) {
                     return i;
+                }
+            }
         }
         return -1;
     }
@@ -334,14 +310,23 @@ public class ArrayList<E> extends AbstractList<E>
      * or -1 if there is no such index.
      */
     public int lastIndexOf(Object o) {
+        return lastIndexOfRange(o, 0, size);
+    }
+
+    int lastIndexOfRange(Object o, int start, int end) {
+        Object[] es = elementData;
         if (o == null) {
-            for (int i = size-1; i >= 0; i--)
-                if (elementData[i]==null)
+            for (int i = end - 1; i >= start; i--) {
+                if (es[i] == null) {
                     return i;
+                }
+            }
         } else {
-            for (int i = size-1; i >= 0; i--)
-                if (o.equals(elementData[i]))
+            for (int i = end - 1; i >= start; i--) {
+                if (o.equals(es[i])) {
                     return i;
+                }
+            }
         }
         return -1;
     }
@@ -521,6 +506,93 @@ public class ArrayList<E> extends AbstractList<E>
         fastRemove(es, index);
 
         return oldValue;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public boolean equals(Object o) {
+        if (o == this) {
+            return true;
+        }
+
+        if (!(o instanceof List)) {
+            return false;
+        }
+
+        final int expectedModCount = modCount;
+        // ArrayList can be subclassed and given arbitrary behavior, but we can
+        // still deal with the common case where o is ArrayList precisely
+        boolean equal = (o.getClass() == ArrayList.class)
+            ? equalsArrayList((ArrayList<?>) o)
+            : equalsRange((List<?>) o, 0, size);
+
+        checkForComodification(expectedModCount);
+        return equal;
+    }
+
+    boolean equalsRange(List<?> other, int from, int to) {
+        final Object[] es = elementData;
+        if (to > es.length) {
+            throw new ConcurrentModificationException();
+        }
+        var oit = other.iterator();
+        for (; from < to; from++) {
+            if (!oit.hasNext() || !Objects.equals(es[from], oit.next())) {
+                return false;
+            }
+        }
+        return !oit.hasNext();
+    }
+
+    private boolean equalsArrayList(ArrayList<?> other) {
+        final int otherModCount = other.modCount;
+        final int s = size;
+        boolean equal;
+        if (equal = (s == other.size)) {
+            final Object[] otherEs = other.elementData;
+            final Object[] es = elementData;
+            if (s > es.length || s > otherEs.length) {
+                throw new ConcurrentModificationException();
+            }
+            for (int i = 0; i < s; i++) {
+                if (!Objects.equals(es[i], otherEs[i])) {
+                    equal = false;
+                    break;
+                }
+            }
+        }
+        other.checkForComodification(otherModCount);
+        return equal;
+    }
+
+    private void checkForComodification(final int expectedModCount) {
+        if (modCount != expectedModCount) {
+            throw new ConcurrentModificationException();
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public int hashCode() {
+        int expectedModCount = modCount;
+        int hash = hashCodeRange(0, size);
+        checkForComodification(expectedModCount);
+        return hash;
+    }
+
+    int hashCodeRange(int from, int to) {
+        final Object[] es = elementData;
+        if (to > es.length) {
+            throw new ConcurrentModificationException();
+        }
+        int hashCode = 1;
+        for (int i = from; i < to; i++) {
+            Object e = es[i];
+            hashCode = 31 * hashCode + (e == null ? 0 : e.hashCode());
+        }
+        return hashCode;
     }
 
     /**
@@ -1116,6 +1188,10 @@ public class ArrayList<E> extends AbstractList<E>
             return true;
         }
 
+        public void replaceAll(UnaryOperator<E> operator) {
+            root.replaceAllRange(operator, offset, offset + size);
+        }
+
         public boolean removeAll(Collection<?> c) {
             return batchRemove(c, false);
         }
@@ -1158,6 +1234,42 @@ public class ArrayList<E> extends AbstractList<E>
             if (a.length > size)
                 a[size] = null;
             return a;
+        }
+
+        public boolean equals(Object o) {
+            if (o == this) {
+                return true;
+            }
+
+            if (!(o instanceof List)) {
+                return false;
+            }
+
+            boolean equal = root.equalsRange((List<?>)o, offset, offset + size);
+            checkForComodification();
+            return equal;
+        }
+
+        public int hashCode() {
+            int hash = root.hashCodeRange(offset, offset + size);
+            checkForComodification();
+            return hash;
+        }
+
+        public int indexOf(Object o) {
+            int index = root.indexOfRange(o, offset, offset + size);
+            checkForComodification();
+            return index >= 0 ? index - offset : -1;
+        }
+
+        public int lastIndexOf(Object o) {
+            int index = root.lastIndexOfRange(o, offset, offset + size);
+            checkForComodification();
+            return index >= 0 ? index - offset : -1;
+        }
+
+        public boolean contains(Object o) {
+            return indexOf(o) >= 0;
         }
 
         public Iterator<E> iterator() {
@@ -1583,15 +1695,19 @@ public class ArrayList<E> extends AbstractList<E>
 
     @Override
     public void replaceAll(UnaryOperator<E> operator) {
+        replaceAllRange(operator, 0, size);
+        // TODO(8203662): remove increment of modCount from ...
+        modCount++;
+    }
+
+    private void replaceAllRange(UnaryOperator<E> operator, int i, int end) {
         Objects.requireNonNull(operator);
         final int expectedModCount = modCount;
         final Object[] es = elementData;
-        final int size = this.size;
-        for (int i = 0; modCount == expectedModCount && i < size; i++)
+        for (; modCount == expectedModCount && i < end; i++)
             es[i] = operator.apply(elementAt(es, i));
         if (modCount != expectedModCount)
             throw new ConcurrentModificationException();
-        modCount++;
     }
 
     @Override

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,13 +25,17 @@ import java.io.IOException;
 import java.net.*;
 import java.util.Set;
 import static java.lang.System.out;
+import jdk.test.lib.net.IPSupport;
 
 /*
  * @test
  * @bug 8143923
+ * @library /test/lib
  * @summary java.net socket supportedOptions set depends on call order
  * @run main/othervm SupportedOptionsSet first
  * @run main/othervm SupportedOptionsSet second
+ * @run main/othervm -Djava.net.preferIPv4Stack=true SupportedOptionsSet first
+ * @run main/othervm -Djava.net.preferIPv4Stack=true SupportedOptionsSet second
  */
 
 // Run with othervm as the implementation of the supported options sets, once
@@ -40,6 +44,8 @@ import static java.lang.System.out;
 public class SupportedOptionsSet {
 
     public static void main(String[] args) throws IOException {
+        IPSupport.throwSkippedExceptionIfNonOperational();
+
         if (args[0].equals("first"))
             first();
         else if (args[0].equals("second"))

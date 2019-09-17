@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -167,7 +167,7 @@ public class VirtualMachineImpl extends HotSpotVirtualMachine {
             writeString(s, PROTOCOL_VERSION);
             writeString(s, cmd);
 
-            for (int i=0; i<3; i++) {
+            for (int i = 0; i < 3; i++) {
                 if (i < args.length && args[i] != null) {
                     writeString(s, (String)args[i]);
                 } else {
@@ -281,8 +281,7 @@ public class VirtualMachineImpl extends HotSpotVirtualMachine {
     }
 
     private File createAttachFile(int pid) throws IOException {
-        String fn = ".attach_pid" + pid;
-        File f = new File(tmpdir, fn);
+        File f = new File(tmpdir, ".attach_pid" + pid);
         createAttachFile0(f.getPath());
         return f;
     }

@@ -34,12 +34,13 @@ import java.awt.image.BufferedImage;
 
 /*
  * @test
+ * @key headful
  * @summary Check if a action performed event is received when TrayIcon display
  *          message is clicked on.
  * @author Shashidhara Veerabhadraiah (shashidhara.veerabhadraiah@oracle.com)
  * @modules java.desktop/java.awt:open
  * @library /java/awt/patchlib
- * @library ../../../../lib/testlibrary ../
+ * @library /lib/client ../
  * @build java.desktop/java.awt.Helper
  * @build ExtendedRobot SystemTrayIconHelper
  * @run main TrayIconPopupClickTest

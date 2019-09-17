@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.replacements.test.classfile;
 
 import static org.graalvm.compiler.bytecode.Bytecodes.ALOAD;
@@ -85,8 +87,10 @@ import java.util.Formatter;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
+import org.graalvm.compiler.test.SubprocessUtil;
 import org.junit.Assert;
 import org.junit.Assume;
+import org.junit.Before;
 import org.junit.Test;
 
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
@@ -122,6 +126,12 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  */
 public class ClassfileBytecodeProviderTest extends GraalCompilerTest {
 
+    @Before
+    public void checkJavaAgent() {
+        assumeManagementLibraryIsLoadable();
+        Assume.assumeFalse("Java Agent found -> skipping", SubprocessUtil.isJavaAgentAttached());
+    }
+
     private static boolean shouldProcess(String classpathEntry) {
         if (classpathEntry.endsWith(".jar")) {
             String name = new File(classpathEntry).getName();
@@ -129,6 +139,11 @@ public class ClassfileBytecodeProviderTest extends GraalCompilerTest {
         }
         return false;
     }
+
+    /**
+     * Keep test time down by only sampling a limited number of class files per jar.
+     */
+    private static final int CLASSES_PER_JAR = 250;
 
     @Test
     public void test() {
@@ -146,24 +161,33 @@ public class ClassfileBytecodeProviderTest extends GraalCompilerTest {
             if (shouldProcess(path)) {
                 try {
                     final ZipFile zipFile = new ZipFile(new File(path));
+                    int index = 0;
+                    int step = zipFile.size() > CLASSES_PER_JAR ? zipFile.size() / CLASSES_PER_JAR : 1;
                     for (final Enumeration<? extends ZipEntry> entry = zipFile.entries(); entry.hasMoreElements();) {
                         final ZipEntry zipEntry = entry.nextElement();
-                        String name = zipEntry.getName();
-                        if (name.endsWith(".class") && !name.equals("module-info.class")) {
-                            String className = name.substring(0, name.length() - ".class".length()).replace('/', '.');
-                            if (isInNativeImage(className)) {
-                                /*
-                                 * Native image requires non-graalsdk classes to be present in the
-                                 * classpath.
-                                 */
-                                continue;
-                            }
-                            try {
-                                checkClass(metaAccess, getSnippetReflection(), className);
-                            } catch (ClassNotFoundException e) {
-                                throw new AssertionError(e);
+                        if ((index % step) == 0) {
+                            String name = zipEntry.getName();
+                            if (name.endsWith(".class") && !name.equals("module-info.class") && !name.startsWith("META-INF/versions/")) {
+                                String className = name.substring(0, name.length() - ".class".length()).replace('/', '.');
+                                if (isInNativeImage(className)) {
+                                    /*
+                                     * Native image requires non-graalsdk classes to be present in
+                                     * the classpath.
+                                     */
+                                    continue;
+                                }
+                                if (isGSON(className)) {
+                                    /* uses old class format */
+                                    continue;
+                                }
+                                try {
+                                    checkClass(metaAccess, getSnippetReflection(), className);
+                                } catch (ClassNotFoundException e) {
+                                    throw new AssertionError(e);
+                                }
                             }
                         }
+                        index++;
                     }
                 } catch (IOException ex) {
                     Assert.fail(ex.toString());
@@ -176,7 +200,15 @@ public class ClassfileBytecodeProviderTest extends GraalCompilerTest {
         return className.startsWith("org.graalvm.nativeimage");
     }
 
+    private static boolean isGSON(String className) {
+        return className.contains("com.google.gson");
+    }
+
     protected void checkClass(MetaAccessProvider metaAccess, SnippetReflectionProvider snippetReflection, String className) throws ClassNotFoundException {
+        if (className.equals("jdk.vm.ci.services.JVMCIClassLoaderFactory")) {
+            // JVMCIClassLoaderFactory must only be initialized by the VM
+            return;
+        }
         Class<?> c = Class.forName(className, true, getClass().getClassLoader());
         ClassfileBytecodeProvider cbp = new ClassfileBytecodeProvider(metaAccess, snippetReflection);
         for (Method method : c.getDeclaredMethods()) {
@@ -187,15 +219,21 @@ public class ClassfileBytecodeProviderTest extends GraalCompilerTest {
     private static void checkMethod(ClassfileBytecodeProvider cbp, MetaAccessProvider metaAccess, Executable executable) {
         ResolvedJavaMethod method = metaAccess.lookupJavaMethod(executable);
         if (method.hasBytecodes()) {
-            ResolvedJavaMethodBytecode expected = new ResolvedJavaMethodBytecode(method);
             Bytecode actual = getBytecode(cbp, method);
-            new BytecodeComparer(expected, actual).compare();
+            if (actual != null) {
+                ResolvedJavaMethodBytecode expected = new ResolvedJavaMethodBytecode(method);
+                new BytecodeComparer(expected, actual).compare();
+            }
         }
     }
 
     protected static Bytecode getBytecode(ClassfileBytecodeProvider cbp, ResolvedJavaMethod method) {
         try {
             return cbp.getBytecode(method);
+        } catch (UnsupportedClassVersionError e) {
+            // This can happen when a library containing old class files
+            // is bundled into a Graal jar (GR-12672).
+            return null;
         } catch (Throwable e) {
             throw new AssertionError(String.format("Error getting bytecode for %s", method.format("%H.%n(%p)")), e);
         }

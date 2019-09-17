@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,20 +25,12 @@
 #include "precompiled.hpp"
 #include "jvm.h"
 #include "jvmci/jvmci_globals.hpp"
+#include "gc/shared/gcConfig.hpp"
 #include "utilities/defaultStream.hpp"
+#include "utilities/ostream.hpp"
 #include "runtime/globals_extension.hpp"
 
-JVMCI_FLAGS(MATERIALIZE_DEVELOPER_FLAG, \
-            MATERIALIZE_PD_DEVELOPER_FLAG, \
-            MATERIALIZE_PRODUCT_FLAG, \
-            MATERIALIZE_PD_PRODUCT_FLAG, \
-            MATERIALIZE_DIAGNOSTIC_FLAG, \
-            MATERIALIZE_PD_DIAGNOSTIC_FLAG, \
-            MATERIALIZE_EXPERIMENTAL_FLAG, \
-            MATERIALIZE_NOTPRODUCT_FLAG,
-            IGNORE_RANGE, \
-            IGNORE_CONSTRAINT, \
-            IGNORE_WRITEABLE)
+fileStream* JVMCIGlobals::_jni_config_file = NULL;
 
 // Return true if jvmci flags are consistent.
 bool JVMCIGlobals::check_jvmci_flags_are_consistent() {
@@ -78,7 +70,20 @@ bool JVMCIGlobals::check_jvmci_flags_are_consistent() {
       return false;
     }
     FLAG_SET_DEFAULT(EnableJVMCI, true);
+    if (BootstrapJVMCI && UseJVMCINativeLibrary) {
+      jio_fprintf(defaultStream::error_stream(), "-XX:+BootstrapJVMCI is not compatible with -XX:+UseJVMCINativeLibrary\n");
+      return false;
+    }
   }
+
+  if (!EnableJVMCI) {
+    // Switch off eager JVMCI initialization if JVMCI is disabled.
+    // Don't throw error if EagerJVMCI is set to allow testing.
+    if (EagerJVMCI) {
+      FLAG_SET_DEFAULT(EagerJVMCI, false);
+    }
+  }
+  JVMCI_FLAG_CHECKED(EagerJVMCI)
 
   CHECK_NOT_SET(JVMCITraceLevel,              EnableJVMCI)
   CHECK_NOT_SET(JVMCICounterSize,             EnableJVMCI)
@@ -87,7 +92,9 @@ bool JVMCIGlobals::check_jvmci_flags_are_consistent() {
   CHECK_NOT_SET(JVMCINMethodSizeLimit,        EnableJVMCI)
   CHECK_NOT_SET(MethodProfileWidth,           EnableJVMCI)
   CHECK_NOT_SET(JVMCIPrintProperties,         EnableJVMCI)
-  CHECK_NOT_SET(TraceUncollectedSpeculations, EnableJVMCI)
+  CHECK_NOT_SET(UseJVMCINativeLibrary,        EnableJVMCI)
+  CHECK_NOT_SET(JVMCILibPath,                 EnableJVMCI)
+  CHECK_NOT_SET(JVMCILibDumpJNIConfig,        EnableJVMCI)
 
 #ifndef PRODUCT
 #define JVMCI_CHECK4(type, name, value, doc) assert(name##checked, #name " flag not checked");
@@ -100,7 +107,28 @@ bool JVMCIGlobals::check_jvmci_flags_are_consistent() {
 #undef JVMCI_CHECK3
 #undef JVMCI_CHECK4
 #undef JVMCI_FLAG_CHECKED
-#endif
+#endif // PRODUCT
 #undef CHECK_NOT_SET
+
+  if (JVMCILibDumpJNIConfig != NULL) {
+    _jni_config_file = new(ResourceObj::C_HEAP, mtJVMCI) fileStream(JVMCILibDumpJNIConfig);
+    if (_jni_config_file == NULL || !_jni_config_file->is_open()) {
+      jio_fprintf(defaultStream::error_stream(),
+          "Could not open file for dumping JVMCI shared library JNI config: %s\n", JVMCILibDumpJNIConfig);
+      return false;
+    }
+  }
+
   return true;
+}
+
+void JVMCIGlobals::check_jvmci_supported_gc() {
+  if (EnableJVMCI) {
+    // Check if selected GC is supported by JVMCI and Java compiler
+    if (!(UseSerialGC || UseParallelGC || UseParallelOldGC || UseG1GC)) {
+      vm_exit_during_initialization("JVMCI Compiler does not support selected GC", GCConfig::hs_err_name());
+      FLAG_SET_DEFAULT(EnableJVMCI, false);
+      FLAG_SET_DEFAULT(UseJVMCICompiler, false);
+    }
+  }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,15 +20,21 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes.java;
 
 import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_8;
 
 import org.graalvm.compiler.core.common.type.StampFactory;
+import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.NodeClass;
+import org.graalvm.compiler.graph.spi.Canonicalizable;
+import org.graalvm.compiler.graph.spi.CanonicalizerTool;
 import org.graalvm.compiler.nodeinfo.InputType;
 import org.graalvm.compiler.nodeinfo.NodeCycles;
 import org.graalvm.compiler.nodeinfo.NodeInfo;
+import org.graalvm.compiler.nodes.DeoptimizeNode;
 import org.graalvm.compiler.nodes.FrameState;
 import org.graalvm.compiler.nodes.StateSplit;
 import org.graalvm.compiler.nodes.ValueNode;
@@ -37,13 +43,15 @@ import org.graalvm.compiler.nodes.spi.VirtualizerTool;
 import org.graalvm.compiler.nodes.virtual.VirtualInstanceNode;
 import org.graalvm.compiler.nodes.virtual.VirtualObjectNode;
 
+import jdk.vm.ci.meta.DeoptimizationAction;
+import jdk.vm.ci.meta.DeoptimizationReason;
 import jdk.vm.ci.meta.ResolvedJavaField;
 
 /**
  * The {@code StoreFieldNode} represents a write to a static or instance field.
  */
 @NodeInfo(nameTemplate = "StoreField#{p#field/s}")
-public final class StoreFieldNode extends AccessFieldNode implements StateSplit, Virtualizable {
+public final class StoreFieldNode extends AccessFieldNode implements StateSplit, Virtualizable, Canonicalizable {
     public static final NodeClass<StoreFieldNode> TYPE = NodeClass.create(StoreFieldNode.class);
 
     @Input ValueNode value;
@@ -71,12 +79,16 @@ public final class StoreFieldNode extends AccessFieldNode implements StateSplit,
     }
 
     public StoreFieldNode(ValueNode object, ResolvedJavaField field, ValueNode value) {
-        super(TYPE, StampFactory.forVoid(), object, field);
+        this(object, field, value, field.isVolatile());
+    }
+
+    public StoreFieldNode(ValueNode object, ResolvedJavaField field, ValueNode value, boolean volatileAccess) {
+        super(TYPE, StampFactory.forVoid(), object, field, volatileAccess);
         this.value = value;
     }
 
-    public StoreFieldNode(ValueNode object, ResolvedJavaField field, ValueNode value, FrameState stateAfter) {
-        super(TYPE, StampFactory.forVoid(), object, field);
+    public StoreFieldNode(ValueNode object, ResolvedJavaField field, ValueNode value, FrameState stateAfter, boolean volatileAccess) {
+        super(TYPE, StampFactory.forVoid(), object, field, volatileAccess);
         this.value = value;
         this.stateAfter = stateAfter;
     }
@@ -100,9 +112,17 @@ public final class StoreFieldNode extends AccessFieldNode implements StateSplit,
 
     @Override
     public NodeCycles estimatedNodeCycles() {
-        if (field.isVolatile()) {
+        if (isVolatile()) {
             return CYCLES_8;
         }
         return super.estimatedNodeCycles();
+    }
+
+    @Override
+    public Node canonical(CanonicalizerTool tool) {
+        if (!field.isStatic() && object.isNullConstant()) {
+            return new DeoptimizeNode(DeoptimizationAction.InvalidateReprofile, DeoptimizationReason.NullCheckException);
+        }
+        return this;
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -55,8 +55,11 @@
     #define NAME_MAX MAXNAMLEN
   #endif
   #define DIR DIR64
+  #define dirent dirent64
   #define opendir opendir64
+  #define readdir readdir64
   #define closedir closedir64
+  #define stat stat64
 #endif
 
 #if defined(__solaris__) && !defined(NAME_MAX)
@@ -64,11 +67,9 @@
 #endif
 
 #if defined(_ALLBSD_SOURCE)
-  #define dirent64 dirent
-  #define readdir64_r readdir_r
-  #define stat64 stat
   #ifndef MACOSX
     #define statvfs64 statvfs
+    #define stat64 stat
   #endif
 #endif
 
@@ -167,7 +168,9 @@ Java_java_io_UnixFileSystem_checkAccess(JNIEnv *env, jobject this,
     default: assert(0);
     }
     WITH_FIELD_PLATFORM_STRING(env, file, ids.path, path) {
-        if (access(path, mode) == 0) {
+        int res;
+        RESTARTABLE(access(path, mode), res);
+        if (res == 0) {
             rv = JNI_TRUE;
         }
     } END_PLATFORM_STRING(env, path);
@@ -187,6 +190,7 @@ Java_java_io_UnixFileSystem_setPermission(JNIEnv *env, jobject this,
     WITH_FIELD_PLATFORM_STRING(env, file, ids.path, path) {
         int amode = 0;
         int mode;
+        int res;
         switch (access) {
         case java_io_FileSystem_ACCESS_READ:
             if (owneronly)
@@ -214,7 +218,8 @@ Java_java_io_UnixFileSystem_setPermission(JNIEnv *env, jobject this,
                 mode |= amode;
             else
                 mode &= ~amode;
-            if (chmod(path, mode) >= 0) {
+            RESTARTABLE(chmod(path, mode), res);
+            if (res == 0) {
                 rv = JNI_TRUE;
             }
         }
@@ -279,10 +284,10 @@ Java_java_io_UnixFileSystem_createFileExclusively(JNIEnv *env, jclass cls,
             fd = handleOpen(path, O_RDWR | O_CREAT | O_EXCL, 0666);
             if (fd < 0) {
                 if (errno != EEXIST)
-                    JNU_ThrowIOExceptionWithLastError(env, path);
+                    JNU_ThrowIOExceptionWithLastError(env, "Could not open file");
             } else {
                 if (close(fd) == -1)
-                    JNU_ThrowIOExceptionWithLastError(env, path);
+                    JNU_ThrowIOExceptionWithLastError(env, "Could not close file");
                 rv = JNI_TRUE;
             }
         }
@@ -311,8 +316,7 @@ Java_java_io_UnixFileSystem_list(JNIEnv *env, jobject this,
                                  jobject file)
 {
     DIR *dir = NULL;
-    struct dirent64 *ptr;
-    struct dirent64 *result;
+    struct dirent *ptr;
     int len, maxlen;
     jobjectArray rv, old;
     jclass str_class;
@@ -325,13 +329,6 @@ Java_java_io_UnixFileSystem_list(JNIEnv *env, jobject this,
     } END_PLATFORM_STRING(env, path);
     if (dir == NULL) return NULL;
 
-    ptr = malloc(sizeof(struct dirent64) + (PATH_MAX + 1));
-    if (ptr == NULL) {
-        JNU_ThrowOutOfMemoryError(env, "heap allocation failed");
-        closedir(dir);
-        return NULL;
-    }
-
     /* Allocate an initial String array */
     len = 0;
     maxlen = 16;
@@ -339,7 +336,7 @@ Java_java_io_UnixFileSystem_list(JNIEnv *env, jobject this,
     if (rv == NULL) goto error;
 
     /* Scan the directory */
-    while ((readdir64_r(dir, ptr, &result) == 0)  && (result != NULL)) {
+    while ((ptr = readdir(dir)) != NULL) {
         jstring name;
         if (!strcmp(ptr->d_name, ".") || !strcmp(ptr->d_name, ".."))
             continue;
@@ -360,22 +357,22 @@ Java_java_io_UnixFileSystem_list(JNIEnv *env, jobject this,
         (*env)->DeleteLocalRef(env, name);
     }
     closedir(dir);
-    free(ptr);
 
     /* Copy the final results into an appropriately-sized array */
-    old = rv;
-    rv = (*env)->NewObjectArray(env, len, str_class, NULL);
-    if (rv == NULL) {
-        return NULL;
-    }
-    if (JNU_CopyObjectArray(env, rv, old, len) < 0) {
-        return NULL;
+    if (len < maxlen) {
+        old = rv;
+        rv = (*env)->NewObjectArray(env, len, str_class, NULL);
+        if (rv == NULL) {
+            return NULL;
+        }
+        if (JNU_CopyObjectArray(env, rv, old, len) < 0) {
+            return NULL;
+        }
     }
     return rv;
 
  error:
     closedir(dir);
-    free(ptr);
     return NULL;
 }
 
@@ -455,8 +452,10 @@ Java_java_io_UnixFileSystem_setReadOnly(JNIEnv *env, jobject this,
 
     WITH_FIELD_PLATFORM_STRING(env, file, ids.path, path) {
         int mode;
+        int res;
         if (statMode(path, &mode)) {
-            if (chmod(path, mode & ~(S_IWUSR | S_IWGRP | S_IWOTH)) >= 0) {
+            RESTARTABLE(chmod(path, mode & ~(S_IWUSR | S_IWGRP | S_IWOTH)), res);
+            if (res == 0) {
                 rv = JNI_TRUE;
             }
         }
@@ -475,6 +474,7 @@ Java_java_io_UnixFileSystem_getSpace(JNIEnv *env, jobject this,
         struct statfs fsstat;
 #else
         struct statvfs64 fsstat;
+        int res;
 #endif
         memset(&fsstat, 0, sizeof(fsstat));
 #ifdef MACOSX
@@ -497,7 +497,8 @@ Java_java_io_UnixFileSystem_getSpace(JNIEnv *env, jobject this,
             }
         }
 #else
-        if (statvfs64(path, &fsstat) == 0) {
+        RESTARTABLE(statvfs64(path, &fsstat), res);
+        if (res == 0) {
             switch(t) {
             case java_io_FileSystem_SPACE_TOTAL:
                 rv = jlong_mul(long_to_jlong(fsstat.f_frsize),

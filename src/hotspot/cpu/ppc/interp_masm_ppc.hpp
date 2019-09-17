@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2012, 2017 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -23,8 +23,8 @@
  *
  */
 
-#ifndef CPU_PPC_VM_INTERP_MASM_PPC_HPP
-#define CPU_PPC_VM_INTERP_MASM_PPC_HPP
+#ifndef CPU_PPC_INTERP_MASM_PPC_HPP
+#define CPU_PPC_INTERP_MASM_PPC_HPP
 
 #include "asm/macroAssembler.hpp"
 #include "interpreter/invocationCounter.hpp"
@@ -77,10 +77,12 @@ class InterpreterMacroAssembler: public MacroAssembler {
                          Register tmp1, Register tmp2, Register tmp3, Label &ok_is_subtype);
 
   // Load object from cpool->resolved_references(index).
-  void load_resolved_reference_at_index(Register result, Register index, Label *is_null = NULL);
+  void load_resolved_reference_at_index(Register result, Register index, Label *L_handle_null = NULL);
 
   // load cpool->resolved_klass_at(index)
   void load_resolved_klass_at_offset(Register Rcpool, Register Roffset, Register Rklass);
+
+  void load_resolved_method_at_index(int byte_no, Register cache, Register method);
 
   void load_receiver(Register Rparam_count, Register Rrecv_dst);
 
@@ -266,4 +268,4 @@ class InterpreterMacroAssembler: public MacroAssembler {
                           NotifyMethodExitMode mode, bool check_exceptions);
 };
 
-#endif // CPU_PPC_VM_INTERP_MASM_PPC_HPP
+#endif // CPU_PPC_INTERP_MASM_PPC_HPP

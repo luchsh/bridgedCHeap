@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,7 @@
 package com.sun.tools.javac.comp;
 
 import java.util.*;
+import java.util.function.Supplier;
 
 import javax.tools.JavaFileManager;
 
@@ -90,6 +91,7 @@ public class Check {
     private final JCDiagnostic.Factory diags;
     private final JavaFileManager fileManager;
     private final Source source;
+    private final Target target;
     private final Profile profile;
     private final boolean warnOnAnyAccessToMembers;
 
@@ -130,6 +132,7 @@ public class Check {
         fileManager = context.get(JavaFileManager.class);
 
         source = Source.instance(context);
+        target = Target.instance(context);
         warnOnAnyAccessToMembers = options.isSet("warnOnAccessToMembers");
 
         Target target = Target.instance(context);
@@ -234,7 +237,7 @@ public class Check {
      *  @param pos        Position to be used for error reporting.
      */
     void warnUnsafeVararg(DiagnosticPosition pos, Warning warnKey) {
-        if (lint.isEnabled(LintCategory.VARARGS) && Feature.SIMPLIFIED_VARARGS.allowedInSource(source))
+        if (lint.isEnabled(LintCategory.VARARGS))
             log.warning(LintCategory.VARARGS, pos, warnKey);
     }
 
@@ -828,7 +831,7 @@ public class Check {
         return buf.toList();
     }
 
-    boolean checkDenotable(Type t) {
+    public boolean checkDenotable(Type t) {
         return denotableChecker.visit(t, null);
     }
         // where
@@ -884,7 +887,6 @@ public class Check {
 
     void checkVarargsMethodDecl(Env<AttrContext> env, JCMethodDecl tree) {
         MethodSymbol m = tree.sym;
-        if (!Feature.SIMPLIFIED_VARARGS.allowedInSource(source)) return;
         boolean hasTrustMeAnno = m.attribute(syms.trustMeType.tsym) != null;
         Type varargElemType = null;
         if (m.isVarArgs()) {
@@ -996,14 +998,11 @@ public class Check {
         if (useVarargs) {
             Type argtype = owntype.getParameterTypes().last();
             if (!types.isReifiable(argtype) &&
-                (!Feature.SIMPLIFIED_VARARGS.allowedInSource(source) ||
-                 sym.baseSymbol().attribute(syms.trustMeType.tsym) == null ||
+                (sym.baseSymbol().attribute(syms.trustMeType.tsym) == null ||
                  !isTrustMeAllowedOnMethod(sym))) {
                 warnUnchecked(env.tree.pos(), Warnings.UncheckedGenericArrayCreation(argtype));
             }
-            if ((sym.baseSymbol().flags() & SIGNATURE_POLYMORPHIC) == 0) {
-                TreeInfo.setVarargsElement(env.tree, types.elemtype(argtype));
-            }
+            TreeInfo.setVarargsElement(env.tree, types.elemtype(argtype));
          }
          return owntype;
     }
@@ -1799,7 +1798,7 @@ public class Check {
         if (!isDeprecatedOverrideIgnorable(other, origin)) {
             Lint prevLint = setLint(lint.augment(m));
             try {
-                checkDeprecated(TreeInfo.diagnosticPositionFor(m, tree), m, other);
+                checkDeprecated(() -> TreeInfo.diagnosticPositionFor(m, tree), m, other);
             } finally {
                 setLint(prevLint);
             }
@@ -2286,7 +2285,7 @@ public class Check {
             return;
         if (seen.contains(t)) {
             tv = (TypeVar)t;
-            tv.bound = types.createErrorType(t);
+            tv.setUpperBound(types.createErrorType(t));
             log.error(pos, Errors.CyclicInheritance(t));
         } else if (t.hasTag(TYPEVAR)) {
             tv = (TypeVar)t;
@@ -2408,22 +2407,6 @@ public class Check {
         checkCompatibleConcretes(pos, c);
     }
 
-    void checkConflicts(DiagnosticPosition pos, Symbol sym, TypeSymbol c) {
-        for (Type ct = c.type; ct != Type.noType ; ct = types.supertype(ct)) {
-            for (Symbol sym2 : ct.tsym.members().getSymbolsByName(sym.name, NON_RECURSIVE)) {
-                // VM allows methods and variables with differing types
-                if (sym.kind == sym2.kind &&
-                    types.isSameType(types.erasure(sym.type), types.erasure(sym2.type)) &&
-                    sym != sym2 &&
-                    (sym.flags() & Flags.SYNTHETIC) != (sym2.flags() & Flags.SYNTHETIC) &&
-                    (sym.flags() & BRIDGE) == 0 && (sym2.flags() & BRIDGE) == 0) {
-                    syntheticError(pos, (sym2.flags() & SYNTHETIC) == 0 ? sym2 : sym);
-                    return;
-                }
-            }
-        }
-    }
-
     /** Check that all non-override equivalent methods accessible from 'site'
      *  are mutually compatible (JLS 8.4.8/9.4.1).
      *
@@ -2438,7 +2421,9 @@ public class Check {
 
         List<MethodSymbol> potentiallyAmbiguousList = List.nil();
         boolean overridesAny = false;
-        for (Symbol m1 : types.membersClosure(site, false).getSymbolsByName(sym.name, cf)) {
+        ArrayList<Symbol> symbolsByName = new ArrayList<>();
+        types.membersClosure(site, false).getSymbolsByName(sym.name, cf).forEach(symbolsByName::add);
+        for (Symbol m1 : symbolsByName) {
             if (!sym.overrides(m1, site.tsym, types, false)) {
                 if (m1 == sym) {
                     continue;
@@ -2456,7 +2441,7 @@ public class Check {
             }
 
             //...check each method m2 that is a member of 'site'
-            for (Symbol m2 : types.membersClosure(site, false).getSymbolsByName(sym.name, cf)) {
+            for (Symbol m2 : symbolsByName) {
                 if (m2 == m1) continue;
                 //if (i) the signature of 'sym' is not a subsignature of m1 (seen as
                 //a member of 'site') and (ii) m1 has the same erasure as m2, issue an error
@@ -2710,14 +2695,6 @@ public class Check {
                 fullName.contains(".internal.");
     }
 
-    /** Report a conflict between a user symbol and a synthetic symbol.
-     */
-    private void syntheticError(DiagnosticPosition pos, Symbol sym) {
-        if (!sym.type.isErroneous()) {
-            log.error(pos, Errors.SyntheticNameConflict(sym, sym.location()));
-        }
-    }
-
     /** Check that class c does not implement directly or indirectly
      *  the same parameterized interface with two different argument lists.
      *  @param pos          Position to be used for error reporting.
@@ -2737,6 +2714,8 @@ public class Check {
             if (type.isErroneous()) return;
             for (List<Type> l = types.interfaces(type); l.nonEmpty(); l = l.tail) {
                 Type it = l.head;
+                if (type.hasTag(CLASS) && !it.hasTag(CLASS)) continue; // JLS 8.1.5
+
                 Type oldit = seensofar.put(it.tsym, it);
                 if (oldit != null) {
                     List<Type> oldparams = oldit.allparams();
@@ -2750,6 +2729,7 @@ public class Check {
                 checkClassBounds(pos, seensofar, it);
             }
             Type st = types.supertype(type);
+            if (type.hasTag(CLASS) && !st.hasTag(CLASS)) return; // JLS 8.1.4
             if (st != Type.noType) checkClassBounds(pos, seensofar, st);
         }
 
@@ -2775,7 +2755,7 @@ public class Check {
         class AnnotationValidator extends TreeScanner {
             @Override
             public void visitAnnotation(JCAnnotation tree) {
-                if (!tree.type.isErroneous()) {
+                if (!tree.type.isErroneous() && tree.type.tsym.isAnnotationType()) {
                     super.visitAnnotation(tree);
                     validateAnnotation(tree);
                 }
@@ -3285,10 +3265,14 @@ public class Check {
     }
 
     void checkDeprecated(final DiagnosticPosition pos, final Symbol other, final Symbol s) {
+        checkDeprecated(() -> pos, other, s);
+    }
+
+    void checkDeprecated(Supplier<DiagnosticPosition> pos, final Symbol other, final Symbol s) {
         if ( (s.isDeprecatedForRemoval()
                 || s.isDeprecated() && !other.isDeprecated())
                 && (s.outermostClass() != other.outermostClass() || s.outermostClass() == null)) {
-            deferredLintHandler.report(() -> warnDeprecated(pos, s));
+            deferredLintHandler.report(() -> warnDeprecated(pos.get(), s));
         }
     }
 
@@ -3671,17 +3655,8 @@ public class Check {
         OUTER: for (JCImport imp : toplevel.getImports()) {
             if (!imp.staticImport && TreeInfo.name(imp.qualid) == names.asterisk) {
                 TypeSymbol tsym = ((JCFieldAccess)imp.qualid).selected.type.tsym;
-                if (toplevel.modle.visiblePackages != null) {
-                    //TODO - unclear: selects like javax.* will get resolved from the current module
-                    //(as javax is not an exported package from any module). And as javax in the current
-                    //module typically does not contain any classes or subpackages, we need to go through
-                    //the visible packages to find a sub-package:
-                    for (PackageSymbol known : toplevel.modle.visiblePackages.values()) {
-                        if (Convert.packagePart(known.fullname) == tsym.flatName())
-                            continue OUTER;
-                    }
-                }
-                if (tsym.kind == PCK && tsym.members().isEmpty() && !tsym.exists()) {
+                if (tsym.kind == PCK && tsym.members().isEmpty() &&
+                    !(Feature.IMPORT_ON_DEMAND_OBSERVABLE_PACKAGES.allowedInSource(source) && tsym.exists())) {
                     log.error(DiagnosticFlag.RESOLVE_ERROR, imp.pos, Errors.DoesntExist(tsym));
                 }
             }

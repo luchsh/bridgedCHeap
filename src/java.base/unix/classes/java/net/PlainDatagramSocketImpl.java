@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2007, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,54 +41,6 @@ class PlainDatagramSocketImpl extends AbstractPlainDatagramSocketImpl
         init();
     }
 
-    static final ExtendedSocketOptions extendedOptions =
-            ExtendedSocketOptions.getInstance();
-
-    protected <T> void setOption(SocketOption<T> name, T value) throws IOException {
-        if (isClosed()) {
-            throw new SocketException("Socket closed");
-        }
-        if (supportedOptions().contains(name)) {
-            if (extendedOptions.isOptionSupported(name)) {
-                extendedOptions.setOption(fd, name, value);
-            } else {
-                super.setOption(name, value);
-            }
-        } else {
-            throw new UnsupportedOperationException("unsupported option");
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    protected <T> T getOption(SocketOption<T> name) throws IOException {
-        if (isClosed()) {
-            throw new SocketException("Socket closed");
-        }
-        if (supportedOptions().contains(name)) {
-            if (extendedOptions.isOptionSupported(name)) {
-                return (T) extendedOptions.getOption(fd, name);
-            } else {
-                return super.getOption(name);
-            }
-        } else {
-            throw new UnsupportedOperationException("unsupported option");
-        }
-    }
-
-    protected Set<SocketOption<?>> supportedOptions() {
-        HashSet<SocketOption<?>> options = new HashSet<>(super.supportedOptions());
-        addExtSocketOptions(extendedOptions.options(), options);
-        return options;
-    }
-
-    private void addExtSocketOptions(Set<SocketOption<?>> extOptions,
-                                     Set<SocketOption<?>> options) {
-        // TCP_QUICKACK is applicable for TCP Sockets only.
-        extOptions.stream()
-                .filter((option) -> !option.name().equals("TCP_QUICKACK"))
-                .forEach((option) -> options.add(option));
-    }
-
     protected void socketSetOption(int opt, Object val) throws SocketException {
         if (opt == SocketOptions.SO_REUSEPORT &&
             !supportedOptions().contains(StandardSocketOptions.SO_REUSEPORT)) {
@@ -105,7 +57,7 @@ class PlainDatagramSocketImpl extends AbstractPlainDatagramSocketImpl
     protected synchronized native void bind0(int lport, InetAddress laddr)
         throws SocketException;
 
-    protected native void send(DatagramPacket p) throws IOException;
+    protected native void send0(DatagramPacket p) throws IOException;
 
     protected synchronized native int peek(InetAddress i) throws IOException;
 

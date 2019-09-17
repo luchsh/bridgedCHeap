@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # This code is free software; you can redistribute it and/or modify it
@@ -25,16 +25,18 @@
 
 AC_DEFUN_ONCE([HELP_SETUP_DEPENDENCY_HELP],
 [
-  AC_CHECK_PROGS(PKGHANDLER, apt-get yum brew port pkgutil pkgadd)
+  AC_CHECK_PROGS(PKGHANDLER, zypper apt-get yum brew port pkgutil pkgadd)
 ])
 
 AC_DEFUN([HELP_MSG_MISSING_DEPENDENCY],
 [
   # Print a helpful message on how to acquire the necessary build dependency.
-  # $1 is the help tag: freetype, cups, alsa etc
+  # $1 is the help tag: cups, alsa etc
   MISSING_DEPENDENCY=$1
 
-  if test "x$OPENJDK_BUILD_OS_ENV" = "xwindows.cygwin"; then
+  if test "x$MISSING_DEPENDENCY" = "xopenjdk"; then
+    HELP_MSG="OpenJDK distributions are available at http://jdk.java.net/."
+  elif test "x$OPENJDK_BUILD_OS_ENV" = "xwindows.cygwin"; then
     cygwin_help $MISSING_DEPENDENCY
   elif test "x$OPENJDK_BUILD_OS_ENV" = "xwindows.msys"; then
     msys_help $MISSING_DEPENDENCY
@@ -54,6 +56,8 @@ AC_DEFUN([HELP_MSG_MISSING_DEPENDENCY],
         pkgutil_help $MISSING_DEPENDENCY ;;
       pkgadd)
         pkgadd_help  $MISSING_DEPENDENCY ;;
+      zypper)
+        zypper_help  $MISSING_DEPENDENCY ;;
     esac
 
     if test "x$PKGHANDLER_COMMAND" != x; then
@@ -76,24 +80,6 @@ cygwin_help() {
       PKGHANDLER_COMMAND="( cd <location of cygwin setup.exe> && cmd /c setup -q -P make )"
       HELP_MSG="You might be able to fix this by running '$PKGHANDLER_COMMAND'."
       ;;
-    freetype)
-      HELP_MSG="
-The freetype library can now be build during the configure process.
-Download the freetype sources and unpack them into an arbitrary directory:
-
-wget http://download.savannah.gnu.org/releases/freetype/freetype-2.5.3.tar.gz
-tar -xzf freetype-2.5.3.tar.gz
-
-Then run configure with '--with-freetype-src=<freetype_src>'. This will
-automatically build the freetype library into '<freetype_src>/lib64' for 64-bit
-builds or into '<freetype_src>/lib32' for 32-bit builds.
-Afterwards you can always use '--with-freetype-include=<freetype_src>/include'
-and '--with-freetype-lib=<freetype_src>/lib[32|64]' for other builds.
-
-Alternatively you can unpack the sources like this to use the default directory:
-
-tar --one-top-level=$HOME/freetype --strip-components=1 -xzf freetype-2.5.3.tar.gz"
-      ;;
   esac
 }
 
@@ -107,8 +93,6 @@ apt_help() {
       PKGHANDLER_COMMAND="sudo apt-get install gcc-multilib g++-multilib" ;;
     devkit)
       PKGHANDLER_COMMAND="sudo apt-get install build-essential" ;;
-    openjdk)
-      PKGHANDLER_COMMAND="sudo apt-get install openjdk-8-jdk" ;;
     alsa)
       PKGHANDLER_COMMAND="sudo apt-get install libasound2-dev" ;;
     cups)
@@ -120,7 +104,7 @@ apt_help() {
     ffi)
       PKGHANDLER_COMMAND="sudo apt-get install libffi-dev" ;;
     x11)
-      PKGHANDLER_COMMAND="sudo apt-get install libx11-dev libxext-dev libxrender-dev libxtst-dev libxt-dev" ;;
+      PKGHANDLER_COMMAND="sudo apt-get install libx11-dev libxext-dev libxrender-dev libxrandr-dev libxtst-dev libxt-dev" ;;
     ccache)
       PKGHANDLER_COMMAND="sudo apt-get install ccache" ;;
     dtrace)
@@ -128,12 +112,29 @@ apt_help() {
   esac
 }
 
+zypper_help() {
+  case $1 in
+    devkit)
+      PKGHANDLER_COMMAND="sudo zypper install gcc gcc-c++" ;;
+    alsa)
+      PKGHANDLER_COMMAND="sudo zypper install alsa-devel" ;;
+    cups)
+      PKGHANDLER_COMMAND="sudo zypper install cups-devel" ;;
+    fontconfig)
+      PKGHANDLER_COMMAND="sudo zypper install fontconfig-devel" ;;
+    freetype)
+      PKGHANDLER_COMMAND="sudo zypper install freetype-devel" ;;
+    x11)
+      PKGHANDLER_COMMAND="sudo zypper install libX11-devel libXext-devel libXrender-devel libXrandr-devel libXtst-devel libXt-devel libXi-devel" ;;
+    ccache)
+      PKGHANDLER_COMMAND="sudo zypper install ccache" ;;
+  esac
+}
+
 yum_help() {
   case $1 in
     devkit)
       PKGHANDLER_COMMAND="sudo yum groupinstall \"Development Tools\"" ;;
-    openjdk)
-      PKGHANDLER_COMMAND="sudo yum install java-1.8.0-openjdk-devel" ;;
     alsa)
       PKGHANDLER_COMMAND="sudo yum install alsa-lib-devel" ;;
     cups)
@@ -143,7 +144,7 @@ yum_help() {
     freetype)
       PKGHANDLER_COMMAND="sudo yum install freetype-devel" ;;
     x11)
-      PKGHANDLER_COMMAND="sudo yum install libXtst-devel libXt-devel libXrender-devel libXi-devel" ;;
+      PKGHANDLER_COMMAND="sudo yum install libXtst-devel libXt-devel libXrender-devel libXrandr-devel libXi-devel" ;;
     ccache)
       PKGHANDLER_COMMAND="sudo yum install ccache" ;;
   esac
@@ -151,8 +152,6 @@ yum_help() {
 
 brew_help() {
   case $1 in
-    openjdk)
-      PKGHANDLER_COMMAND="brew cask install java" ;;
     freetype)
       PKGHANDLER_COMMAND="brew install freetype" ;;
     ccache)
@@ -231,8 +230,16 @@ AC_DEFUN_ONCE([HELP_PRINT_SUMMARY_AND_WARNINGS],
   printf "Configuration summary:\n"
   printf "* Debug level:    $DEBUG_LEVEL\n"
   printf "* HS debug level: $HOTSPOT_DEBUG_LEVEL\n"
-  printf "* JDK variant:    $JDK_VARIANT\n"
   printf "* JVM variants:   $JVM_VARIANTS\n"
+  printf "* JVM features:   "
+
+  for variant in $JVM_VARIANTS; do
+    features_var_name=JVM_FEATURES_$variant
+    JVM_FEATURES_FOR_VARIANT=${!features_var_name}
+    printf "$variant: \'$JVM_FEATURES_FOR_VARIANT\' "
+  done
+  printf "\n"
+
   printf "* OpenJDK target: OS: $OPENJDK_TARGET_OS, CPU architecture: $OPENJDK_TARGET_CPU_ARCH, address length: $OPENJDK_TARGET_CPU_BITS\n"
   printf "* Version string: $VERSION_STRING ($VERSION_SHORT)\n"
 

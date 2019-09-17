@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -56,24 +56,28 @@ public class GCDuringDump {
         String appJar =
             ClassFileInstaller.writeJar("GCDuringDumpApp.jar", appClasses);
 
-        String gcLog = "-Xlog:gc*=info,gc+region=trace,gc+alloc+region=debug";
+        String gcLog = Boolean.getBoolean("test.cds.verbose.gc") ?
+            "-Xlog:gc*=info,gc+region=trace,gc+alloc+region=debug" : "-showversion";
 
         for (int i=0; i<2; i++) {
             // i = 0 -- run without agent = no extra GCs
             // i = 1 -- run with agent = cause extra GCs
 
             String extraArg = (i == 0) ? "-showversion" : "-javaagent:" + agentJar;
+            String extraOption = (i == 0) ? "-showversion" : "-XX:+AllowArchivingWithJavaAgent";
 
             TestCommon.testDump(appJar, TestCommon.list("Hello"),
+                                "-XX:+UnlockDiagnosticVMOptions", extraOption,
                                 extraArg, "-Xmx32m", gcLog);
 
-            OutputAnalyzer output = TestCommon.execCommon(
+            TestCommon.run(
                 "-cp", appJar,
                 "-Xmx32m",
                 "-XX:+PrintSharedSpaces",
+                "-XX:+UnlockDiagnosticVMOptions", extraOption,
                 gcLog,
-                "Hello");
-            TestCommon.checkExec(output);
+                "Hello")
+              .assertNormalExit();
         }
     }
 }

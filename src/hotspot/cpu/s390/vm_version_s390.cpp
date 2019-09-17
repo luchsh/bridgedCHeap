@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2016, 2017 SAP SE. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,6 +36,7 @@
 # include <sys/sysinfo.h>
 
 bool VM_Version::_is_determine_features_test_running  = false;
+const char*   VM_Version::_model_string;
 
 unsigned long VM_Version::_features[_features_buffer_len]           = {0, 0, 0, 0};
 unsigned long VM_Version::_cipher_features[_features_buffer_len]    = {0, 0, 0, 0};
@@ -164,8 +165,10 @@ void VM_Version::initialize() {
     FLAG_SET_DEFAULT(UseAESCTRIntrinsics, false);
   }
 
-  // TODO: implement GHASH intrinsics
-  if (UseGHASHIntrinsics) {
+  if (FLAG_IS_DEFAULT(UseGHASHIntrinsics) && has_Crypto_GHASH()) {
+    FLAG_SET_DEFAULT(UseGHASHIntrinsics, true);
+  }
+  if (UseGHASHIntrinsics && !has_Crypto_GHASH()) {
     warning("GHASH intrinsics are not available on this CPU");
     FLAG_SET_DEFAULT(UseGHASHIntrinsics, false);
   }
@@ -210,6 +213,10 @@ void VM_Version::initialize() {
     FLAG_SET_DEFAULT(UseSHA512Intrinsics, false);
   }
 
+  if (!(UseSHA1Intrinsics || UseSHA256Intrinsics || UseSHA512Intrinsics)) {
+    FLAG_SET_DEFAULT(UseSHA, false);
+  }
+
   if (FLAG_IS_DEFAULT(UseMultiplyToLenIntrinsic)) {
     FLAG_SET_DEFAULT(UseMultiplyToLenIntrinsic, true);
   }
@@ -244,32 +251,40 @@ void VM_Version::initialize() {
 void VM_Version::set_features_string() {
 
   unsigned int ambiguity = 0;
+  _model_string = z_name[0];
   if (is_z13()) {
     _features_string = "System z G7-z13  (LDISP_fast, ExtImm, PCrel Load/Store, CmpB, Cond Load/Store, Interlocked Update, TxM, VectorInstr)";
+    _model_string = z_name[7];
     ambiguity++;
   }
   if (is_ec12()) {
     _features_string = "System z G6-EC12 (LDISP_fast, ExtImm, PCrel Load/Store, CmpB, Cond Load/Store, Interlocked Update, TxM)";
+    _model_string = z_name[6];
     ambiguity++;
   }
   if (is_z196()) {
     _features_string = "System z G5-z196 (LDISP_fast, ExtImm, PCrel Load/Store, CmpB, Cond Load/Store, Interlocked Update)";
+    _model_string = z_name[5];
     ambiguity++;
   }
   if (is_z10()) {
     _features_string = "System z G4-z10  (LDISP_fast, ExtImm, PCrel Load/Store, CmpB)";
+    _model_string = z_name[4];
     ambiguity++;
   }
   if (is_z9()) {
     _features_string = "System z G3-z9   (LDISP_fast, ExtImm), out-of-support as of 2016-04-01";
+    _model_string = z_name[3];
     ambiguity++;
   }
   if (is_z990()) {
     _features_string = "System z G2-z990 (LDISP_fast), out-of-support as of 2014-07-01";
+    _model_string = z_name[2];
     ambiguity++;
   }
   if (is_z900()) {
     _features_string = "System z G1-z900 (LDISP), out-of-support as of 2014-07-01";
+    _model_string = z_name[1];
     ambiguity++;
   }
 
@@ -498,6 +513,19 @@ void VM_Version::print_features_internal(const char* text, bool print_anyway) {
       tty->cr();
       tty->print_cr("ContendedPaddingWidth " INTX_FORMAT, ContendedPaddingWidth);
     }
+  }
+}
+
+void VM_Version::print_platform_virtualization_info(outputStream* st) {
+  // /proc/sysinfo contains interesting information about
+  // - LPAR
+  // - whole "Box" (CPUs )
+  // - z/VM / KVM (VM<nn>); this is not available in an LPAR-only setup
+  const char* kw[] = { "LPAR", "CPUs", "VM", NULL };
+  const char* info_file = "/proc/sysinfo";
+
+  if (!print_matching_lines_from_file(info_file, st, kw)) {
+    st->print_cr("  <%s Not Available>", info_file);
   }
 }
 
@@ -776,6 +804,8 @@ void VM_Version::determine_features() {
   address code_end = a->pc();
   a->flush();
 
+  cbuf.insts()->set_end(code_end);
+
   // Print the detection code.
   bool printVerbose = Verbose || PrintAssembly || PrintStubCode;
   if (printVerbose) {
@@ -784,8 +814,8 @@ void VM_Version::determine_features() {
     tty->print_cr("Stub length is %ld bytes, codebuffer reserves %d bytes, %ld bytes spare.",
                   code_end-code, cbuf_size, cbuf_size-(code_end-code));
 
-    // Use existing decode function. This enables the [Code] format which is needed to DecodeErrorFile.
-    Disassembler::decode((u_char*)code, (u_char*)code_end, tty);
+    // Use existing decode function. This enables the [MachCode] format which is needed to DecodeErrorFile.
+    Disassembler::decode(&cbuf, code, code_end, tty);
   }
 
   // Prepare for detection code execution and clear work buffer.

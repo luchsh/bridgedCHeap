@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,15 +23,17 @@
 
 /*
  * @test
- * @bug      4368820 8025633 8026567
+ * @bug      4368820 8025633 8026567 8182765
  * @summary  Inherited comment should link directly to member, not just
  *           class
  * @author   jamieh
- * @library  ../lib
+ * @library  ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
- * @build    JavadocTester
+ * @build    javadoc.tester.*
  * @run main TestOverriddenMethodDocCopy
  */
+
+import javadoc.tester.JavadocTester;
 
 public class TestOverriddenMethodDocCopy extends JavadocTester {
 
@@ -45,7 +47,7 @@ public class TestOverriddenMethodDocCopy extends JavadocTester {
     }
 
     @Test
-    void test() {
+    public void test() {
         javadoc("-d", "out",
                 "-sourcepath", testSrc,
                 "pkg1", "pkg2");
@@ -53,7 +55,7 @@ public class TestOverriddenMethodDocCopy extends JavadocTester {
 
         checkOutput("pkg1/SubClass.html", true,
                 "<span class=\"descfrmTypeLabel\">Description copied from class:&nbsp;<code>"
-                + "<a href=\"BaseClass.html#overridenMethodWithDocsToCopy--\">"
+                + "<a href=\"BaseClass.html#overridenMethodWithDocsToCopy()\">"
                 + "BaseClass</a></code></span>");
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,6 +39,7 @@
 #include "opto/runtime.hpp"
 #include "runtime/arguments.hpp"
 #include "runtime/handles.inline.hpp"
+#include "runtime/safepointMechanism.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "utilities/copy.hpp"
 
@@ -523,7 +524,6 @@ Parse::Parse(JVMState* caller, ciMethod* parse_method, float expected_uses)
   if (depth() == 1) {
     assert(C->is_osr_compilation() == this->is_osr_parse(), "OSR in sync");
     if (C->tf() != tf()) {
-      MutexLockerEx ml(Compile_lock, Mutex::_no_safepoint_check_flag);
       assert(C->env()->system_dictionary_modification_counter_changed(),
              "Must invalidate if TypeFuncs differ");
     }
@@ -584,6 +584,11 @@ Parse::Parse(JVMState* caller, ciMethod* parse_method, float expected_uses)
   }
 
   if (depth() == 1 && !failing()) {
+    if (C->clinit_barrier_on_entry()) {
+      // Add check to deoptimize the nmethod once the holder class is fully initialized
+      clinit_deopt();
+    }
+
     // Add check to deoptimize the nmethod if RTM state was changed
     rtm_deopt();
   }
@@ -665,10 +670,13 @@ void Parse::do_all_blocks() {
         if (block->is_SEL_head()) {
           // Add predicate to single entry (not irreducible) loop head.
           assert(!block->has_merged_backedge(), "only entry paths should be merged for now");
-          // Need correct bci for predicate.
-          // It is fine to set it here since do_one_block() will set it anyway.
-          set_parse_bci(block->start());
-          add_predicate();
+          // Predicates may have been added after a dominating if
+          if (!block->has_predicates()) {
+            // Need correct bci for predicate.
+            // It is fine to set it here since do_one_block() will set it anyway.
+            set_parse_bci(block->start());
+            add_predicate();
+          }
           // Add new region for back branches.
           int edges = block->pred_count() - block->preds_parsed() + 1; // +1 for original region
           RegionNode *r = new RegionNode(edges+1);
@@ -1025,6 +1033,8 @@ void Parse::do_exits() {
     // transform each slice of the original memphi:
     mms.set_memory(_gvn.transform(mms.memory()));
   }
+  // Clean up input MergeMems created by transforming the slices
+  _gvn.transform(_exits.merged_memory());
 
   if (tf()->range()->cnt() > TypeFunc::Parms) {
     const Type* ret_type = tf()->range()->field_at(TypeFunc::Parms);
@@ -1037,7 +1047,6 @@ void Parse::do_exits() {
       // not compilable. Just using an assertion instead would be dangerous
       // as this could lead to an infinite compile loop in non-debug builds.
       {
-        MutexLockerEx ml(Compile_lock, Mutex::_no_safepoint_check_flag);
         if (C->env()->system_dictionary_modification_counter_changed()) {
           C->record_failure(C2Compiler::retry_class_loading_during_parsing());
         } else {
@@ -1188,7 +1197,7 @@ SafePointNode* Parse::create_entry_map() {
 // The main thing to do is lock the receiver of a synchronized method.
 void Parse::do_method_entry() {
   set_parse_bci(InvocationEntryBci); // Pseudo-BCP
-  set_sp(0);                      // Java Stack Pointer
+  set_sp(0);                         // Java Stack Pointer
 
   NOT_PRODUCT( count_compiled_calls(true/*at_method_entry*/, false/*is_inline*/); )
 
@@ -1261,6 +1270,7 @@ Parse::Block::Block(Parse* outer, int rpo) : _live_locals() {
   _is_handler = false;
   _has_merged_backedge = false;
   _start_map = NULL;
+  _has_predicates = false;
   _num_successors = 0;
   _all_successors = 0;
   _successors = NULL;
@@ -1818,7 +1828,7 @@ void Parse::merge_memory_edges(MergeMemNode* n, int pnum, bool nophi) {
       // Instead, wire the new split into a MergeMem on the backedge.
       // The optimizer will sort it out, slicing the phi.
       if (remerge == NULL) {
-        assert(base != NULL, "");
+        guarantee(base != NULL, "");
         assert(base->in(0) != NULL, "should not be xformed away");
         remerge = MergeMemNode::make(base->in(pnum));
         gvn().set_type(remerge, Type::MEMORY);
@@ -2097,11 +2107,24 @@ void Parse::call_register_finalizer() {
   set_control( _gvn.transform(result_rgn) );
 }
 
+// Add check to deoptimize once holder klass is fully initialized.
+void Parse::clinit_deopt() {
+  assert(C->has_method(), "only for normal compilations");
+  assert(depth() == 1, "only for main compiled method");
+  assert(is_normal_parse(), "no barrier needed on osr entry");
+  assert(!method()->holder()->is_not_initialized(), "initialization should have been started");
+
+  set_parse_bci(0);
+
+  Node* holder = makecon(TypeKlassPtr::make(method()->holder()));
+  guard_klass_being_initialized(holder);
+}
+
 // Add check to deoptimize if RTM state is not ProfileRTM
 void Parse::rtm_deopt() {
 #if INCLUDE_RTM_OPT
   if (C->profile_rtm()) {
-    assert(C->method() != NULL, "only for normal compilations");
+    assert(C->has_method(), "only for normal compilations");
     assert(!C->method()->method_data()->is_empty(), "MDO is needed to record RTM state");
     assert(depth() == 1, "generate check only for main compiled method");
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,15 +22,19 @@
  */
 package jdk.vm.ci.hotspot;
 
-import static jdk.vm.ci.hotspot.HotSpotModifiers.jvmFieldModifiers;
+import static jdk.vm.ci.hotspot.HotSpotJVMCIRuntime.runtime;
 import static jdk.vm.ci.hotspot.HotSpotVMConfig.config;
+import static jdk.vm.ci.hotspot.UnsafeAccess.UNSAFE;
+import static jdk.internal.misc.Unsafe.ADDRESS_SIZE;
 
 import java.lang.annotation.Annotation;
-import java.lang.reflect.Field;
 
 import jdk.internal.vm.annotation.Stable;
+
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaType;
+import jdk.vm.ci.meta.UnresolvedJavaType;
 
 /**
  * Represents a field in a HotSpot type.
@@ -39,7 +43,15 @@ class HotSpotResolvedJavaFieldImpl implements HotSpotResolvedJavaField {
 
     private final HotSpotResolvedObjectTypeImpl holder;
     private JavaType type;
+
+    /**
+     * Value of {@code fieldDescriptor::access_flags()}.
+     */
     private final int offset;
+
+    /**
+     * Value of {@code fieldDescriptor::index()}.
+     */
     private final short index;
 
     /**
@@ -63,7 +75,7 @@ class HotSpotResolvedJavaFieldImpl implements HotSpotResolvedJavaField {
         if (this == obj) {
             return true;
         }
-        if (obj instanceof HotSpotResolvedJavaField) {
+        if (obj instanceof HotSpotResolvedJavaFieldImpl) {
             HotSpotResolvedJavaFieldImpl that = (HotSpotResolvedJavaFieldImpl) obj;
             if (that.offset != this.offset || that.isStatic() != this.isStatic()) {
                 return false;
@@ -81,7 +93,7 @@ class HotSpotResolvedJavaFieldImpl implements HotSpotResolvedJavaField {
 
     @Override
     public int getModifiers() {
-        return modifiers & jvmFieldModifiers();
+        return modifiers & HotSpotModifiers.jvmFieldModifiers();
     }
 
     @Override
@@ -95,11 +107,13 @@ class HotSpotResolvedJavaFieldImpl implements HotSpotResolvedJavaField {
      * @return true iff this is a non-static field and its declaring class is assignable from
      *         {@code object}'s class
      */
-    public boolean isInObject(Object object) {
+    @Override
+    public boolean isInObject(JavaConstant object) {
         if (isStatic()) {
             return false;
         }
-        return getDeclaringClass().isAssignableFrom(HotSpotResolvedObjectTypeImpl.fromObjectClass(object.getClass()));
+        HotSpotObjectConstant constant = (HotSpotObjectConstant) object;
+        return getDeclaringClass().isAssignableFrom(constant.getType());
     }
 
     @Override
@@ -117,24 +131,34 @@ class HotSpotResolvedJavaFieldImpl implements HotSpotResolvedJavaField {
         // Pull field into local variable to prevent a race causing
         // a ClassCastException below
         JavaType currentType = type;
-        if (currentType instanceof HotSpotUnresolvedJavaType) {
+        if (currentType instanceof UnresolvedJavaType) {
             // Don't allow unresolved types to hang around forever
-            HotSpotUnresolvedJavaType unresolvedType = (HotSpotUnresolvedJavaType) currentType;
-            ResolvedJavaType resolved = unresolvedType.reresolve(holder);
-            if (resolved != null) {
+            UnresolvedJavaType unresolvedType = (UnresolvedJavaType) currentType;
+            JavaType resolved = HotSpotJVMCIRuntime.runtime().lookupType(unresolvedType.getName(), holder, false);
+            if (resolved instanceof ResolvedJavaType) {
                 type = resolved;
             }
         }
         return type;
+
     }
 
-    public int offset() {
+    @Override
+    public int getOffset() {
         return offset;
+    }
+
+    /**
+     * Gets the value of this field's index (i.e. {@code fieldDescriptor::index()} in the encoded
+     * fields of the declaring class.
+     */
+    int getIndex() {
+        return index;
     }
 
     @Override
     public String toString() {
-        return format("HotSpotField<%H.%n %t:") + offset + ">";
+        return format("HotSpotResolvedJavaFieldImpl<%H.%n %t:") + offset + ">";
     }
 
     @Override
@@ -147,45 +171,47 @@ class HotSpotResolvedJavaFieldImpl implements HotSpotResolvedJavaField {
      *
      * @return true if field has {@link Stable} annotation, false otherwise
      */
+    @Override
     public boolean isStable() {
         return (config().jvmAccFieldStable & modifiers) != 0;
     }
 
+    private boolean hasAnnotations() {
+        if (!isInternal()) {
+            HotSpotVMConfig config = config();
+            final long metaspaceAnnotations = UNSAFE.getAddress(holder.getMetaspaceKlass() + config.instanceKlassAnnotationsOffset);
+            if (metaspaceAnnotations != 0) {
+                long fieldsAnnotations = UNSAFE.getAddress(metaspaceAnnotations + config.annotationsFieldAnnotationsOffset);
+                if (fieldsAnnotations != 0) {
+                    long fieldAnnotations = UNSAFE.getAddress(fieldsAnnotations + config.fieldsAnnotationsBaseOffset + (ADDRESS_SIZE * index));
+                    return fieldAnnotations != 0;
+                }
+            }
+        }
+        return false;
+    }
+
     @Override
     public Annotation[] getAnnotations() {
-        Field javaField = toJava();
-        if (javaField != null) {
-            return javaField.getAnnotations();
+        if (!hasAnnotations()) {
+            return new Annotation[0];
         }
-        return new Annotation[0];
+        return runtime().reflection.getFieldAnnotations(this);
     }
 
     @Override
     public Annotation[] getDeclaredAnnotations() {
-        Field javaField = toJava();
-        if (javaField != null) {
-            return javaField.getDeclaredAnnotations();
+        if (!hasAnnotations()) {
+            return new Annotation[0];
         }
-        return new Annotation[0];
+        return runtime().reflection.getFieldDeclaredAnnotations(this);
     }
 
     @Override
     public <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
-        Field javaField = toJava();
-        if (javaField != null) {
-            return javaField.getAnnotation(annotationClass);
-        }
-        return null;
-    }
-
-    private Field toJava() {
-        if (isInternal()) {
+        if (!hasAnnotations()) {
             return null;
         }
-        try {
-            return holder.mirror().getDeclaredField(getName());
-        } catch (NoSuchFieldException | NoClassDefFoundError e) {
-            return null;
-        }
+        return runtime().reflection.getFieldAnnotation(this, annotationClass);
     }
 }

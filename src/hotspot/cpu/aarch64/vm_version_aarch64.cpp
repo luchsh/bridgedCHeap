@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2015, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -129,8 +129,11 @@ void VM_Version::get_processor_features() {
 
   int dcache_line = VM_Version::dcache_line_size();
 
+  // Limit AllocatePrefetchDistance so that it does not exceed the
+  // constraint in AllocatePrefetchDistanceConstraintFunc.
   if (FLAG_IS_DEFAULT(AllocatePrefetchDistance))
-    FLAG_SET_DEFAULT(AllocatePrefetchDistance, 3*dcache_line);
+    FLAG_SET_DEFAULT(AllocatePrefetchDistance, MIN2(512, 3*dcache_line));
+
   if (FLAG_IS_DEFAULT(AllocatePrefetchStepSize))
     FLAG_SET_DEFAULT(AllocatePrefetchStepSize, dcache_line);
   if (FLAG_IS_DEFAULT(PrefetchScanIntervalInBytes))
@@ -193,7 +196,22 @@ void VM_Version::get_processor_features() {
   }
 
   // Enable vendor specific features
-  if (_cpu == CPU_CAVIUM) {
+
+  // Ampere eMAG
+  if (_cpu == CPU_AMCC && (_model == 0) && (_variant == 0x3)) {
+    if (FLAG_IS_DEFAULT(AvoidUnalignedAccesses)) {
+      FLAG_SET_DEFAULT(AvoidUnalignedAccesses, true);
+    }
+    if (FLAG_IS_DEFAULT(UseSIMDForMemoryOps)) {
+      FLAG_SET_DEFAULT(UseSIMDForMemoryOps, true);
+    }
+    if (FLAG_IS_DEFAULT(UseSIMDForArrayEquals)) {
+      FLAG_SET_DEFAULT(UseSIMDForArrayEquals, !(_revision == 1 || _revision == 2));
+    }
+  }
+
+  // ThunderX
+  if (_cpu == CPU_CAVIUM && (_model == 0xA1)) {
     if (_variant == 0) _features |= CPU_DMB_ATOMICS;
     if (FLAG_IS_DEFAULT(AvoidUnalignedAccesses)) {
       FLAG_SET_DEFAULT(AvoidUnalignedAccesses, true);
@@ -201,8 +219,51 @@ void VM_Version::get_processor_features() {
     if (FLAG_IS_DEFAULT(UseSIMDForMemoryOps)) {
       FLAG_SET_DEFAULT(UseSIMDForMemoryOps, (_variant > 0));
     }
+    if (FLAG_IS_DEFAULT(UseSIMDForArrayEquals)) {
+      FLAG_SET_DEFAULT(UseSIMDForArrayEquals, false);
+    }
   }
-  if (_cpu == CPU_ARM && (_model == 0xd03 || _model2 == 0xd03)) _features |= CPU_A53MAC;
+
+  // ThunderX2
+  if ((_cpu == CPU_CAVIUM && (_model == 0xAF)) ||
+      (_cpu == CPU_BROADCOM && (_model == 0x516))) {
+    if (FLAG_IS_DEFAULT(AvoidUnalignedAccesses)) {
+      FLAG_SET_DEFAULT(AvoidUnalignedAccesses, true);
+    }
+    if (FLAG_IS_DEFAULT(UseSIMDForMemoryOps)) {
+      FLAG_SET_DEFAULT(UseSIMDForMemoryOps, true);
+    }
+  }
+
+  // HiSilicon TSV110
+  if (_cpu == CPU_HISILICON && _model == 0xd01) {
+    if (FLAG_IS_DEFAULT(AvoidUnalignedAccesses)) {
+      FLAG_SET_DEFAULT(AvoidUnalignedAccesses, true);
+    }
+    if (FLAG_IS_DEFAULT(UseSIMDForMemoryOps)) {
+      FLAG_SET_DEFAULT(UseSIMDForMemoryOps, true);
+    }
+  }
+
+  // Cortex A53
+  if (_cpu == CPU_ARM && (_model == 0xd03 || _model2 == 0xd03)) {
+    _features |= CPU_A53MAC;
+    if (FLAG_IS_DEFAULT(UseSIMDForArrayEquals)) {
+      FLAG_SET_DEFAULT(UseSIMDForArrayEquals, false);
+    }
+  }
+
+  // Cortex A73
+  if (_cpu == CPU_ARM && (_model == 0xd09 || _model2 == 0xd09)) {
+    if (FLAG_IS_DEFAULT(SoftwarePrefetchHintDistance)) {
+      FLAG_SET_DEFAULT(SoftwarePrefetchHintDistance, -1);
+    }
+    // A73 is faster with short-and-easy-for-speculative-execution-loop
+    if (FLAG_IS_DEFAULT(UseSimpleArrayEquals)) {
+      FLAG_SET_DEFAULT(UseSimpleArrayEquals, true);
+    }
+  }
+
   if (_cpu == CPU_ARM && (_model == 0xd07 || _model2 == 0xd07)) _features |= CPU_STXR_PREFETCH;
   // If an olde style /proc/cpuinfo (cpu_lines == 1) then if _model is an A57 (0xd07)
   // we assume the worst and assume we could be on a big little system and have
@@ -223,8 +284,10 @@ void VM_Version::get_processor_features() {
   if (FLAG_IS_DEFAULT(UseCRC32)) {
     UseCRC32 = (auxv & HWCAP_CRC32) != 0;
   }
+
   if (UseCRC32 && (auxv & HWCAP_CRC32) == 0) {
     warning("UseCRC32 specified, but not supported on this CPU");
+    FLAG_SET_DEFAULT(UseCRC32, false);
   }
 
   if (FLAG_IS_DEFAULT(UseAdler32Intrinsics)) {
@@ -242,6 +305,7 @@ void VM_Version::get_processor_features() {
   } else {
     if (UseLSE) {
       warning("UseLSE specified, but not supported on this CPU");
+      FLAG_SET_DEFAULT(UseLSE, false);
     }
   }
 
@@ -256,9 +320,11 @@ void VM_Version::get_processor_features() {
   } else {
     if (UseAES) {
       warning("UseAES specified, but not supported on this CPU");
+      FLAG_SET_DEFAULT(UseAES, false);
     }
     if (UseAESIntrinsics) {
       warning("UseAESIntrinsics specified, but not supported on this CPU");
+      FLAG_SET_DEFAULT(UseAESIntrinsics, false);
     }
   }
 
@@ -346,6 +412,15 @@ void VM_Version::get_processor_features() {
     FLAG_SET_DEFAULT(UseUnalignedAccesses, true);
   }
 
+  if (FLAG_IS_DEFAULT(UseBarriersForVolatile)) {
+    UseBarriersForVolatile = (_features & CPU_DMB_ATOMICS) != 0;
+  }
+
+  if (FLAG_IS_DEFAULT(UsePopCountInstruction)) {
+    UsePopCountInstruction = true;
+  }
+
+#ifdef COMPILER2
   if (FLAG_IS_DEFAULT(UseMultiplyToLenIntrinsic)) {
     UseMultiplyToLenIntrinsic = true;
   }
@@ -358,14 +433,6 @@ void VM_Version::get_processor_features() {
     UseMulAddIntrinsic = true;
   }
 
-  if (FLAG_IS_DEFAULT(UseBarriersForVolatile)) {
-    UseBarriersForVolatile = (_features & CPU_DMB_ATOMICS) != 0;
-  }
-
-  if (FLAG_IS_DEFAULT(UsePopCountInstruction)) {
-    UsePopCountInstruction = true;
-  }
-
   if (FLAG_IS_DEFAULT(UseMontgomeryMultiplyIntrinsic)) {
     UseMontgomeryMultiplyIntrinsic = true;
   }
@@ -373,7 +440,6 @@ void VM_Version::get_processor_features() {
     UseMontgomerySquareIntrinsic = true;
   }
 
-#ifdef COMPILER2
   if (FLAG_IS_DEFAULT(OptoScheduling)) {
     OptoScheduling = true;
   }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,21 +32,197 @@ import java.util.Date;
 import jdk.test.lib.Utils;
 import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.process.ProcessTools;
-
+import jtreg.SkippedException;
 
 // This class contains common test utilities for testing CDS
 public class CDSTestUtils {
-    // Specify this property to copy sdandard output of the child test process to
-    // the parent/main stdout of the test.
-    // By default such output is logged into a file, and is copied into the main stdout.
-    public static final boolean CopyChildStdoutToMainStdout =
-        Boolean.valueOf(System.getProperty("test.cds.copy.child.stdout", "true"));
+    public static final String MSG_RANGE_NOT_WITHIN_HEAP =
+        "UseSharedSpaces: Unable to allocate region, range is not within java heap.";
+    public static final String MSG_RANGE_ALREADT_IN_USE =
+        "Unable to allocate region, java heap range is already in use.";
+    public static final String MSG_COMPRESSION_MUST_BE_USED =
+        "Unable to use shared archive: UseCompressedOops and UseCompressedClassPointers must be on for UseSharedSpaces.";
+
+    public static final boolean DYNAMIC_DUMP = Boolean.getBoolean("test.dynamic.cds.archive");
+
+    public interface Checker {
+        public void check(OutputAnalyzer output) throws Exception;
+    }
+
+    /*
+     * INTRODUCTION
+     *
+     * When testing various CDS functionalities, we need to launch JVM processes
+     * using a "launch method" (such as TestCommon.run), and analyze the results of these
+     * processes.
+     *
+     * While typical jtreg tests would use OutputAnalyzer in such cases, due to the
+     * complexity of CDS failure modes, we have added the CDSTestUtils.Result class
+     * to make the analysis more convenient and less error prone.
+     *
+     * A Java process can end in one of the following 4 states:
+     *
+     *    1: Unexpected error - such as JVM crashing. In this case, the "launch method"
+     *                          will throw a RuntimeException.
+     *    2: Mapping Failure  - this happens when the OS (intermittently) fails to map the
+     *                          CDS archive, normally caused by Address Space Layout Randomization.
+     *                          We usually treat this as "pass".
+     *    3: Normal Exit      - the JVM process has finished without crashing, and the exit code is 0.
+     *    4: Abnormal Exit    - the JVM process has finished without crashing, and the exit code is not 0.
+     *
+     * In most test cases, we need to check the JVM process's output in cases 3 and 4. However, we need
+     * to make sure that our test code is not confused by case 2.
+     *
+     * For example, a JVM process is expected to print the string "Hi" and exit with 0. With the old
+     * CDSTestUtils.runWithArchive API, the test may be written as this:
+     *
+     *     OutputAnalyzer out = CDSTestUtils.runWithArchive(args);
+     *     out.shouldContain("Hi");
+     *
+     * However, if the JVM process fails with mapping failure, the string "Hi" will not be in the output,
+     * and your test case will fail intermittently.
+     *
+     * Instead, the test case should be written as
+     *
+     *      CDSTestUtils.run(args).assertNormalExit("Hi");
+     *
+     * EXAMPLES/HOWTO
+     *
+     * 1. For simple substring matching:
+     *
+     *      CDSTestUtils.run(args).assertNormalExit("Hi");
+     *      CDSTestUtils.run(args).assertNormalExit("a", "b", "x");
+     *      CDSTestUtils.run(args).assertAbnormalExit("failure 1", "failure2");
+     *
+     * 2. For more complex output matching: using Lambda expressions
+     *
+     *      CDSTestUtils.run(args)
+     *         .assertNormalExit(output -> output.shouldNotContain("this should not be printed");
+     *      CDSTestUtils.run(args)
+     *         .assertAbnormalExit(output -> {
+     *             output.shouldNotContain("this should not be printed");
+     *             output.shouldHaveExitValue(123);
+     *           });
+     *
+     * 3. Chaining several checks:
+     *
+     *      CDSTestUtils.run(args)
+     *         .assertNormalExit(output -> output.shouldNotContain("this should not be printed")
+     *         .assertNormalExit("should have this", "should have that");
+     *
+     * 4. [Rare use case] if a test sometimes exit normally, and sometimes abnormally:
+     *
+     *      CDSTestUtils.run(args)
+     *         .ifNormalExit("ths string is printed when exiting with 0")
+     *         .ifAbNormalExit("ths string is printed when exiting with 1");
+     *
+     *    NOTE: you usually don't want to write your test case like this -- it should always
+     *    exit with the same exit code. (But I kept this API because some existing test cases
+     *    behave this way -- need to revisit).
+     */
+    public static class Result {
+        private final OutputAnalyzer output;
+        private final CDSOptions options;
+        private final boolean hasNormalExit;
+        private final String CDS_DISABLED = "warning: CDS is disabled when the";
+
+        public Result(CDSOptions opts, OutputAnalyzer out) throws Exception {
+            checkMappingFailure(out);
+            this.options = opts;
+            this.output = out;
+            hasNormalExit = (output.getExitValue() == 0);
+
+            if (hasNormalExit) {
+                if ("on".equals(options.xShareMode) &&
+                    output.getStderr().contains("java version") &&
+                    !output.getStderr().contains(CDS_DISABLED)) {
+                    // "-showversion" is always passed in the command-line by the execXXX methods.
+                    // During normal exit, we require that the VM to show that sharing was enabled.
+                    output.shouldContain("sharing");
+                }
+            }
+        }
+
+        public Result assertNormalExit(Checker checker) throws Exception {
+            checker.check(output);
+            output.shouldHaveExitValue(0);
+            return this;
+        }
+
+        public Result assertAbnormalExit(Checker checker) throws Exception {
+            checker.check(output);
+            output.shouldNotHaveExitValue(0);
+            return this;
+        }
+
+        // When {--limit-modules, --patch-module, and/or --upgrade-module-path}
+        // are specified, CDS is silently disabled for both -Xshare:auto and -Xshare:on.
+        public Result assertSilentlyDisabledCDS(Checker checker) throws Exception {
+            // this comes from a JVM warning message.
+            output.shouldContain(CDS_DISABLED);
+            checker.check(output);
+            return this;
+        }
+
+        public Result assertSilentlyDisabledCDS(int exitCode, String... matches) throws Exception {
+            return assertSilentlyDisabledCDS((out) -> {
+                out.shouldHaveExitValue(exitCode);
+                checkMatches(out, matches);
+                   });
+        }
+
+        public Result ifNormalExit(Checker checker) throws Exception {
+            if (hasNormalExit) {
+                checker.check(output);
+            }
+            return this;
+        }
+
+        public Result ifAbnormalExit(Checker checker) throws Exception {
+            if (!hasNormalExit) {
+                checker.check(output);
+            }
+            return this;
+        }
+
+        public Result ifNoMappingFailure(Checker checker) throws Exception {
+            checker.check(output);
+            return this;
+        }
+
+
+        public Result assertNormalExit(String... matches) throws Exception {
+            checkMatches(output, matches);
+            output.shouldHaveExitValue(0);
+            return this;
+        }
+
+        public Result assertAbnormalExit(String... matches) throws Exception {
+            checkMatches(output, matches);
+            output.shouldNotHaveExitValue(0);
+            return this;
+        }
+    }
+
+    // A number to be included in the filename of the stdout and the stderr output file.
+    static int logCounter = 0;
+
+    private static int getNextLogCounter() {
+        return logCounter++;
+    }
+
+    // By default, stdout of child processes are logged in files such as
+    // <testname>-0000-exec.stdout. If you want to also include the stdout
+    // inside jtr files, you can override this in the jtreg command line like
+    // "jtreg -Dtest.cds.copy.child.stdout=true ...."
+    public static final boolean copyChildStdoutToMainStdout =
+        Boolean.getBoolean("test.cds.copy.child.stdout");
 
     // This property is passed to child test processes
     public static final String TestTimeoutFactor = System.getProperty("test.timeout.factor", "1.0");
 
     public static final String UnableToMapMsg =
-        "Unable to map shared archive: test did not complete; assumed PASS";
+        "Unable to map shared archive: test did not complete";
 
     // Create bootstrap CDS archive,
     // use extra JVM command line args as a prefix.
@@ -70,10 +246,14 @@ public class CDSTestUtils {
 
         cmd.add("-Xshare:dump");
         cmd.add("-Xlog:cds,cds+hashtables");
-        cmd.add("-XX:+UnlockDiagnosticVMOptions");
         if (opts.archiveName == null)
             opts.archiveName = getDefaultArchiveName();
-        cmd.add("-XX:SharedArchiveFile=./" + opts.archiveName);
+        cmd.add("-XX:SharedArchiveFile=" + opts.archiveName);
+
+        if (opts.classList != null) {
+            File classListFile = makeClassList(opts.classList);
+            cmd.add("-XX:ExtraSharedClassListFile=" + classListFile.getPath());
+        }
 
         for (String s : opts.suffix) cmd.add(s);
 
@@ -82,12 +262,20 @@ public class CDSTestUtils {
         return executeAndLog(pb, "dump");
     }
 
+    public static boolean isDynamicArchive() {
+        return DYNAMIC_DUMP;
+    }
 
     // check result of 'dump-the-archive' operation, that is "-Xshare:dump"
     public static OutputAnalyzer checkDump(OutputAnalyzer output, String... extraMatches)
         throws Exception {
 
-        output.shouldContain("Loading classes to share");
+        if (!DYNAMIC_DUMP) {
+            output.shouldContain("Loading classes to share");
+        } else {
+            output.shouldContain("Buffer-space to target-space delta")
+                  .shouldContain("Written dynamic archive 0x");
+        }
         output.shouldHaveExitValue(0);
 
         for (String match : extraMatches) {
@@ -127,9 +315,6 @@ public class CDSTestUtils {
         if (output.getStdout().contains("TEST FAILED")) {
             throw new RuntimeException("Test Failed");
         }
-        if (output.getOutput().contains("shared class paths mismatch")) {
-            throw new RuntimeException("shared class paths mismatch");
-        }
         if (output.getOutput().contains("Unable to unmap shared space")) {
             throw new RuntimeException("Unable to unmap shared space");
         }
@@ -138,12 +323,16 @@ public class CDSTestUtils {
         // at given address. This behavior is platform-specific, machine config-specific
         // and can be random (see ASLR).
         if (isUnableToMap(output)) {
-            System.out.println(UnableToMapMsg);
-            return;
+            throw new SkippedException(UnableToMapMsg);
         }
 
-        if (e != null)
+        if (e != null) {
             throw e;
+        }
+    }
+
+    public static void checkCommonExecExceptions(OutputAnalyzer output) throws Exception {
+        checkCommonExecExceptions(output, null);
     }
 
 
@@ -168,7 +357,8 @@ public class CDSTestUtils {
             outStr.contains("Unable to map MiscCode shared space at required address") ||
             outStr.contains("Unable to map OptionalData shared space at required address") ||
             outStr.contains("Could not allocate metaspace at a compatible address") ||
-            outStr.contains("UseSharedSpaces: Unable to allocate region, range is not within java heap") ))
+            outStr.contains("UseSharedSpaces: Unable to allocate region, range is not within java heap") ||
+            outStr.contains("DynamicDumpSharedSpaces is unsupported when base CDS archive is not loaded") ))
         {
             return true;
         }
@@ -176,6 +366,22 @@ public class CDSTestUtils {
         return false;
     }
 
+    public static void checkMappingFailure(OutputAnalyzer out) throws SkippedException {
+        if (isUnableToMap(out)) {
+            throw new SkippedException(UnableToMapMsg);
+        }
+    }
+
+    public static Result run(String... cliPrefix) throws Exception {
+        CDSOptions opts = new CDSOptions();
+        opts.setArchiveName(getDefaultArchiveName());
+        opts.addPrefix(cliPrefix);
+        return new Result(opts, runWithArchive(opts));
+    }
+
+    public static Result run(CDSOptions opts) throws Exception {
+        return new Result(opts, runWithArchive(opts));
+    }
 
     // Execute JVM with CDS archive, specify command line args suffix
     public static OutputAnalyzer runWithArchive(String... cliPrefix)
@@ -196,12 +402,13 @@ public class CDSTestUtils {
         for (String p : opts.prefix) cmd.add(p);
 
         cmd.add("-Xshare:" + opts.xShareMode);
-        cmd.add("-XX:+UnlockDiagnosticVMOptions");
         cmd.add("-Dtest.timeout.factor=" + TestTimeoutFactor);
 
-        if (opts.archiveName == null)
-            opts.archiveName = getDefaultArchiveName();
-        cmd.add("-XX:SharedArchiveFile=" + opts.archiveName);
+        if (!opts.useSystemArchive) {
+            if (opts.archiveName == null)
+                opts.archiveName = getDefaultArchiveName();
+            cmd.add("-XX:SharedArchiveFile=" + opts.archiveName);
+        }
 
         if (opts.useVersion)
             cmd.add("-version");
@@ -246,7 +453,7 @@ public class CDSTestUtils {
             return output;
         }
 
-        checkExtraMatches(output, extraMatches);
+        checkMatches(output, extraMatches);
         return output;
     }
 
@@ -255,18 +462,17 @@ public class CDSTestUtils {
                                              int expectedExitValue,
                                              String... extraMatches) throws Exception {
         if (isUnableToMap(output)) {
-            System.out.println(UnableToMapMsg);
-            return output;
+            throw new SkippedException(UnableToMapMsg);
         }
 
         output.shouldHaveExitValue(expectedExitValue);
-        checkExtraMatches(output, extraMatches);
+        checkMatches(output, extraMatches);
         return output;
     }
 
-    public static OutputAnalyzer checkExtraMatches(OutputAnalyzer output,
-                                                    String... extraMatches) throws Exception {
-        for (String match : extraMatches) {
+    public static OutputAnalyzer checkMatches(OutputAnalyzer output,
+                                              String... matches) throws Exception {
+        for (String match : matches) {
             output.shouldContain(match);
         }
         return output;
@@ -371,13 +577,17 @@ public class CDSTestUtils {
     public static OutputAnalyzer executeAndLog(ProcessBuilder pb, String logName) throws Exception {
         long started = System.currentTimeMillis();
         OutputAnalyzer output = new OutputAnalyzer(pb.start());
+        String outputFileNamePrefix =
+            getTestName() + "-" + String.format("%04d", getNextLogCounter()) + "-" + logName;
 
-        writeFile(getOutputFile(logName + ".stdout"), output.getStdout());
-        writeFile(getOutputFile(logName + ".stderr"), output.getStderr());
+        writeFile(getOutputFile(outputFileNamePrefix + ".stdout"), output.getStdout());
+        writeFile(getOutputFile(outputFileNamePrefix + ".stderr"), output.getStderr());
         System.out.println("[ELAPSED: " + (System.currentTimeMillis() - started) + " ms]");
+        System.out.println("[logging stdout to " + outputFileNamePrefix + ".stdout]");
+        System.out.println("[logging stderr to " + outputFileNamePrefix + ".stderr]");
         System.out.println("[STDERR]\n" + output.getStderr());
 
-        if (CopyChildStdoutToMainStdout)
+        if (copyChildStdoutToMainStdout)
             System.out.println("[STDOUT]\n" + output.getStdout());
 
         return output;

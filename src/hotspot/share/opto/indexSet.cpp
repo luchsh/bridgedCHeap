@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2011, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -49,72 +49,6 @@ julong IndexSet::_total_unused_blocks = 0;
 // Per set, or all sets operation tracing
 int IndexSet::_serial_count = 1;
 #endif
-
-// What is the first set bit in a 5 bit integer?
-const uint8_t IndexSetIterator::_first_bit[32] = {
-  0, 0, 1, 0,
-  2, 0, 1, 0,
-  3, 0, 1, 0,
-  2, 0, 1, 0,
-  4, 0, 1, 0,
-  2, 0, 1, 0,
-  3, 0, 1, 0,
-  2, 0, 1, 0
-};
-
-// What is the second set bit in a 5 bit integer?
-const uint8_t IndexSetIterator::_second_bit[32] = {
-  5, 5, 5, 1,
-  5, 2, 2, 1,
-  5, 3, 3, 1,
-  3, 2, 2, 1,
-  5, 4, 4, 1,
-  4, 2, 2, 1,
-  4, 3, 3, 1,
-  3, 2, 2, 1
-};
-
-// I tried implementing the IndexSetIterator with a window_size of 8 and
-// didn't seem to get a noticeable speedup.  I am leaving in the tables
-// in case we want to switch back.
-
-/*const byte IndexSetIterator::_first_bit[256] = {
-  8, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  6, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  7, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  6, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  5, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0,
-  4, 0, 1, 0, 2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 1, 0
-};
-
-const byte IndexSetIterator::_second_bit[256] = {
-  8, 8, 8, 1, 8, 2, 2, 1, 8, 3, 3, 1, 3, 2, 2, 1,
-  8, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1,
-  8, 5, 5, 1, 5, 2, 2, 1, 5, 3, 3, 1, 3, 2, 2, 1,
-  5, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1,
-  8, 6, 6, 1, 6, 2, 2, 1, 6, 3, 3, 1, 3, 2, 2, 1,
-  6, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1,
-  6, 5, 5, 1, 5, 2, 2, 1, 5, 3, 3, 1, 3, 2, 2, 1,
-  5, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1,
-  8, 7, 7, 1, 7, 2, 2, 1, 7, 3, 3, 1, 3, 2, 2, 1,
-  7, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1,
-  7, 5, 5, 1, 5, 2, 2, 1, 5, 3, 3, 1, 3, 2, 2, 1,
-  5, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1,
-  7, 6, 6, 1, 6, 2, 2, 1, 6, 3, 3, 1, 3, 2, 2, 1,
-  6, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1,
-  6, 5, 5, 1, 5, 2, 2, 1, 5, 3, 3, 1, 3, 2, 2, 1,
-  5, 4, 4, 1, 4, 2, 2, 1, 4, 3, 3, 1, 3, 2, 2, 1
-};*/
 
 //---------------------------- IndexSet::populate_free_list() -----------------------------
 // Populate the free BitBlock list with a batch of BitBlocks.  The BitBlocks
@@ -319,7 +253,7 @@ void IndexSet::initialize(uint max_elements) {
   if (_max_blocks <= preallocated_block_list_size) {
     _blocks = _preallocated_block_list;
   } else {
-    _blocks = (IndexSet::BitBlock**) arena()->Amalloc_4(sizeof(IndexSet::BitBlock**) * _max_blocks);
+    _blocks = (IndexSet::BitBlock**) arena()->Amalloc_4(sizeof(IndexSet::BitBlock*) * _max_blocks);
   }
   for (uint i = 0; i < _max_blocks; i++) {
     set_block(i, &_empty_block);
@@ -343,7 +277,7 @@ void IndexSet::initialize(uint max_elements, Arena *arena) {
   if (_max_blocks <= preallocated_block_list_size) {
     _blocks = _preallocated_block_list;
   } else {
-    _blocks = (IndexSet::BitBlock**) arena->Amalloc_4(sizeof(IndexSet::BitBlock**) * _max_blocks);
+    _blocks = (IndexSet::BitBlock**) arena->Amalloc_4(sizeof(IndexSet::BitBlock*) * _max_blocks);
   }
   for (uint i = 0; i < _max_blocks; i++) {
     set_block(i, &_empty_block);

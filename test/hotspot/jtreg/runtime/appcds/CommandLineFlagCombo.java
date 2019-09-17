@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,10 @@
 
 /*
  * @test CommandLineFlagCombo
- * @requires vm.cds
+ * @requires vm.cds.archived.java.heap
+ * @comment This test explicitly chooses the type of GC to be used by sub-processes. It may conflict with the GC type set
+ * via the -vmoptions command line option of JTREG. vm.gc==null will help the test case to discard the explicitly passed
+ * vm options.
  * @requires (vm.gc=="null")
  * @summary Test command line flag combinations that
  *          could likely affect the behaviour of AppCDS
@@ -32,13 +35,17 @@
  * @modules java.base/jdk.internal.misc
  *          java.management
  *          jdk.jartool/sun.tools.jar
+ * @build sun.hotspot.WhiteBox
+ * @run driver ClassFileInstaller sun.hotspot.WhiteBox sun.hotspot.WhiteBox$WhiteBoxPermission
  * @compile test-classes/Hello.java
- * @run main/timeout=240 CommandLineFlagCombo
+ * @run main/othervm/timeout=240 -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI -Xbootclasspath/a:. CommandLineFlagCombo
  */
 
 import jdk.test.lib.BuildHelper;
 import jdk.test.lib.Platform;
 import jdk.test.lib.process.OutputAnalyzer;
+
+import sun.hotspot.code.Compiler;
 
 public class CommandLineFlagCombo {
 
@@ -64,23 +71,23 @@ public class CommandLineFlagCombo {
             if (skipTestCase(testEntry))
                 continue;
 
-            OutputAnalyzer dumpOutput;
-
-            if (testEntry.equals("-XX:+FlightRecorder")) {
-                dumpOutput = TestCommon.dump(appJar, classList, "-XX:+UnlockCommercialFeatures", testEntry);
+            OutputAnalyzer dumpOutput = TestCommon.dump(appJar, classList, testEntry);
+            if (!TestCommon.isDynamicArchive()) {
+                TestCommon.checkDump(dumpOutput, "Loading classes to share");
             } else {
-                dumpOutput = TestCommon.dump(appJar, classList, testEntry);
+                if (testEntry.contains("ObjectAlignmentInBytes")) {
+                   dumpOutput.shouldHaveExitValue(1)
+                             .shouldMatch("The shared archive file's ObjectAlignmentInBytes of .* does not equal the current ObjectAlignmentInBytes of");
+                } else {
+                   TestCommon.checkDump(dumpOutput, "Loading classes to share");
+                }
             }
 
-            TestCommon.checkDump(dumpOutput, "Loading classes to share");
-
-            OutputAnalyzer execOutput;
-            if (testEntry.equals("-XX:+FlightRecorder")) {
-                execOutput = TestCommon.exec(appJar, "-XX:+UnlockCommercialFeatures", testEntry, "Hello");
-            } else {
-                execOutput = TestCommon.exec(appJar, testEntry, "Hello");
+            if ((TestCommon.isDynamicArchive() && !testEntry.contains("ObjectAlignmentInBytes")) ||
+                !TestCommon.isDynamicArchive()) {
+                OutputAnalyzer execOutput = TestCommon.exec(appJar, testEntry, "Hello");
+                TestCommon.checkExec(execOutput, "Hello World");
             }
-            TestCommon.checkExec(execOutput, "Hello World");
         }
 
         for (int i=0; i<2; i++) {
@@ -117,9 +124,9 @@ public class CommandLineFlagCombo {
             }
         }
 
-        if (!BuildHelper.isCommercialBuild() && testEntry.equals("-XX:+FlightRecorder"))
+        if (Compiler.isGraalEnabled() && testEntry.equals("-XX:+UseConcMarkSweepGC"))
         {
-            System.out.println("Test case not applicable on non-commercial builds");
+            System.out.println("Graal does not support CMS");
             return true;
         }
 

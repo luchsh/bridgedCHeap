@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_ASM_CODEBUFFER_HPP
-#define SHARE_VM_ASM_CODEBUFFER_HPP
+#ifndef SHARE_ASM_CODEBUFFER_HPP
+#define SHARE_ASM_CODEBUFFER_HPP
 
 #include "code/oopRecorder.hpp"
 #include "code/relocInfo.hpp"
@@ -77,7 +77,7 @@ public:
 // This class represents a stream of code and associated relocations.
 // There are a few in each CodeBuffer.
 // They are filled concurrently, and concatenated at the end.
-class CodeSection VALUE_OBJ_CLASS_SPEC {
+class CodeSection {
   friend class CodeBuffer;
  public:
   typedef int csize_t;  // code size type; would be size_t except for history
@@ -240,13 +240,12 @@ class CodeSection VALUE_OBJ_CLASS_SPEC {
 
 #ifndef PRODUCT
   void decode();
-  void dump();
   void print(const char* name);
 #endif //PRODUCT
 };
 
 class CodeString;
-class CodeStrings VALUE_OBJ_CLASS_SPEC {
+class CodeStrings {
 private:
 #ifndef PRODUCT
   CodeString* _strings;
@@ -290,6 +289,7 @@ public:
   const char* add_string(const char * string) PRODUCT_RETURN_(return NULL;);
 
   void add_comment(intptr_t offset, const char * comment) PRODUCT_RETURN;
+  bool has_block_comment(intptr_t offset) const;
   void print_block_comment(outputStream* stream, intptr_t offset) const PRODUCT_RETURN;
   // MOVE strings from other to this; invalidate other.
   void assign(CodeStrings& other)  PRODUCT_RETURN;
@@ -297,6 +297,7 @@ public:
   void copy(CodeStrings& other)  PRODUCT_RETURN;
   // FREE strings; invalidate this.
   void free() PRODUCT_RETURN;
+
   // Guarantee that _strings are used at most once; assign and free invalidate a buffer.
   inline void check_valid() const {
 #ifdef ASSERT
@@ -337,6 +338,7 @@ public:
 
 class CodeBuffer: public StackObj {
   friend class CodeSection;
+  friend class StubCodeGenerator;
 
  private:
   // CodeBuffers must be allocated on the stack except for a single
@@ -377,10 +379,15 @@ class CodeBuffer: public StackObj {
 
   OopRecorder* _oop_recorder;
   CodeStrings  _code_strings;
+  bool         _collect_comments;      // Indicate if we need to collect block comments at all.
   OopRecorder  _default_oop_recorder;  // override with initialize_oop_recorder
   Arena*       _overflow_arena;
 
-  address      _last_membar;     // used to merge consecutive memory barriers
+  address      _last_insn;      // used to merge consecutive memory barriers, loads or stores.
+
+#if INCLUDE_AOT
+  bool         _immutable_PIC;
+#endif
 
   address      _decode_begin;   // start address for decode
   address      decode_begin();
@@ -395,7 +402,19 @@ class CodeBuffer: public StackObj {
     _decode_begin    = NULL;
     _overflow_arena  = NULL;
     _code_strings    = CodeStrings();
-    _last_membar     = NULL;
+    _last_insn       = NULL;
+#if INCLUDE_AOT
+    _immutable_PIC   = false;
+#endif
+
+    // Collect block comments, but restrict collection to cases where a disassembly is output.
+    _collect_comments = ( PrintAssembly
+                       || PrintStubCode
+                       || PrintMethodHandleStubs
+                       || PrintInterpreter
+                       || PrintSignatureHandlers
+                       || UnlockDiagnosticVMOptions
+                        );
   }
 
   void initialize(address code_start, csize_t code_size) {
@@ -587,14 +606,31 @@ class CodeBuffer: public StackObj {
   OopRecorder* oop_recorder() const   { return _oop_recorder; }
   CodeStrings& strings()              { return _code_strings; }
 
-  address last_membar() const { return _last_membar; }
-  void set_last_membar(address a) { _last_membar = a; }
-  void clear_last_membar() { set_last_membar(NULL); }
+  address last_insn() const { return _last_insn; }
+  void set_last_insn(address a) { _last_insn = a; }
+  void clear_last_insn() { set_last_insn(NULL); }
 
   void free_strings() {
     if (!_code_strings.is_null()) {
       _code_strings.free(); // sets _strings Null as a side-effect.
     }
+  }
+
+  // Directly disassemble code buffer.
+  // Print the comment associated with offset on stream, if there is one.
+  virtual void print_block_comment(outputStream* stream, address block_begin) {
+#ifndef PRODUCT
+    intptr_t offset = (intptr_t)(block_begin - _total_start);  // I assume total_start is not correct for all code sections.
+    _code_strings.print_block_comment(stream, offset);
+#endif
+  }
+  bool has_block_comment(address block_begin) {
+#ifndef PRODUCT
+    intptr_t offset = (intptr_t)(block_begin - _total_start);  // I assume total_start is not correct for all code sections.
+    return _code_strings.has_block_comment(offset);
+#else
+    return false;
+#endif
   }
 
   // Code generation
@@ -629,16 +665,22 @@ class CodeBuffer: public StackObj {
   // Log a little info about section usage in the CodeBuffer
   void log_section_sizes(const char* name);
 
+#if INCLUDE_AOT
+  // True if this is a code buffer used for immutable PIC, i.e. AOT
+  // compilation.
+  bool immutable_PIC() { return _immutable_PIC; }
+  void set_immutable_PIC(bool pic) { _immutable_PIC = pic; }
+#endif
+
 #ifndef PRODUCT
  public:
   // Printing / Decoding
   // decodes from decode_begin() to code_end() and sets decode_begin to end
   void    decode();
-  void    decode_all();         // decodes all the code
-  void    skip_decode();        // sets decode_begin to code_end();
   void    print();
 #endif
-
+  // Directly disassemble code buffer.
+  void    decode(address start, address end);
 
   // The following header contains architecture-specific implementations
 #include CPU_HEADER(codeBuffer)
@@ -655,4 +697,4 @@ inline bool CodeSection::maybe_expand_to_ensure_remaining(csize_t amount) {
   return false;
 }
 
-#endif // SHARE_VM_ASM_CODEBUFFER_HPP
+#endif // SHARE_ASM_CODEBUFFER_HPP

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,13 +25,32 @@
 
 package sun.nio.ch;
 
-import java.io.*;
-import java.net.*;
-import java.nio.channels.*;
-import java.util.*;
+import java.io.FileDescriptor;
+import java.io.IOException;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.ProtocolFamily;
+import java.net.SocketAddress;
+import java.net.SocketException;
+import java.net.SocketOption;
+import java.net.StandardProtocolFamily;
+import java.net.StandardSocketOptions;
+import java.net.UnknownHostException;
+import java.nio.channels.AlreadyBoundException;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NotYetBoundException;
+import java.nio.channels.NotYetConnectedException;
+import java.nio.channels.UnresolvedAddressException;
+import java.nio.channels.UnsupportedAddressTypeException;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
+import java.util.Enumeration;
+
 import sun.net.ext.ExtendedSocketOptions;
+import sun.net.util.IPAddressUtil;
 import sun.security.action.GetPropertyAction;
 
 public class Net {
@@ -113,6 +132,16 @@ public class Net {
         InetAddress addr = isa.getAddress();
         if (!(addr instanceof Inet4Address || addr instanceof Inet6Address))
             throw new IllegalArgumentException("Invalid address type");
+        return isa;
+    }
+
+    static InetSocketAddress checkAddress(SocketAddress sa, ProtocolFamily family) {
+        InetSocketAddress isa = checkAddress(sa);
+        if (family == StandardProtocolFamily.INET) {
+            InetAddress addr = isa.getAddress();
+            if (!(addr instanceof Inet4Address))
+                throw new UnsupportedAddressTypeException();
+        }
         return isa;
     }
 
@@ -282,6 +311,12 @@ public class Net {
     static final ExtendedSocketOptions extendedOptions =
             ExtendedSocketOptions.getInstance();
 
+    static void setSocketOption(FileDescriptor fd, SocketOption<?> name, Object value)
+        throws IOException
+    {
+        setSocketOption(fd, Net.UNSPEC, name, value);
+    }
+
     static void setSocketOption(FileDescriptor fd, ProtocolFamily family,
                                 SocketOption<?> name, Object value)
         throws IOException
@@ -344,8 +379,13 @@ public class Net {
         setIntOption0(fd, mayNeedConversion, key.level(), key.name(), arg, isIPv6);
     }
 
-    static Object getSocketOption(FileDescriptor fd, ProtocolFamily family,
-                                  SocketOption<?> name)
+    static Object getSocketOption(FileDescriptor fd, SocketOption<?> name)
+        throws IOException
+    {
+        return getSocketOption(fd, Net.UNSPEC, name);
+    }
+
+    static Object getSocketOption(FileDescriptor fd, ProtocolFamily family, SocketOption<?> name)
         throws IOException
     {
         Class<?> type = name.type();
@@ -375,14 +415,8 @@ public class Net {
 
     public static boolean isFastTcpLoopbackRequested() {
         String loopbackProp = GetPropertyAction
-                .privilegedGetProperty("jdk.net.useFastTcpLoopback");
-        boolean enable;
-        if ("".equals(loopbackProp)) {
-            enable = true;
-        } else {
-            enable = Boolean.parseBoolean(loopbackProp);
-        }
-        return enable;
+                .privilegedGetProperty("jdk.net.useFastTcpLoopback", "false");
+        return loopbackProp.isEmpty() ? true : Boolean.parseBoolean(loopbackProp);
     }
 
     // -- Socket operations --
@@ -404,8 +438,7 @@ public class Net {
         return socket(UNSPEC, stream);
     }
 
-    static FileDescriptor socket(ProtocolFamily family, boolean stream)
-        throws IOException {
+    static FileDescriptor socket(ProtocolFamily family, boolean stream) throws IOException {
         boolean preferIPv6 = isIPv6Available() &&
             (family != StandardProtocolFamily.INET);
         return IOUtil.newFD(socket0(preferIPv6, stream, false, fastLoopback));
@@ -430,6 +463,9 @@ public class Net {
     {
         boolean preferIPv6 = isIPv6Available() &&
             (family != StandardProtocolFamily.INET);
+        if (addr.isLinkLocalAddress()) {
+            addr = IPAddressUtil.toScopedAddress(addr);
+        }
         bind0(fd, preferIPv6, exclusiveBind, addr, port);
     }
 
@@ -449,6 +485,9 @@ public class Net {
     static int connect(ProtocolFamily family, FileDescriptor fd, InetAddress remote, int remotePort)
         throws IOException
     {
+        if (remote.isLinkLocalAddress()) {
+            remote = IPAddressUtil.toScopedAddress(remote);
+        }
         boolean preferIPv6 = isIPv6Available() &&
             (family != StandardProtocolFamily.INET);
         return connect0(preferIPv6, fd, remote, remotePort);
@@ -460,6 +499,10 @@ public class Net {
                                        int remotePort)
         throws IOException;
 
+    public static native int accept(FileDescriptor fd,
+                                    FileDescriptor newfd,
+                                    InetSocketAddress[] isaa)
+        throws IOException;
 
     public static final int SHUT_RD = 0;
     public static final int SHUT_WR = 1;
@@ -499,11 +542,55 @@ public class Net {
                                              int level, int opt, int arg, boolean isIPv6)
         throws IOException;
 
+    /**
+     * Polls a file descriptor for events.
+     * @param timeout the timeout to wait; 0 to not wait, -1 to wait indefinitely
+     * @return the polled events or 0 if no events are polled
+     */
     static native int poll(FileDescriptor fd, int events, long timeout)
         throws IOException;
 
-    // -- Multicast support --
+    /**
+     * Performs a non-blocking poll of a file descriptor.
+     * @return the polled events or 0 if no events are polled
+     */
+    static int pollNow(FileDescriptor fd, int events) throws IOException {
+        return poll(fd, events, 0);
+    }
 
+    /**
+     * Polls a connecting socket to test if the connection has been established.
+     *
+     * @apiNote This method is public to allow it be used by code in jdk.sctp.
+     *
+     * @param timeout the timeout to wait; 0 to not wait, -1 to wait indefinitely
+     * @return true if connected
+     */
+    public static native boolean pollConnect(FileDescriptor fd, long timeout)
+        throws IOException;
+
+    /**
+     * Performs a non-blocking poll of a connecting socket to test if the
+     * connection has been established.
+     *
+     * @return true if connected
+     */
+    static boolean pollConnectNow(FileDescriptor fd) throws IOException {
+        return pollConnect(fd, 0);
+    }
+
+    /**
+     * Return the number of bytes in the socket input buffer.
+     */
+    static native int available(FileDescriptor fd) throws IOException;
+
+    /**
+     * Send one byte of urgent data (MSG_OOB) on the socket.
+     */
+    static native int sendOOB(FileDescriptor fd, byte data) throws IOException;
+
+
+    // -- Multicast support --
 
     /**
      * Join IPv4 multicast group

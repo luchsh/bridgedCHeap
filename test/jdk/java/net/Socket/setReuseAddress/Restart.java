@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2012, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,12 +24,20 @@
 /*
  * @test
  * @bug 4476378
+ * @library /test/lib
  * @summary Check that SO_REUSEADDR allows a server to restart
  *          after a crash.
  * @run main Restart
  * @run main/othervm -Dsun.net.useExclusiveBind Restart
+ * @run main/othervm -Dsun.net.useExclusiveBind=true Restart
+ * @run main/othervm -Djava.net.preferIPv4Stack=true Restart
+ * @run main/othervm -Dsun.net.useExclusiveBind
+ *                   -Djava.net.preferIPv4Stack=true Restart
+ * @run main/othervm -Dsun.net.useExclusiveBind=true
+ *                   -Djava.net.preferIPv4Stack=true Restart
  */
 import java.net.*;
+import jdk.test.lib.net.IPSupport;
 
 public class Restart {
 
@@ -41,12 +49,15 @@ public class Restart {
      */
 
     public static void main(String args[]) throws Exception {
-        ServerSocket ss = new ServerSocket(0);
+        IPSupport.throwSkippedExceptionIfNonOperational();
+
+        InetAddress localHost = InetAddress.getLocalHost();
+        ServerSocket ss = new ServerSocket(0, 0, localHost);
         Socket s1 = null, s2 = null;
         try {
             int port = ss.getLocalPort();
 
-            s1 = new Socket(InetAddress.getLocalHost(), port);
+            s1 = new Socket(localHost, port);
             s2 = ss.accept();
 
             // close server socket and the accepted connection
@@ -54,7 +65,7 @@ public class Restart {
             s2.close();
 
             ss = new ServerSocket();
-            ss.bind( new InetSocketAddress(port) );
+            ss.bind( new InetSocketAddress(localHost, port) );
             ss.close();
 
             // close the client socket

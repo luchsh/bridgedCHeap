@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,9 +26,11 @@
  * @test
  * @requires vm.cds
  * @modules java.base/jdk.internal.misc
+ *          jdk.jartool/sun.tools.jar
  * @library ../..
  * @library /test/lib
- * @run main OverrideTests
+ * @compile ../../test-classes/Hello.java
+ * @run driver OverrideTests
  * @summary AppCDS tests for overriding archived classes with -p and --upgrade-module-path
  */
 
@@ -65,9 +67,9 @@ public class OverrideTests {
     private static final String TEST_SRC = System.getProperty("test.src");
     private static final Path SRC_DIR = Paths.get(TEST_SRC, "src");
     private static final Path MODS_DIR = Paths.get("mods");
-
+    private static String appJar;
     // the module that is upgraded
-    private static final String[] UPGRADED_MODULES = {"jdk.compiler", "java.activation"};
+    private static final String[] UPGRADED_MODULES = {"jdk.compiler", "java.net.http"};
     private static final Path[] UPGRADEDMODS_DIR = {Paths.get("upgradedmod1"), Paths.get("upgradedmod2")};
 
     // the test module
@@ -76,12 +78,13 @@ public class OverrideTests {
 
     // test classes to archive. These are both in UPGRADED_MODULES
     private static final String APP_ARCHIVE_CLASS = "com/sun/tools/javac/Main";
-    private static final String PLATFORM_ARCHIVE_CLASS = "javax/activation/UnsupportedDataTypeException";
+    private static final String PLATFORM_ARCHIVE_CLASS = "java/net/http/HttpTimeoutException";
     private static final String[] ARCHIVE_CLASSES = {APP_ARCHIVE_CLASS, PLATFORM_ARCHIVE_CLASS};
     private static String testArchiveName;
 
 
     public static void main(String[] args) throws Exception {
+        appJar = JarBuilder.getOrCreateHelloJar();
         OverrideTests tests = new OverrideTests();
         tests.compileModulesAndDumpArchive();
         tests.testAppClassOverriding();
@@ -94,10 +97,10 @@ public class OverrideTests {
         int i = 0;
         for (String upgradedMod : UPGRADED_MODULES) {
             compiled = CompilerUtils.compile(
-                SRC_DIR.resolve(upgradedMod),
-                UPGRADEDMODS_DIR[i].resolve(upgradedMod)
+                SRC_DIR.resolve(UPGRADED_MODULES[i]),
+                UPGRADEDMODS_DIR[i].resolve(UPGRADED_MODULES[i])
             );
-            Asserts.assertTrue(compiled, upgradedMod + " did not compile");
+            Asserts.assertTrue(compiled, UPGRADED_MODULES[i] + " did not compile");
             i++;
         }
 
@@ -110,22 +113,12 @@ public class OverrideTests {
         );
         Asserts.assertTrue(compiled, TEST_MODULE + " did not compile");
 
-        // the java.activation module is not defined by default; --add-modules is required.
-        // dumping without "--add-modules java.activation"
-        // the class in the javax.activation package cannot be found
-        OutputAnalyzer output1  = TestCommon.dump(null /* appJar*/, TestCommon.list(ARCHIVE_CLASSES));
-        TestCommon.checkDump(output1);
-        output1.shouldContain(
-            "Preload Warning: Cannot find javax/activation/UnsupportedDataTypeException");
-
-        // dump the archive with jdk.comiler and java.activation classes in the class list
-        // with "--add-modules java.activation"
-        output1  = TestCommon.dump(null /* appJar*/, TestCommon.list(ARCHIVE_CLASSES),
-            "--add-modules", "java.activation");
-        TestCommon.checkDump(output1);
+        // dump the archive with jdk.compiler and java.net.http classes in the class list
+        OutputAnalyzer output  = TestCommon.dump(appJar, TestCommon.list(ARCHIVE_CLASSES));
+        TestCommon.checkDump(output);
         // Make sure all the classes where successfully archived.
         for (String archiveClass : ARCHIVE_CLASSES) {
-            output1.shouldNotContain("Preload Warning: Cannot find " + archiveClass);
+            output.shouldNotContain("Preload Warning: Cannot find " + archiveClass);
         }
 
         testArchiveName = TestCommon.getCurrentArchiveName();
@@ -147,11 +140,11 @@ public class OverrideTests {
     /**
      * PLATFORM Class Overriding Tests
      *
-     * Archive PLATFORM class javax.activation.UnsupportedDataTypeException from module jdk.activation.
-     *  -At run time, upgrade module jdk.activation using --upgrade-module-path.
-     *   Class.forname(UnsupportedDataTypeException) MUST NOT load the archived UnsupportedDataTypeException.
-     *  -At run time, module jdk.activation also exists in --module-path.
-     *   Class.forname(UnsupportedDataTypeException) MUST load the archived UnsupportedDataTypeException.
+     * Archive PLATFORM class java.net.http.HttpTimeoutException from module java.net.http.
+     *  -At run time, upgrade module java.net.http using --upgrade-module-path.
+     *   Class.forname(HttpTimeoutException) MUST NOT load the archived HttpTimeoutException.
+     *  -At run time, module java.net.http also exists in --module-path.
+     *   Class.forname(HttpTimeoutException) MUST load the archived HttpTimeoutException.
      */
     public void testPlatformClassOverriding() throws Exception {
         testClassOverriding(PLATFORM_ARCHIVE_CLASS, "platform");
@@ -169,29 +162,19 @@ public class OverrideTests {
         boolean isAppLoader = loaderName.equals("app");
         int upgradeModIdx = isAppLoader ? 0 : 1;
         String expectedException = "java.lang.module.FindException: Unable to compute the hash";
-        String prefix[] = new String[4];
-        prefix[0] = "-cp";
-        prefix[1] = "\"\"";
-        prefix[2] = "--add-modules";
-        prefix[3] = "java.activation";
+        String prefix[] = new String[3];
+        prefix[0] = "-Djava.class.path=" + appJar;
+        prefix[1] = "--add-modules";
+        prefix[2] = "java.net.http";
 
         // Run the test with --upgrade-module-path set to alternate location of archiveClass
         // The alternate version of archiveClass SHOULD be found.
-        output = TestCommon.execModule(
-            prefix,
-            UPGRADEDMODS_DIR[upgradeModIdx].toString(),
-            MODS_DIR.toString(),
-            mid,
-            archiveClass, loaderName, "true"); // last 3 args passed to test
-        if (isAppLoader) {
-            try {
-                output.shouldContain(expectedException);
-            } catch (Exception e) {
-                TestCommon.checkCommonExecExceptions(output, e);
-            }
-        } else {
-            TestCommon.checkExec(output);
-        }
+        TestCommon.runWithModules(prefix,
+                                  UPGRADEDMODS_DIR[upgradeModIdx].toString(),
+                                  MODS_DIR.toString(),
+                                  mid,
+                                  archiveClass, loaderName, "true") // last 3 args passed to test
+            .ifNoMappingFailure(out -> out.shouldContain(expectedException));
 
         // Now run this same test again, but this time without AppCDS. Behavior should be the same.
         CDSOptions opts = (new CDSOptions())
@@ -203,26 +186,21 @@ public class OverrideTests {
 
         output = CDSTestUtils.runWithArchive(opts);
 
-        if (isAppLoader) {
-            try {
-                output.shouldContain(expectedException);
-            } catch (Exception e) {
-                TestCommon.checkCommonExecExceptions(output, e);
-            }
-        } else {
-            if (!CDSTestUtils.isUnableToMap(output))
-                output.shouldHaveExitValue(0);
+        try {
+            output.shouldContain(expectedException);
+        } catch (Exception e) {
+            TestCommon.checkCommonExecExceptions(output, e);
         }
 
         // Run the test with -p set to alternate location of archiveClass.
         // The alternate version of archiveClass SHOULD NOT be found.
-        output = TestCommon.execModule(
+        TestCommon.runWithModules(
             prefix,
             null,
             UPGRADEDMODS_DIR[upgradeModIdx].toString() + java.io.File.pathSeparator + MODS_DIR.toString(),
             mid,
-            archiveClass, loaderName, "false"); // last 3 args passed to test
-        TestCommon.checkExec(output);
+            archiveClass, loaderName, "false") // last 3 args passed to test
+            .assertNormalExit();
 
         // Now  run this same test again, but this time without AppCDS. Behavior should be the same.
         opts = (new CDSOptions())

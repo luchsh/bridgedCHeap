@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_UTILITIES_ELF_SYMBOL_TABLE_HPP
-#define SHARE_VM_UTILITIES_ELF_SYMBOL_TABLE_HPP
+#ifndef SHARE_UTILITIES_ELFSYMBOLTABLE_HPP
+#define SHARE_UTILITIES_ELFSYMBOLTABLE_HPP
 
 #if !defined(_WINDOWS) && !defined(__APPLE__)
 
@@ -40,33 +40,31 @@
  */
 class ElfSymbolTable: public CHeapObj<mtInternal> {
   friend class ElfFile;
- public:
-  ElfSymbolTable(FILE* file, Elf_Shdr shdr);
+private:
+  ElfSymbolTable*  _next;
+
+  // file contains string table
+  FILE* const      _fd;
+
+  // corresponding section
+  ElfSection      _section;
+
+  NullDecoder::decoder_status _status;
+public:
+  ElfSymbolTable(FILE* const file, Elf_Shdr& shdr);
   ~ElfSymbolTable();
 
   // search the symbol that is nearest to the specified address.
   bool lookup(address addr, int* stringtableIndex, int* posIndex, int* offset, ElfFuncDescTable* funcDescTable);
 
-  NullDecoder::decoder_status get_status() { return m_status; };
-
- protected:
-  ElfSymbolTable*  m_next;
-
-  // holds a complete symbol table section if
-  // can allocate enough memory
-  Elf_Sym*            m_symbols;
-
-  // file contains string table
-  FILE*               m_file;
-
-  // section header
-  Elf_Shdr            m_shdr;
-
-  NullDecoder::decoder_status  m_status;
+  NullDecoder::decoder_status get_status() const { return _status; };
+private:
+  ElfSymbolTable* next() const { return _next; }
+  void set_next(ElfSymbolTable* next) { _next = next; }
 
   bool compare(const Elf_Sym* sym, address addr, int* stringtableIndex, int* posIndex, int* offset, ElfFuncDescTable* funcDescTable);
 };
 
 #endif // !_WINDOWS and !__APPLE__
 
-#endif // SHARE_VM_UTILITIES_ELF_SYMBOL_TABLE_HPP
+#endif // SHARE_UTILITIES_ELFSYMBOLTABLE_HPP

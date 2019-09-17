@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,19 +25,20 @@
  * @test
  * @bug 8152341
  * @requires vm.jvmci
- * @library /test/lib /compiler/jvmci/jdk.vm.ci.hotspot.test/src
+ * @library /compiler/jvmci/common/patches /test/lib /compiler/jvmci/jdk.vm.ci.hotspot.test/src
  * @modules jdk.internal.vm.ci/jdk.vm.ci.meta
  *          jdk.internal.vm.ci/jdk.vm.ci.common
  *          jdk.internal.vm.ci/jdk.vm.ci.runtime
  *          jdk.internal.vm.ci/jdk.vm.ci.hotspot
  *          java.base/jdk.internal.misc
  * @build sun.hotspot.WhiteBox
+ * @build jdk.internal.vm.ci/jdk.vm.ci.hotspot.CompilerToVMHelper
  * @run driver ClassFileInstaller sun.hotspot.WhiteBox
  *                                sun.hotspot.WhiteBox$WhiteBoxPermission
  * @run testng/othervm -Xbootclasspath/a:.
  *      -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI
  *      -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCI
- *      -Djvmci.Compiler=null jdk.vm.ci.hotspot.test.MemoryAccessProviderTest
+ *      -XX:-UseJVMCICompiler jdk.vm.ci.hotspot.test.MemoryAccessProviderTest
  */
 
 package jdk.vm.ci.hotspot.test;

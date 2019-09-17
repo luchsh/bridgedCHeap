@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2017, Red Hat, Inc. and/or its affiliates.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -30,11 +31,29 @@
 class CollectedHeap;
 
 class G1Arguments : public GCArguments {
-public:
-  virtual void initialize_flags();
-  virtual bool parse_verification_type(const char* type);
+  friend class G1HeapVerifierTest;
+
+private:
+  static size_t MaxMemoryForYoung;
+
+  static void initialize_verification_types();
+  static void parse_verification_type(const char* type);
+
+  virtual void initialize_alignments();
+  virtual void initialize_heap_flags_and_sizes();
+
+  void initialize_heterogeneous();
+
+  virtual void initialize();
   virtual size_t conservative_max_heap_alignment();
   virtual CollectedHeap* create_heap();
+
+public:
+  // Heterogeneous heap support
+  static bool is_heterogeneous_heap();
+  static size_t reasonable_max_memory_for_young();
+  static size_t heap_reserved_size_bytes();
+  static size_t heap_max_size_bytes();
 };
 
 #endif // SHARE_GC_G1_G1ARGUMENTS_HPP

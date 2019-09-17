@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.code;
 
 import static java.util.Collections.emptyList;
@@ -33,7 +35,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
-import org.graalvm.collections.EconomicSet;
+import jdk.internal.vm.compiler.collections.EconomicSet;
 import org.graalvm.compiler.core.common.CompilationIdentifier;
 import org.graalvm.compiler.graph.NodeSourcePosition;
 
@@ -53,6 +55,7 @@ import jdk.vm.ci.meta.Assumptions.Assumption;
 import jdk.vm.ci.meta.InvokeTarget;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import jdk.vm.ci.meta.SpeculationLog;
 
 /**
  * Represents the output from compiling a method, including the compiled machine code, associated
@@ -189,6 +192,10 @@ public class CompilationResult {
 
     private StackSlot customStackArea = null;
 
+    /**
+     * A customized name that is unrelated to {@link #compilationId}. Can be null if
+     * {@link #compilationId} fully describes the compilation.
+     */
     private final String name;
 
     private final CompilationIdentifier compilationId;
@@ -215,6 +222,11 @@ public class CompilationResult {
     private ResolvedJavaMethod[] methods;
 
     /**
+     * The {@link SpeculationLog} log used during compilation.
+     */
+    private SpeculationLog speculationLog;
+
+    /**
      * The list of fields that were accessed from the bytecodes.
      */
     private ResolvedJavaField[] fields;
@@ -226,7 +238,7 @@ public class CompilationResult {
     private boolean isImmutablePIC;
 
     public CompilationResult(CompilationIdentifier compilationId) {
-        this(compilationId, compilationId.toString(CompilationIdentifier.Verbosity.NAME), false);
+        this(compilationId, null, false);
     }
 
     public CompilationResult(CompilationIdentifier compilationId, String name) {
@@ -364,6 +376,21 @@ public class CompilationResult {
      */
     public ResolvedJavaMethod[] getMethods() {
         return methods;
+    }
+
+    /**
+     * Sets the {@link SpeculationLog} log used during compilation.
+     */
+    public void setSpeculationLog(SpeculationLog speculationLog) {
+        checkOpen();
+        this.speculationLog = speculationLog;
+    }
+
+    /**
+     * Gets the {@link SpeculationLog} log, if any, used during compilation.
+     */
+    public SpeculationLog getSpeculationLog() {
+        return speculationLog;
     }
 
     /**
@@ -609,7 +636,7 @@ public class CompilationResult {
     /**
      * @return the code annotations or {@code null} if there are none
      */
-    public List<CodeAnnotation> getAnnotations() {
+    public List<CodeAnnotation> getCodeAnnotations() {
         if (annotations == null) {
             return Collections.emptyList();
         }
@@ -675,6 +702,10 @@ public class CompilationResult {
         return unmodifiableList(sourceMapping);
     }
 
+    /**
+     * Gets the name for this compilation result. This will only be non-null when it provides a
+     * value unrelated to {@link #getCompilationId()}.
+     */
     public String getName() {
         return name;
     }
@@ -696,7 +727,8 @@ public class CompilationResult {
      * Clears the information in this object pertaining to generating code. That is, the
      * {@linkplain #getMarks() marks}, {@linkplain #getInfopoints() infopoints},
      * {@linkplain #getExceptionHandlers() exception handlers}, {@linkplain #getDataPatches() data
-     * patches} and {@linkplain #getAnnotations() annotations} recorded in this object are cleared.
+     * patches} and {@linkplain #getCodeAnnotations() annotations} recorded in this object are
+     * cleared.
      */
     public void resetForEmittingCode() {
         checkOpen();
@@ -709,6 +741,14 @@ public class CompilationResult {
         if (annotations != null) {
             annotations.clear();
         }
+    }
+
+    public void clearInfopoints() {
+        infopoints.clear();
+    }
+
+    public void clearExceptionHandlers() {
+        exceptionHandlers.clear();
     }
 
     private void checkOpen() {

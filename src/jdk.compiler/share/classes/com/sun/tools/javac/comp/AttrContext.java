@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -101,6 +101,11 @@ public class AttrContext {
      */
     Attr.ResultInfo returnResult = null;
 
+    /** ResultInfo to be used for attributing 'yield' statement expressions
+     * (set by Attr.visitSwitchExpression)
+     */
+    Attr.ResultInfo yieldResult = null;
+
     /** Symbol corresponding to the site of a qualified default super call
      */
     Type defaultSuperCallSite = null;
@@ -124,6 +129,7 @@ public class AttrContext {
         info.lint = lint;
         info.enclVar = enclVar;
         info.returnResult = returnResult;
+        info.yieldResult = yieldResult;
         info.defaultSuperCallSite = defaultSuperCallSite;
         info.isSerializable = isSerializable;
         info.isLambda = isLambda;

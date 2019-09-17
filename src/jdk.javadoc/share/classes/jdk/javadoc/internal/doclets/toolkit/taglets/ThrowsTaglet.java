@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -40,7 +40,7 @@ import jdk.javadoc.internal.doclets.toolkit.util.DocFinder;
 import jdk.javadoc.internal.doclets.toolkit.util.DocFinder.Input;
 import jdk.javadoc.internal.doclets.toolkit.util.Utils;
 
-import static com.sun.source.doctree.DocTree.Kind.*;
+import static com.sun.source.doctree.DocTree.Kind.THROWS;
 
 /**
  * A taglet that represents the @throws tag.
@@ -52,16 +52,13 @@ import static com.sun.source.doctree.DocTree.Kind.*;
  *
  * @author Jamie Ho
  */
-public class ThrowsTaglet extends BaseExecutableMemberTaglet
+public class ThrowsTaglet extends BaseTaglet
     implements InheritableTaglet {
 
     public ThrowsTaglet() {
-        name = THROWS.tagName;
+        super(THROWS.tagName, false, EnumSet.of(Site.CONSTRUCTOR, Site.METHOD));
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public void inherit(DocFinder.Input input, DocFinder.Output output) {
         Utils utils = input.utils;
@@ -107,9 +104,9 @@ public class ThrowsTaglet extends BaseExecutableMemberTaglet
                 !alreadyDocumented.contains(utils.getSimpleName(klass)) &&
                 !alreadyDocumented.contains(utils.getFullyQualifiedName(klass))) {
                 if (alreadyDocumented.isEmpty()) {
-                    result.addContent(writer.getThrowsHeader());
+                    result.add(writer.getThrowsHeader());
                 }
-                result.addContent(writer.throwsTagOutput(declaredExceptionType));
+                result.add(writer.throwsTagOutput(declaredExceptionType));
                 alreadyDocumented.add(utils.getSimpleName(klass));
             }
         }
@@ -143,7 +140,7 @@ public class ThrowsTaglet extends BaseExecutableMemberTaglet
                     declaredExceptionTags.put(inheritedDoc.tagList, (ExecutableElement)inheritedDoc.holder);
                 }
             }
-            result.addContent(throwsTagsOutput(declaredExceptionTags, writer, alreadyDocumented, false));
+            result.add(throwsTagsOutput(declaredExceptionTags, writer, alreadyDocumented, false));
         }
         return result;
     }
@@ -159,11 +156,11 @@ public class ThrowsTaglet extends BaseExecutableMemberTaglet
         Content result = writer.getOutputInstance();
         HashSet<String> alreadyDocumented = new HashSet<>();
         if (!tagsMap.isEmpty()) {
-            result.addContent(throwsTagsOutput(tagsMap, writer, alreadyDocumented, true));
+            result.add(throwsTagsOutput(tagsMap, writer, alreadyDocumented, true));
         }
-        result.addContent(inheritThrowsDocumentation(holder,
+        result.add(inheritThrowsDocumentation(holder,
             execHolder.getThrownTypes(), alreadyDocumented, writer));
-        result.addContent(linkToUndocumentedDeclaredExceptions(
+        result.add(linkToUndocumentedDeclaredExceptions(
             execHolder.getThrownTypes(), alreadyDocumented, writer));
         return result;
     }
@@ -195,9 +192,9 @@ public class ThrowsTaglet extends BaseExecutableMemberTaglet
                         continue;
                     }
                     if (alreadyDocumented.isEmpty()) {
-                        result.addContent(writer.getThrowsHeader());
+                        result.add(writer.getThrowsHeader());
                     }
-                    result.addContent(writer.throwsTagOutput(e, dt));
+                    result.add(writer.throwsTagOutput(e, dt));
                     alreadyDocumented.add(te != null
                             ? utils.getFullyQualifiedName(te)
                             : excName);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -57,6 +57,7 @@ public class ArrayKlass extends Klass {
     super(addr);
   }
 
+  public boolean isArrayKlass()     { return true; }
   private static CIntField dimension;
   private static MetadataField  higherDimension;
   private static MetadataField  lowerDimension;
@@ -71,27 +72,27 @@ public class ArrayKlass extends Klass {
   public Klass getLowerDimension()  { return (Klass) lowerDimension.getValue(this); }
 
   // constant class names - javaLangCloneable, javaIoSerializable, javaLangObject
-  // Initialized lazily to avoid initialization ordering dependencies between ArrayKlass and SymbolTable
-  private static Symbol javaLangCloneableName;
-  private static Symbol javaLangObjectName;
-  private static Symbol javaIoSerializableName;
-  private static Symbol javaLangCloneableName() {
+  // Initialized lazily to avoid initialization ordering dependencies between ArrayKlass and String
+  private static String javaLangCloneableName;
+  private static String javaLangObjectName;
+  private static String javaIoSerializableName;
+  private static String javaLangCloneableName() {
     if (javaLangCloneableName == null) {
-      javaLangCloneableName = VM.getVM().getSymbolTable().probe("java/lang/Cloneable");
+      javaLangCloneableName = "java/lang/Cloneable";
     }
     return javaLangCloneableName;
   }
 
-  private static Symbol javaLangObjectName() {
+  private static String javaLangObjectName() {
     if (javaLangObjectName == null) {
-      javaLangObjectName = VM.getVM().getSymbolTable().probe("java/lang/Object");
+      javaLangObjectName = "java/lang/Object";
     }
     return javaLangObjectName;
   }
 
-  private static Symbol javaIoSerializableName() {
+  private static String javaIoSerializableName() {
     if (javaIoSerializableName == null) {
-      javaIoSerializableName = VM.getVM().getSymbolTable().probe("java/io/Serializable");
+      javaIoSerializableName = "java/io/Serializable";
     }
     return javaIoSerializableName;
   }

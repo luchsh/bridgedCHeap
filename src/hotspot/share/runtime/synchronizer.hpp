@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_RUNTIME_SYNCHRONIZER_HPP
-#define SHARE_VM_RUNTIME_SYNCHRONIZER_HPP
+#ifndef SHARE_RUNTIME_SYNCHRONIZER_HPP
+#define SHARE_RUNTIME_SYNCHRONIZER_HPP
 
 #include "memory/padded.hpp"
 #include "oops/markOop.hpp"
@@ -35,9 +35,11 @@ class ObjectMonitor;
 class ThreadsList;
 
 struct DeflateMonitorCounters {
-  int nInuse;          // currently associated with objects
-  int nInCirculation;  // extant
-  int nScavenged;      // reclaimed
+  int nInuse;              // currently associated with objects
+  int nInCirculation;      // extant
+  int nScavenged;          // reclaimed (global and per-thread)
+  int perThreadScavenged;  // per-thread scavenge total
+  double perThreadTimes;   // per-thread scavenge times
 };
 
 class ObjectSynchronizer : AllStatic {
@@ -105,7 +107,6 @@ class ObjectSynchronizer : AllStatic {
   static void reenter (Handle obj, intptr_t recursion, TRAPS);
 
   // thread-specific and global objectMonitor free list accessors
-  static void verifyInUse(Thread * Self);
   static ObjectMonitor * omAlloc(Thread * Self);
   static void omRelease(Thread * Self, ObjectMonitor * m,
                         bool FromPerThreadAlloc);
@@ -114,7 +115,7 @@ class ObjectSynchronizer : AllStatic {
   // Inflate light weight monitor to heavy weight monitor
   static ObjectMonitor* inflate(Thread * Self, oop obj, const InflateCause cause);
   // This version is only for internal use
-  static ObjectMonitor* inflate_helper(oop obj);
+  static void inflate_helper(oop obj);
   static const char* inflate_cause_name(const InflateCause cause);
 
   // Returns the identity hash value for an oop
@@ -153,12 +154,28 @@ class ObjectSynchronizer : AllStatic {
   static void thread_local_used_oops_do(Thread* thread, OopClosure* f);
 
   // debugging
-  static void sanity_checks(const bool verbose,
-                            const unsigned int cache_line_size,
-                            int *error_cnt_ptr, int *warning_cnt_ptr);
+  static void audit_and_print_stats(bool on_exit);
+  static void chk_free_entry(JavaThread * jt, ObjectMonitor * n,
+                             outputStream * out, int *error_cnt_p);
+  static void chk_global_free_list_and_count(outputStream * out,
+                                             int *error_cnt_p);
+  static void chk_global_in_use_list_and_count(outputStream * out,
+                                               int *error_cnt_p);
+  static void chk_in_use_entry(JavaThread * jt, ObjectMonitor * n,
+                               outputStream * out, int *error_cnt_p);
+  static void chk_per_thread_in_use_list_and_count(JavaThread *jt,
+                                                   outputStream * out,
+                                                   int *error_cnt_p);
+  static void chk_per_thread_free_list_and_count(JavaThread *jt,
+                                                 outputStream * out,
+                                                 int *error_cnt_p);
+  static void log_in_use_monitor_details(outputStream * out, bool on_exit);
+  static int  log_monitor_list_counts(outputStream * out);
   static int  verify_objmon_isinpool(ObjectMonitor *addr) PRODUCT_RETURN0;
 
  private:
+  friend class SynchronizerTest;
+
   enum { _BLOCKSIZE = 128 };
   // global list of blocks of monitors
   static PaddedEnd<ObjectMonitor> * volatile gBlockList;
@@ -170,22 +187,23 @@ class ObjectSynchronizer : AllStatic {
   // count of entries in gOmInUseList
   static int gOmInUseCount;
 
-  // Process oops in all monitors
-  static void global_oops_do(OopClosure* f);
   // Process oops in all global used monitors (i.e. moribund thread's monitors)
   static void global_used_oops_do(OopClosure* f);
   // Process oops in monitors on the given list
   static void list_oops_do(ObjectMonitor* list, OopClosure* f);
 
+  // Support for SynchronizerTest access to GVars fields:
+  static u_char* get_gvars_addr();
+  static u_char* get_gvars_hcSequence_addr();
+  static size_t get_gvars_size();
+  static u_char* get_gvars_stwRandom_addr();
 };
 
-// ObjectLocker enforced balanced locking and can never thrown an
+// ObjectLocker enforces balanced locking and can never throw an
 // IllegalMonitorStateException. However, a pending exception may
 // have to pass through, and we must also be able to deal with
 // asynchronous exceptions. The caller is responsible for checking
-// the threads pending exception if needed.
-// doLock was added to support classloading with UnsyncloadClass which
-// requires flag based choice of locking the classloader lock.
+// the thread's pending exception if needed.
 class ObjectLocker : public StackObj {
  private:
   Thread*   _thread;
@@ -206,4 +224,4 @@ class ObjectLocker : public StackObj {
   void reenter(intptr_t recursion, TRAPS)  { ObjectSynchronizer::reenter(_obj, recursion, CHECK); }
 };
 
-#endif // SHARE_VM_RUNTIME_SYNCHRONIZER_HPP
+#endif // SHARE_RUNTIME_SYNCHRONIZER_HPP

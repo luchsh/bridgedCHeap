@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_OPTO_PARSE_HPP
-#define SHARE_VM_OPTO_PARSE_HPP
+#ifndef SHARE_OPTO_PARSE_HPP
+#define SHARE_OPTO_PARSE_HPP
 
 #include "ci/ciMethodData.hpp"
 #include "ci/ciTypeFlow.hpp"
@@ -57,6 +57,8 @@ class InlineTree : public ResourceObj {
 
   GrowableArray<InlineTree*> _subtrees;
 
+  bool pass_initial_checks(ciMethod* caller_method, int caller_bci, ciMethod* callee_method);
+
   void print_impl(outputStream* stj, int indent) const PRODUCT_RETURN;
   const char* _msg;
 protected:
@@ -86,6 +88,10 @@ protected:
                                 ciMethod* caller_method,
                                 JVMState* jvms,
                                 WarmCallInfo* wci_result);
+  bool        is_not_reached(ciMethod* callee_method,
+                             ciMethod* caller_method,
+                             int caller_bci,
+                             ciCallProfile& profile);
   void        print_inlining(ciMethod* callee_method, int caller_bci,
                              ciMethod* caller_method, bool success) const;
 
@@ -161,6 +167,7 @@ class Parse : public GraphKit {
     bool               _has_merged_backedge; // does this block have merged backedge?
     SafePointNode*     _start_map;      // all values flowing into this block
     MethodLivenessResult _live_locals;  // lazily initialized liveness bitmap
+    bool               _has_predicates; // Were predicates added before parsing of the loop head?
 
     int                _num_successors; // Includes only normal control flow.
     int                _all_successors; // Include exception paths also.
@@ -202,6 +209,9 @@ class Parse : public GraphKit {
 
     // True when all non-exception predecessors have been parsed.
     bool is_ready() const                  { return preds_parsed() == pred_count(); }
+
+    bool has_predicates() const            { return _has_predicates; }
+    void set_has_predicates()              { _has_predicates = true; }
 
     int num_successors() const             { return _num_successors; }
     int all_successors() const             { return _all_successors; }
@@ -472,6 +482,8 @@ class Parse : public GraphKit {
   // Helper function to compute array addressing
   Node* array_addressing(BasicType type, int vals, const Type* *result2=NULL);
 
+  void clinit_deopt();
+
   void rtm_deopt();
 
   // Pass current map to exits
@@ -520,14 +532,12 @@ class Parse : public GraphKit {
 
   // common code for making initial checks and forming addresses
   void do_field_access(bool is_get, bool is_field);
-  bool static_field_ok_in_clinit(ciField *field, ciMethod *method);
 
   // common code for actually performing the load or store
   void do_get_xxx(Node* obj, ciField* field, bool is_field);
   void do_put_xxx(Node* obj, ciField* field, bool is_field);
 
   // implementation of object creation bytecodes
-  void emit_guard_for_new(ciInstanceKlass* klass);
   void do_new();
   void do_newarray(BasicType elemtype);
   void do_anewarray();
@@ -552,17 +562,19 @@ class Parse : public GraphKit {
   void    sharpen_type_after_if(BoolTest::mask btest,
                                 Node* con, const Type* tcon,
                                 Node* val, const Type* tval);
-  IfNode* jump_if_fork_int(Node* a, Node* b, BoolTest::mask mask);
+  void    maybe_add_predicate_after_if(Block* path);
+  IfNode* jump_if_fork_int(Node* a, Node* b, BoolTest::mask mask, float prob, float cnt);
   Node*   jump_if_join(Node* iffalse, Node* iftrue);
-  void    jump_if_true_fork(IfNode *ifNode, int dest_bci_if_true, int prof_table_index);
-  void    jump_if_false_fork(IfNode *ifNode, int dest_bci_if_false, int prof_table_index);
-  void    jump_if_always_fork(int dest_bci_if_true, int prof_table_index);
+  void    jump_if_true_fork(IfNode *ifNode, int dest_bci_if_true, int prof_table_index, bool unc);
+  void    jump_if_false_fork(IfNode *ifNode, int dest_bci_if_false, int prof_table_index, bool unc);
+  void    jump_if_always_fork(int dest_bci_if_true, int prof_table_index, bool unc);
 
   friend class SwitchRange;
   void    do_tableswitch();
   void    do_lookupswitch();
   void    jump_switch_ranges(Node* a, SwitchRange* lo, SwitchRange* hi, int depth = 0);
   bool    create_jump_tables(Node* a, SwitchRange* lo, SwitchRange* hi);
+  void    linear_search_switch_ranges(Node* key_val, SwitchRange*& lo, SwitchRange*& hi);
 
   void decrement_age();
   // helper functions for methodData style profiling
@@ -623,4 +635,4 @@ class Parse : public GraphKit {
 #endif
 };
 
-#endif // SHARE_VM_OPTO_PARSE_HPP
+#endif // SHARE_OPTO_PARSE_HPP

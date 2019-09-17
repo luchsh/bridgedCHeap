@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,12 +21,15 @@
  * questions.
  */
 
-#ifndef SHARE_VM_JVMCI_JVMCI_COMPILER_TO_VM_HPP
-#define SHARE_VM_JVMCI_JVMCI_COMPILER_TO_VM_HPP
+#ifndef SHARE_JVMCI_JVMCICOMPILERTOVM_HPP
+#define SHARE_JVMCI_JVMCICOMPILERTOVM_HPP
 
-#include "jni.h"
+#include "gc/shared/cardTable.hpp"
+#include "jvmci/jvmciExceptions.hpp"
 #include "runtime/javaCalls.hpp"
-#include "jvmci/jvmciJavaClasses.hpp"
+#include "runtime/signature.hpp"
+
+class JVMCIObjectArray;
 
 class CompilerToVM {
  public:
@@ -60,8 +63,9 @@ class CompilerToVM {
     static HeapWord** _heap_end_addr;
     static HeapWord* volatile* _heap_top_addr;
     static int _max_oop_map_stack_offset;
+    static int _fields_annotations_base_offset;
 
-    static jbyte* cardtable_start_address;
+    static CardTable::CardValue* cardtable_start_address;
     static int cardtable_shift;
 
     static int vm_page_size;
@@ -70,7 +74,6 @@ class CompilerToVM {
     static int sizeof_ExceptionTableElement;
     static int sizeof_LocalVariableTableElement;
     static int sizeof_ConstantPool;
-    static int sizeof_SymbolPointer;
     static int sizeof_narrowKlass;
     static int sizeof_arrayOopDesc;
     static int sizeof_BasicLock;
@@ -87,7 +90,7 @@ class CompilerToVM {
     static address symbol_clinit;
 
    public:
-    static void initialize(TRAPS);
+     static void initialize(JVMCI_TRAPS);
 
     static int max_oop_map_stack_offset() {
       assert(_max_oop_map_stack_offset > 0, "must be initialized");
@@ -110,59 +113,14 @@ class CompilerToVM {
   }
 
   static JNINativeMethod methods[];
+  static JNINativeMethod jni_methods[];
 
-  static objArrayHandle initialize_intrinsics(TRAPS);
+  static JVMCIObjectArray initialize_intrinsics(JVMCI_TRAPS);
  public:
   static int methods_count();
 
-  static inline Method* asMethod(jobject jvmci_method) {
-    return (Method*) (address) HotSpotResolvedJavaMethodImpl::metaspaceMethod(jvmci_method);
-  }
-
-  static inline Method* asMethod(Handle jvmci_method) {
-    return (Method*) (address) HotSpotResolvedJavaMethodImpl::metaspaceMethod(jvmci_method);
-  }
-
-  static inline Method* asMethod(oop jvmci_method) {
-    return (Method*) (address) HotSpotResolvedJavaMethodImpl::metaspaceMethod(jvmci_method);
-  }
-
-  static inline ConstantPool* asConstantPool(jobject jvmci_constant_pool) {
-    return (ConstantPool*) (address) HotSpotConstantPool::metaspaceConstantPool(jvmci_constant_pool);
-  }
-
-  static inline ConstantPool* asConstantPool(Handle jvmci_constant_pool) {
-    return (ConstantPool*) (address) HotSpotConstantPool::metaspaceConstantPool(jvmci_constant_pool);
-  }
-
-  static inline ConstantPool* asConstantPool(oop jvmci_constant_pool) {
-    return (ConstantPool*) (address) HotSpotConstantPool::metaspaceConstantPool(jvmci_constant_pool);
-  }
-
-  static inline Klass* asKlass(jobject jvmci_type) {
-    return java_lang_Class::as_Klass(HotSpotResolvedObjectTypeImpl::javaClass(jvmci_type));
-  }
-
-  static inline Klass* asKlass(Handle jvmci_type) {
-    return java_lang_Class::as_Klass(HotSpotResolvedObjectTypeImpl::javaClass(jvmci_type));
-  }
-
-  static inline Klass* asKlass(oop jvmci_type) {
-    return java_lang_Class::as_Klass(HotSpotResolvedObjectTypeImpl::javaClass(jvmci_type));
-  }
-
-  static inline Klass* asKlass(jlong metaspaceKlass) {
-    return (Klass*) (address) metaspaceKlass;
-  }
-
-  static inline MethodData* asMethodData(jlong metaspaceMethodData) {
-    return (MethodData*) (address) metaspaceMethodData;
-  }
-
-  static oop get_jvmci_method(const methodHandle& method, TRAPS);
-
-  static oop get_jvmci_type(Klass* klass, TRAPS);
 };
+
 
 class JavaArgumentUnboxer : public SignatureIterator {
  protected:
@@ -170,12 +128,7 @@ class JavaArgumentUnboxer : public SignatureIterator {
   arrayOop _args;
   int _index;
 
-  Handle next_arg(BasicType expectedType) {
-    assert(_index < _args->length(), "out of bounds");
-    oop arg=((objArrayOop) (_args))->obj_at(_index++);
-    assert(expectedType == T_OBJECT || java_lang_boxing_object::is_instance(arg, expectedType), "arg type mismatch");
-    return Handle(Thread::current(), arg);
-  }
+  Handle next_arg(BasicType expectedType);
 
  public:
   JavaArgumentUnboxer(Symbol* signature, JavaCallArguments*  jca, arrayOop args, bool is_static) : SignatureIterator(signature) {
@@ -207,13 +160,14 @@ class JavaArgumentUnboxer : public SignatureIterator {
 };
 
 class JNIHandleMark : public StackObj {
+  JavaThread* _thread;
   public:
-    JNIHandleMark() { push_jni_handle_block(); }
-    ~JNIHandleMark() { pop_jni_handle_block(); }
+    JNIHandleMark(JavaThread* thread) : _thread(thread) { push_jni_handle_block(thread); }
+    ~JNIHandleMark() { pop_jni_handle_block(_thread); }
 
   private:
-    static void push_jni_handle_block();
-    static void pop_jni_handle_block();
+    static void push_jni_handle_block(JavaThread* thread);
+    static void pop_jni_handle_block(JavaThread* thread);
 };
 
-#endif // SHARE_VM_JVMCI_JVMCI_COMPILER_TO_VM_HPP
+#endif // SHARE_JVMCI_JVMCICOMPILERTOVM_HPP

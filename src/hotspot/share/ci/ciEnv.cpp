@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,7 +32,8 @@
 #include "ci/ciMethod.hpp"
 #include "ci/ciNullObject.hpp"
 #include "ci/ciReplay.hpp"
-#include "ci/ciUtilities.hpp"
+#include "ci/ciUtilities.inline.hpp"
+#include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "code/codeCache.hpp"
@@ -42,20 +43,27 @@
 #include "compiler/disassembler.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "interpreter/linkResolver.hpp"
+#include "jfr/jfrEvents.hpp"
+#include "logging/log.hpp"
 #include "memory/allocation.inline.hpp"
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
-#include "memory/universe.inline.hpp"
+#include "memory/universe.hpp"
+#include "oops/constantPool.inline.hpp"
+#include "oops/cpCache.inline.hpp"
+#include "oops/method.inline.hpp"
 #include "oops/methodData.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "oops/objArrayOop.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "prims/jvmtiExport.hpp"
+#include "runtime/handles.inline.hpp"
 #include "runtime/init.hpp"
 #include "runtime/reflection.hpp"
+#include "runtime/jniHandles.inline.hpp"
+#include "runtime/safepointVerifiers.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/thread.inline.hpp"
-#include "trace/tracing.hpp"
 #include "utilities/dtrace.hpp"
 #include "utilities/macros.hpp"
 #ifdef COMPILER1
@@ -72,7 +80,7 @@
 
 ciObject*              ciEnv::_null_object_instance;
 
-#define WK_KLASS_DEFN(name, ignore_s, ignore_o) ciInstanceKlass* ciEnv::_##name = NULL;
+#define WK_KLASS_DEFN(name, ignore_s) ciInstanceKlass* ciEnv::_##name = NULL;
 WK_KLASSES_DO(WK_KLASS_DEFN)
 #undef WK_KLASS_DEFN
 
@@ -113,6 +121,9 @@ ciEnv::ciEnv(CompileTask* task, int system_dictionary_modification_counter)
   _system_dictionary_modification_counter = system_dictionary_modification_counter;
   _num_inlined_bytecodes = 0;
   assert(task == NULL || thread->task() == task, "sanity");
+  if (task != NULL) {
+    task->mark_started(os::elapsed_counter());
+  }
   _task = task;
   _log = NULL;
 
@@ -226,10 +237,6 @@ void ciEnv::cache_jvmti_state() {
   _jvmti_can_access_local_variables     = JvmtiExport::can_access_local_variables();
   _jvmti_can_post_on_exceptions         = JvmtiExport::can_post_on_exceptions();
   _jvmti_can_pop_frame                  = JvmtiExport::can_pop_frame();
-}
-
-bool ciEnv::should_retain_local_variables() const {
-  return _jvmti_can_access_local_variables || _jvmti_can_pop_frame;
 }
 
 bool ciEnv::jvmti_state_changed() const {
@@ -394,13 +401,12 @@ ciKlass* ciEnv::get_klass_by_name_impl(ciKlass* accessing_klass,
 
   // Now we need to check the SystemDictionary
   Symbol* sym = name->get_symbol();
-  if (sym->byte_at(0) == 'L' &&
-    sym->byte_at(sym->utf8_length()-1) == ';') {
+  if (sym->char_at(0) == 'L' &&
+    sym->char_at(sym->utf8_length()-1) == ';') {
     // This is a name from a signature.  Strip off the trimmings.
     // Call recursive to keep scope of strippedsym.
     TempNewSymbol strippedsym = SymbolTable::new_symbol(sym->as_utf8()+1,
-                    sym->utf8_length()-2,
-                    KILL_COMPILE_ON_FATAL_(_unloaded_ciinstance_klass));
+                                                        sym->utf8_length()-2);
     ciSymbol* strippedname = get_symbol(strippedsym);
     return get_klass_by_name_impl(accessing_klass, cpool, strippedname, require_local);
   }
@@ -422,7 +428,7 @@ ciKlass* ciEnv::get_klass_by_name_impl(ciKlass* accessing_klass,
 
   // setup up the proper type to return on OOM
   ciKlass* fail_type;
-  if (sym->byte_at(0) == '[') {
+  if (sym->char_at(0) == '[') {
     fail_type = _unloaded_ciobjarrayklass;
   } else {
     fail_type = _unloaded_ciinstance_klass;
@@ -448,13 +454,12 @@ ciKlass* ciEnv::get_klass_by_name_impl(ciKlass* accessing_klass,
   // we must build an array type around it.  The CI requires array klasses
   // to be loaded if their element klasses are loaded, except when memory
   // is exhausted.
-  if (sym->byte_at(0) == '[' &&
-      (sym->byte_at(1) == '[' || sym->byte_at(1) == 'L')) {
+  if (sym->char_at(0) == '[' &&
+      (sym->char_at(1) == '[' || sym->char_at(1) == 'L')) {
     // We have an unloaded array.
     // Build it on the fly if the element class exists.
     TempNewSymbol elem_sym = SymbolTable::new_symbol(sym->as_utf8()+1,
-                                                 sym->utf8_length()-1,
-                                                 KILL_COMPILE_ON_FATAL_(fail_type));
+                                                     sym->utf8_length()-1);
 
     // Get element ciKlass recursively.
     ciKlass* elem_klass =
@@ -536,7 +541,7 @@ ciKlass* ciEnv::get_klass_by_index_impl(const constantPoolHandle& cpool,
     // Calculate accessibility the hard way.
     if (!k->is_loaded()) {
       is_accessible = false;
-    } else if (k->loader() != accessor->loader() &&
+    } else if (!oopDesc::equals(k->loader(), accessor->loader()) &&
                get_klass_by_name_impl(accessor, cpool, k->name(), true) == NULL) {
       // Loaded only remotely.  Not linked yet.
       is_accessible = false;
@@ -587,7 +592,7 @@ ciConstant ciEnv::get_constant_by_index_impl(const constantPoolHandle& cpool,
     index = cpool->object_to_cp_index(cache_index);
     oop obj = cpool->resolved_references()->obj_at(cache_index);
     if (obj != NULL) {
-      if (obj == Universe::the_null_sentinel()) {
+      if (oopDesc::equals(obj, Universe::the_null_sentinel())) {
         return ciConstant(T_OBJECT, get_object(NULL));
       }
       BasicType bt = T_OBJECT;
@@ -914,8 +919,15 @@ bool ciEnv::is_in_vm() {
   return JavaThread::current()->thread_state() == _thread_in_vm;
 }
 
-bool ciEnv::system_dictionary_modification_counter_changed() {
+bool ciEnv::system_dictionary_modification_counter_changed_locked() {
+  assert_locked_or_safepoint(Compile_lock);
   return _system_dictionary_modification_counter != SystemDictionary::number_of_modifications();
+}
+
+bool ciEnv::system_dictionary_modification_counter_changed() {
+  VM_ENTRY_MARK;
+  MutexLocker ml(Compile_lock, THREAD); // lock with safepoint check
+  return system_dictionary_modification_counter_changed_locked();
 }
 
 // ------------------------------------------------------------------
@@ -926,16 +938,16 @@ bool ciEnv::system_dictionary_modification_counter_changed() {
 void ciEnv::validate_compile_task_dependencies(ciMethod* target) {
   if (failing())  return;  // no need for further checks
 
-  bool counter_changed = system_dictionary_modification_counter_changed();
+  bool counter_changed = system_dictionary_modification_counter_changed_locked();
   Dependencies::DepType result = dependencies()->validate_dependencies(_task, counter_changed);
   if (result != Dependencies::end_marker) {
     if (result == Dependencies::call_site_target_value) {
       _inc_decompile_count_on_failure = false;
       record_failure("call site target change");
     } else if (Dependencies::is_klass_type(result)) {
-      record_failure("invalid non-klass dependency");
-    } else {
       record_failure("concurrent class loading");
+    } else {
+      record_failure("invalid non-klass dependency");
     }
   }
 }
@@ -978,6 +990,11 @@ void ciEnv::register_method(ciMethod* target,
           (!dtrace_method_probes() && DTraceMethodProbes) ||
           (!dtrace_alloc_probes() && DTraceAllocProbes) )) {
       record_failure("DTrace flags change invalidated dependencies");
+    }
+
+    if (!failing() && target->needs_clinit_barrier() &&
+        target->holder()->is_in_error_state()) {
+      record_failure("method holder is in error state");
     }
 
     if (!failing()) {
@@ -1060,25 +1077,23 @@ void ciEnv::register_method(ciMethod* target,
             old->make_not_used();
           }
         }
-        if (TraceNMethodInstalls) {
+
+        LogTarget(Info, nmethod, install) lt;
+        if (lt.is_enabled()) {
           ResourceMark rm;
           char *method_name = method->name_and_sig_as_C_string();
-          ttyLocker ttyl;
-          tty->print_cr("Installing method (%d) %s ",
-                        task()->comp_level(),
-                        method_name);
+          lt.print("Installing method (%d) %s ",
+                    task()->comp_level(), method_name);
         }
         // Allow the code to be executed
         method->set_code(method, nm);
       } else {
-        if (TraceNMethodInstalls) {
+        LogTarget(Info, nmethod, install) lt;
+        if (lt.is_enabled()) {
           ResourceMark rm;
           char *method_name = method->name_and_sig_as_C_string();
-          ttyLocker ttyl;
-          tty->print_cr("Installing osr method (%d) %s @ %d",
-                        task()->comp_level(),
-                        method_name,
-                        entry_bci);
+          lt.print("Installing osr method (%d) %s @ %d",
+                    task()->comp_level(), method_name, entry_bci);
         }
         method->method_holder()->add_osr_nmethod(nm);
       }
@@ -1139,7 +1154,6 @@ void ciEnv::record_failure(const char* reason) {
 }
 
 void ciEnv::report_failure(const char* reason) {
-  // Create and fire JFR event
   EventCompilationFailure event;
   if (event.should_commit()) {
     event.set_compileId(compile_id());
@@ -1245,7 +1259,7 @@ void ciEnv::dump_replay_data(int compile_id) {
   static char buffer[O_BUFLEN];
   int ret = jio_snprintf(buffer, O_BUFLEN, "replay_pid%p_compid%d.log", os::current_process_id(), compile_id);
   if (ret > 0) {
-    int fd = open(buffer, O_RDWR | O_CREAT | O_TRUNC, 0666);
+    int fd = os::open(buffer, O_RDWR | O_CREAT | O_TRUNC, 0666);
     if (fd != -1) {
       FILE* replay_data_file = os::open(fd, "w");
       if (replay_data_file != NULL) {
@@ -1263,7 +1277,7 @@ void ciEnv::dump_inline_data(int compile_id) {
   static char buffer[O_BUFLEN];
   int ret = jio_snprintf(buffer, O_BUFLEN, "inline_pid%p_compid%d.log", os::current_process_id(), compile_id);
   if (ret > 0) {
-    int fd = open(buffer, O_RDWR | O_CREAT | O_TRUNC, 0666);
+    int fd = os::open(buffer, O_RDWR | O_CREAT | O_TRUNC, 0666);
     if (fd != -1) {
       FILE* inline_data_file = os::open(fd, "w");
       if (inline_data_file != NULL) {

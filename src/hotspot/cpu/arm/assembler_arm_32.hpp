@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,11 +22,11 @@
  *
  */
 
-#ifndef CPU_ARM_VM_ASSEMBLER_ARM_32_HPP
-#define CPU_ARM_VM_ASSEMBLER_ARM_32_HPP
+#ifndef CPU_ARM_ASSEMBLER_ARM_32_HPP
+#define CPU_ARM_ASSEMBLER_ARM_32_HPP
 
 // ARM Addressing Mode 1 - Data processing operands
-class AsmOperand VALUE_OBJ_CLASS_SPEC {
+class AsmOperand {
  private:
   int _encoding;
 
@@ -99,7 +99,7 @@ class AsmOperand VALUE_OBJ_CLASS_SPEC {
 
 
 // ARM Addressing Mode 4 - Load and store multiple
-class RegisterSet VALUE_OBJ_CLASS_SPEC {
+class RegisterSet {
  private:
   int _encoding;
 
@@ -155,7 +155,7 @@ class RegisterSet VALUE_OBJ_CLASS_SPEC {
 #endif
 
 // ARM Addressing Mode 5 - Load and store multiple VFP registers
-class FloatRegisterSet VALUE_OBJ_CLASS_SPEC {
+class FloatRegisterSet {
  private:
   int _encoding;
 
@@ -198,6 +198,14 @@ class Assembler : public AbstractAssembler  {
 
   static const int LogInstructionSize = 2;
   static const int InstructionSize    = 1 << LogInstructionSize;
+
+  //---<  calculate length of instruction  >---
+  // We just use the values set above.
+  // instruction must start at passed address
+  static unsigned int instr_len(unsigned char *instr) { return InstructionSize; }
+
+  //---<  longest instructions  >---
+  static unsigned int instr_maxlen() { return InstructionSize; }
 
   static inline AsmCondition inverse(AsmCondition cond) {
     assert ((cond != al) && (cond != nv), "AL and NV conditions cannot be inversed");
@@ -434,7 +442,9 @@ class Assembler : public AbstractAssembler  {
   }
 
   void pldw(Address addr) {
-    assert(VM_Version::arm_arch() >= 7 && os::is_MP(), "no pldw on this processor");
+    assert(!VM_Version::is_initialized() ||
+           (VM_Version::arm_arch() >= 7 && VM_Version::has_multiprocessing_extensions()),
+           "PLDW is available on ARMv7 with Multiprocessing Extensions only");
     emit_int32(0xf510f000 | addr.encoding2());
   }
 
@@ -498,7 +508,7 @@ class Assembler : public AbstractAssembler  {
   void dmb(DMB_Opt opt, Register reg) {
     if (VM_Version::arm_arch() >= 7) {
       emit_int32(0xF57FF050 | opt);
-    } else {
+    } else if (VM_Version::arm_arch() == 6) {
       bool preserve_tmp = (reg == noreg);
       if(preserve_tmp) {
         reg = Rtemp;
@@ -1083,6 +1093,7 @@ class Assembler : public AbstractAssembler  {
       break;
     default:
       ShouldNotReachHere();
+      return;
     }
     emit_int32(0xf << 28 | 0x1 << 25 | 0x1 << 23 | 0x1 << 4 |
               (imm8 >> 7) << 24 | ((imm8 & 0x70) >> 4) << 16 | (imm8 & 0xf) |
@@ -1113,6 +1124,7 @@ class Assembler : public AbstractAssembler  {
       break;
     default:
       ShouldNotReachHere();
+      return;
     }
     emit_int32(cond << 28 | 0x1D /* 0b11101 */ << 23 | 0xB /* 0b1011 */ << 8 | 0x1 << 4 |
               quad << 21 | b << 22 |  e << 5 | Rs->encoding() << 12 |
@@ -1143,6 +1155,7 @@ class Assembler : public AbstractAssembler  {
       break;
     default:
       ShouldNotReachHere();
+      return;
     }
     emit_int32(0xF /* 0b1111 */ << 28 | 0x3B /* 0b00111011 */ << 20 | 0x6 /* 0b110 */ << 9 |
                quad << 6 | imm4 << 16 |
@@ -1247,4 +1260,4 @@ extern double __aeabi_dsub_glibc(double, double);
 #endif // __SOFTFP__
 
 
-#endif // CPU_ARM_VM_ASSEMBLER_ARM_32_HPP
+#endif // CPU_ARM_ASSEMBLER_ARM_32_HPP

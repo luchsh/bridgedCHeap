@@ -45,6 +45,8 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.Queue;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import java.util.jar.JarEntry;
@@ -80,8 +82,8 @@ import javax.lang.model.element.TypeElement;
  *  - handling of covariant overrides
  *  - handling of override of method found in multiple superinterfaces
  *  - convert type/method/field output to Java source like syntax, e.g.
- *      instead of java/lang/Runtime.runFinalizersOnExit(Z)V
- *      print void java.lang.Runtime.runFinalizersOnExit(boolean)
+ *      instead of java/lang/Character.isJavaLetter(C)Z
+ *      print void java.lang.Character.isJavaLetter(char)boolean
  *  - more example output in man page
  *  - more rigorous GNU style option parsing; use joptsimple?
  *
@@ -106,7 +108,10 @@ public class Main implements DiagnosticListener<JavaFileObject> {
     // Keep these updated manually until there's a compiler API
     // that allows querying of supported releases.
     final Set<String> releasesWithoutForRemoval = Set.of("6", "7", "8");
-    final Set<String> releasesWithForRemoval = Set.of("9", "10", "11");
+    final Set<String> releasesWithForRemoval = // "9", "10", "11", ...
+        IntStream.rangeClosed(9, Runtime.version().feature())
+        .mapToObj(Integer::toString)
+        .collect(Collectors.toUnmodifiableSet());
 
     final Set<String> validReleases;
     {
@@ -335,7 +340,7 @@ public class Main implements DiagnosticListener<JavaFileObject> {
      */
     boolean processSelf(Collection<String> classes) throws IOException {
         options.add("--add-modules");
-        options.add("java.se.ee,jdk.xml.bind"); // TODO why jdk.xml.bind?
+        options.add("java.se");
 
         if (classes.isEmpty()) {
             Path modules = FileSystems.getFileSystem(URI.create("jrt:/"))
@@ -358,21 +363,35 @@ public class Main implements DiagnosticListener<JavaFileObject> {
      * Process classes from a particular JDK release, using only information
      * in this JDK.
      *
-     * @param release "6", "7", "8", "9", "10", or "11"
+     * @param release a supported release version, like "8" or "10".
      * @param classes collection of classes to process, may be empty
      * @return success value
      */
     boolean processRelease(String release, Collection<String> classes) throws IOException {
+        boolean hasModules;
+        boolean hasJavaSE_EE;
+
+        try {
+            int releaseNum = Integer.parseInt(release);
+
+            hasModules = releaseNum >= 9;
+            hasJavaSE_EE = hasModules && releaseNum <= 10;
+        } catch (NumberFormatException ex) {
+            hasModules = true;
+            hasJavaSE_EE = false;
+        }
+
         options.addAll(List.of("--release", release));
 
-        if (release.equals("9") || release.equals("10") ||
-            release.equals("11")) {
-            List<String> rootMods = List.of("java.se", "java.se.ee");
+        if (hasModules) {
+            List<String> rootMods = hasJavaSE_EE ? List.of("java.se", "java.se.ee")
+                                                 : List.of("java.se");
             TraverseProc proc = new TraverseProc(rootMods);
             JavaCompiler.CompilationTask task =
                 compiler.getTask(null, fm, this,
                                  // options
-                                 List.of("--add-modules", String.join(",", rootMods)),
+                                 List.of("--add-modules", String.join(",", rootMods),
+                                         "--release", release),
                                  // classes
                                  List.of("java.lang.Object"),
                                  null);
@@ -482,7 +501,7 @@ public class Main implements DiagnosticListener<JavaFileObject> {
         String dir = null;
         String jar = null;
         String jdkHome = null;
-        String release = "11";
+        String release = Integer.toString(Runtime.version().feature());
         List<String> loadClasses = new ArrayList<>();
         String csvFile = null;
 
@@ -507,7 +526,7 @@ public class Main implements DiagnosticListener<JavaFileObject> {
                         case "--help":
                         case "-h":
                         case "-?":
-                            out.println(Messages.get("main.usage"));
+                            printHelp(out);
                             out.println();
                             out.println(Messages.get("main.help"));
                             return true;
@@ -624,7 +643,7 @@ public class Main implements DiagnosticListener<JavaFileObject> {
                 return false;
             }
         } catch (NoSuchElementException | UsageException ex) {
-            err.println(Messages.get("main.usage"));
+            printHelp(err);
             return false;
         } catch (IOException ioe) {
             if (verbose) {
@@ -678,6 +697,13 @@ public class Main implements DiagnosticListener<JavaFileObject> {
         }
 
         return scanStatus;
+    }
+
+    private void printHelp(PrintStream out) {
+        JDKPlatformProvider pp = new JDKPlatformProvider();
+        String supportedReleases =
+                String.join("|", pp.getSupportedPlatformNames());
+        out.println(Messages.get("main.usage", supportedReleases));
     }
 
     /**

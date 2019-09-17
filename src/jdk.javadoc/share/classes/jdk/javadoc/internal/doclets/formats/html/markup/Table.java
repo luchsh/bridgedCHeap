@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -40,7 +40,6 @@ import javax.lang.model.element.Element;
 
 import jdk.javadoc.internal.doclets.formats.html.Contents;
 import jdk.javadoc.internal.doclets.toolkit.Content;
-import jdk.javadoc.internal.doclets.toolkit.util.DocletConstants;
 
 /**
  * A builder for HTML tables, such as the summary tables for various
@@ -61,9 +60,7 @@ import jdk.javadoc.internal.doclets.toolkit.util.DocletConstants;
  *  deletion without notice.</b>
  */
 public class Table {
-    private final HtmlVersion version;
     private final HtmlStyle tableStyle;
-    private String summary;
     private Content caption;
     private Map<String, Predicate<Element>> tabMap;
     private String defaultTab;
@@ -72,7 +69,6 @@ public class Table {
     private HtmlStyle tabStyle = HtmlStyle.tableTab;
     private HtmlStyle tabEnd = HtmlStyle.tabEnd;
     private IntFunction<String> tabScript;
-    private String tabScriptVariable;
     private Function<Integer, String> tabId = (i -> "t" + i);
     private TableHeader header;
     private List<HtmlStyle> columnStyles;
@@ -82,36 +78,15 @@ public class Table {
     private final List<Integer> bodyRowMasks;
     private String rowIdPrefix = "i";
 
-    // compatibility flags
-    private boolean putIdFirst = false;
-    private boolean useTBody = true;
-
     /**
      * Creates a builder for an HTML table.
      *
-     * @param version   the version of HTML, used to determine is a {@code summary}
-     *                  attribute is needed
      * @param style     the style class for the {@code <table>} tag
      */
-    public Table(HtmlVersion version, HtmlStyle style) {
-        this.version = version;
+    public Table(HtmlStyle style) {
         this.tableStyle = style;
         bodyRows = new ArrayList<>();
         bodyRowMasks = new ArrayList<>();
-    }
-
-    /**
-     * Sets the summary for the table.
-     * This is ignored if the HTML version for the table is not {@link HtmlVersion#HTML4}.
-     *
-     * @param summary the summary
-     * @return this object
-     */
-    public Table setSummary(String summary) {
-        if (version == HtmlVersion.HTML4) {
-            this.summary = summary;
-        }
-        return this;
     }
 
     /**
@@ -183,17 +158,6 @@ public class Table {
     }
 
     /**
-     * Sets the name of the JavaScript variable used to contain the data for each tab.
-     *
-     * @param name the name
-     * @return this object
-     */
-    public Table setTabScriptVariable(String name) {
-        tabScriptVariable = name;
-        return this;
-    }
-
-    /**
      * Sets the name of the styles used to display the tabs.
      *
      * @param activeTabStyle    the style for the active tab
@@ -226,7 +190,6 @@ public class Table {
      *
      * <p>Notes:
      * <ul>
-     * <li>This currently does not use a {@code <thead>} tag, but probably should, eventually
      * <li>The column styles are not currently applied to the header, but probably should, eventually
      * </ul>
      *
@@ -314,37 +277,6 @@ public class Table {
     }
 
     /**
-     * Sets whether the {@code id} attribute should appear first in a {@code <tr>} tag.
-     * The default is {@code false}.
-     *
-     * <b>This is a compatibility feature that should be removed when all tables use a
-     * consistent policy.</b>
-     *
-     * @param first whether to put {@code id} attributes first
-     * @return this object
-     */
-    public Table setPutIdFirst(boolean first) {
-        this.putIdFirst = first;
-        return this;
-    }
-
-    /**
-     * Sets whether or not to use an explicit {@code <tbody>} element to enclose the rows
-     * of a table.
-     * The default is {@code true}.
-     *
-     * <b>This is a compatibility feature that should be removed when all tables use a
-     * consistent policy.</b>
-     *
-     * @param use whether o use a {@code <tbody> element
-     * @return this object
-     */
-    public Table setUseTBody(boolean use) {
-        this.useTBody = use;
-        return this;
-    }
-
-    /**
      * Add a row of data to the table.
      * Each item of content should be suitable for use as the content of a
      * {@code <th>} or {@code <td>} cell.
@@ -411,14 +343,9 @@ public class Table {
 
         HtmlTree row = new HtmlTree(HtmlTag.TR);
 
-        if (putIdFirst && tabMap != null) {
-            int index = bodyRows.size();
-            row.addAttr(HtmlAttr.ID, (rowIdPrefix + index));
-        }
-
         if (stripedStyles != null) {
             int rowIndex = bodyRows.size();
-            row.addAttr(HtmlAttr.CLASS, stripedStyles.get(rowIndex % 2).name());
+            row.put(HtmlAttr.CLASS, stripedStyles.get(rowIndex % 2).name());
         }
         int colIndex = 0;
         for (Content c : contents) {
@@ -428,16 +355,14 @@ public class Table {
             HtmlTree cell = (colIndex == rowScopeColumnIndex)
                     ? HtmlTree.TH(cellStyle, "row", c)
                     : HtmlTree.TD(cellStyle, c);
-            row.addContent(cell);
+            row.add(cell);
             colIndex++;
         }
         bodyRows.add(row);
 
         if (tabMap != null) {
-            if (!putIdFirst) {
-                int index = bodyRows.size() - 1;
-                row.addAttr(HtmlAttr.ID, (rowIdPrefix + index));
-            }
+            int index = bodyRows.size() - 1;
+            row.put(HtmlAttr.ID, (rowIdPrefix + index));
             int mask = 0;
             int maskBit = 1;
             for (Map.Entry<String, Predicate<Element>> e : tabMap.entrySet()) {
@@ -469,50 +394,68 @@ public class Table {
      * @return the HTML
      */
     public Content toContent() {
+        HtmlTree mainDiv = new HtmlTree(HtmlTag.DIV);
+        mainDiv.setStyle(tableStyle);
         HtmlTree table = new HtmlTree(HtmlTag.TABLE);
-        table.setStyle(tableStyle);
-        if (summary != null) {
-            table.addAttr(HtmlAttr.SUMMARY, summary);
-        }
-        if (tabMap != null) {
-            if (tabs.size() == 1) {
+        if (tabMap == null || tabs.size() == 1) {
+            if (tabMap == null) {
+                table.add(caption);
+            } else if (tabs.size() == 1) {
                 String tabName = tabs.iterator().next();
-                table.addContent(getCaption(new StringContent(tabName)));
-            } else {
-                ContentBuilder cb = new ContentBuilder();
-                int tabIndex = 0;
-                HtmlTree defaultTabSpan = new HtmlTree(HtmlTag.SPAN,
-                            HtmlTree.SPAN(new StringContent(defaultTab)),
-                            HtmlTree.SPAN(tabEnd, Contents.SPACE))
-                        .addAttr(HtmlAttr.ID, tabId.apply(tabIndex))
-                        .setStyle(activeTabStyle);
-                cb.addContent(defaultTabSpan);
-                for (String tabName : tabMap.keySet()) {
-                    tabIndex++;
-                    if (tabs.contains(tabName)) {
-                        String script = "javascript:" + tabScript.apply(1 << (tabIndex - 1));
-                        HtmlTree link = HtmlTree.A(script, new StringContent(tabName));
-                        HtmlTree tabSpan = new HtmlTree(HtmlTag.SPAN,
-                                    HtmlTree.SPAN(link), HtmlTree.SPAN(tabEnd, Contents.SPACE))
-                                .addAttr(HtmlAttr.ID, tabId.apply(tabIndex))
-                                .setStyle(tabStyle);
-                        cb.addContent(tabSpan);
-                    }
-                }
-                table.addContent(HtmlTree.CAPTION(cb));
+                table.add(getCaption(new StringContent(tabName)));
             }
+            table.add(getTableBody());
+            mainDiv.add(table);
         } else {
-            table.addContent(caption);
+            HtmlTree tablist = new HtmlTree(HtmlTag.DIV)
+                    .put(HtmlAttr.ROLE, "tablist")
+                    .put(HtmlAttr.ARIA_ORIENTATION, "horizontal");
+
+            int tabIndex = 0;
+            tablist.add(createTab(tabId.apply(tabIndex), activeTabStyle, true, defaultTab));
+            table.put(HtmlAttr.ARIA_LABELLEDBY, tabId.apply(tabIndex));
+            for (String tabName : tabMap.keySet()) {
+                tabIndex++;
+                if (tabs.contains(tabName)) {
+                    String script = tabScript.apply(1 << (tabIndex - 1));
+                    HtmlTree tab = createTab(tabId.apply(tabIndex), tabStyle, false, tabName);
+                    tab.put(HtmlAttr.ONCLICK, script);
+                    tablist.add(tab);
+                }
+            }
+            HtmlTree tabpanel = new HtmlTree(HtmlTag.DIV)
+                    .put(HtmlAttr.ID, tableStyle + "_tabpanel")
+                    .put(HtmlAttr.ROLE, "tabpanel");
+            table.add(getTableBody());
+            tabpanel.add(table);
+            mainDiv.add(tablist);
+            mainDiv.add(tabpanel);
         }
-        table.addContent(header.toContent());
-        if (useTBody) {
-            Content tbody = new HtmlTree(HtmlTag.TBODY);
-            bodyRows.forEach(row -> tbody.addContent(row));
-            table.addContent(tbody);
-        } else {
-            bodyRows.forEach(row -> table.addContent(row));
-        }
-        return table;
+        return mainDiv;
+    }
+
+    private HtmlTree createTab(String tabId, HtmlStyle style, boolean defaultTab, String tabName) {
+        HtmlTree tab = new HtmlTree(HtmlTag.BUTTON)
+                .put(HtmlAttr.ROLE, "tab")
+                .put(HtmlAttr.ARIA_SELECTED, defaultTab ? "true" : "false")
+                .put(HtmlAttr.ARIA_CONTROLS, tableStyle + "_tabpanel")
+                .put(HtmlAttr.TABINDEX, defaultTab ? "0" : "-1")
+                .put(HtmlAttr.ONKEYDOWN, "switchTab(event)")
+                .put(HtmlAttr.ID, tabId)
+                .setStyle(style);
+        tab.add(tabName);
+        return tab;
+    }
+
+    private Content getTableBody() {
+        ContentBuilder tableContent = new ContentBuilder();
+        Content thead = new HtmlTree(HtmlTag.THEAD);
+        thead.add(header.toContent());
+        tableContent.add(thead);
+        Content tbody = new HtmlTree(HtmlTag.TBODY);
+        bodyRows.forEach(row -> tbody.add(row));
+        tableContent.add(tbody);
+        return tableContent;
     }
 
     /**
@@ -537,7 +480,7 @@ public class Table {
         StringBuilder sb = new StringBuilder();
 
         // Add the variable defining the bitmask for each row
-        sb.append("var ").append(tabScriptVariable).append(" = {");
+        sb.append("var data").append(" = {");
         int rowIndex = 0;
         for (int mask : bodyRowMasks) {
             if (rowIndex > 0) {
@@ -588,6 +531,6 @@ public class Table {
     private HtmlTree getCaption(Content title) {
         return new HtmlTree(HtmlTag.CAPTION,
                 HtmlTree.SPAN(title),
-                HtmlTree.SPAN(tabEnd, Contents.SPACE));
+                HtmlTree.SPAN(tabEnd, Entity.NO_BREAK_SPACE));
     }
 }

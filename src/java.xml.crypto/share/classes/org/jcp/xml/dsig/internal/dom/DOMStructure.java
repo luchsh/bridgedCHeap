@@ -21,10 +21,10 @@
  * under the License.
  */
 /*
- * Copyright (c) 2005, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * $Id: DOMStructure.java 1197150 2011-11-03 14:34:57Z coheigea $
+ * $Id: DOMStructure.java 1854026 2019-02-21 09:30:01Z coheigea $
  */
 package org.jcp.xml.dsig.internal.dom;
 
@@ -36,7 +36,6 @@ import org.w3c.dom.Node;
 /**
  * DOM-based abstract implementation of XMLStructure.
  *
- * @author Sean Mullan
  */
 public abstract class DOMStructure implements XMLStructure {
 

@@ -26,6 +26,9 @@
 #include "compiler/compileLog.hpp"
 #include "ci/bcEscapeAnalyzer.hpp"
 #include "compiler/oopMap.hpp"
+#include "gc/shared/barrierSet.hpp"
+#include "gc/shared/c2/barrierSetC2.hpp"
+#include "interpreter/interpreter.hpp"
 #include "opto/callGenerator.hpp"
 #include "opto/callnode.hpp"
 #include "opto/castnode.hpp"
@@ -46,7 +49,7 @@
 
 //=============================================================================
 uint StartNode::size_of() const { return sizeof(*this); }
-uint StartNode::cmp( const Node &n ) const
+bool StartNode::cmp( const Node &n ) const
 { return _domain == ((StartNode&)n)._domain; }
 const Type *StartNode::bottom_type() const { return _domain; }
 const Type* StartNode::Value(PhaseGVN* phase) const { return _domain; }
@@ -663,7 +666,7 @@ int JVMState::interpreter_frame_size() const {
 }
 
 //=============================================================================
-uint CallNode::cmp( const Node &n ) const
+bool CallNode::cmp( const Node &n ) const
 { return _tf == ((CallNode&)n)._tf && _jvms == ((CallNode&)n)._jvms; }
 #ifndef PRODUCT
 void CallNode::dump_req(outputStream *st) const {
@@ -758,6 +761,7 @@ bool CallNode::may_modify(const TypeOopPtr *t_oop, PhaseTransform *phase) {
         }
       }
     }
+    guarantee(dest != NULL, "Call had only one ptr in, broken IR!");
     if (!dest->is_top() && may_modify_arraycopy_helper(phase->type(dest)->is_oopptr(), t_oop, phase)) {
       return true;
     }
@@ -958,11 +962,26 @@ bool CallNode::is_call_to_arraycopystub() const {
 
 //=============================================================================
 uint CallJavaNode::size_of() const { return sizeof(*this); }
-uint CallJavaNode::cmp( const Node &n ) const {
+bool CallJavaNode::cmp( const Node &n ) const {
   CallJavaNode &call = (CallJavaNode&)n;
   return CallNode::cmp(call) && _method == call._method &&
          _override_symbolic_info == call._override_symbolic_info;
 }
+#ifdef ASSERT
+bool CallJavaNode::validate_symbolic_info() const {
+  if (method() == NULL) {
+    return true; // call into runtime or uncommon trap
+  }
+  ciMethod* symbolic_info = jvms()->method()->get_method_at_bci(_bci);
+  ciMethod* callee = method();
+  if (symbolic_info->is_method_handle_intrinsic() && !callee->is_method_handle_intrinsic()) {
+    assert(override_symbolic_info(), "should be set");
+  }
+  assert(ciMethod::is_consistent_info(symbolic_info, callee), "inconsistent info");
+  return true;
+}
+#endif
+
 #ifndef PRODUCT
 void CallJavaNode::dump_spec(outputStream *st) const {
   if( _method ) _method->print_short_name(st);
@@ -980,7 +999,7 @@ void CallJavaNode::dump_compact_spec(outputStream* st) const {
 
 //=============================================================================
 uint CallStaticJavaNode::size_of() const { return sizeof(*this); }
-uint CallStaticJavaNode::cmp( const Node &n ) const {
+bool CallStaticJavaNode::cmp( const Node &n ) const {
   CallStaticJavaNode &call = (CallStaticJavaNode&)n;
   return CallJavaNode::cmp(call);
 }
@@ -1037,7 +1056,7 @@ void CallStaticJavaNode::dump_compact_spec(outputStream* st) const {
 
 //=============================================================================
 uint CallDynamicJavaNode::size_of() const { return sizeof(*this); }
-uint CallDynamicJavaNode::cmp( const Node &n ) const {
+bool CallDynamicJavaNode::cmp( const Node &n ) const {
   CallDynamicJavaNode &call = (CallDynamicJavaNode&)n;
   return CallJavaNode::cmp(call);
 }
@@ -1050,7 +1069,7 @@ void CallDynamicJavaNode::dump_spec(outputStream *st) const {
 
 //=============================================================================
 uint CallRuntimeNode::size_of() const { return sizeof(*this); }
-uint CallRuntimeNode::cmp( const Node &n ) const {
+bool CallRuntimeNode::cmp( const Node &n ) const {
   CallRuntimeNode &call = (CallRuntimeNode&)n;
   return CallNode::cmp(call) && !strcmp(_name,call._name);
 }
@@ -1099,7 +1118,7 @@ void SafePointNode::set_local(JVMState* jvms, uint idx, Node *c) {
 }
 
 uint SafePointNode::size_of() const { return sizeof(*this); }
-uint SafePointNode::cmp( const Node &n ) const {
+bool SafePointNode::cmp( const Node &n ) const {
   return (&n == this);          // Always fail except on self
 }
 
@@ -1148,6 +1167,11 @@ Node* SafePointNode::Identity(PhaseGVN* phase) {
       assert( n0->is_Call(), "expect a call here" );
     }
     if( n0->is_Call() && n0->as_Call()->guaranteed_safepoint() ) {
+      // Don't remove a safepoint belonging to an OuterStripMinedLoopEndNode.
+      // If the loop dies, they will be removed together.
+      if (has_out_with(Op_OuterStripMinedLoopEnd)) {
+        return this;
+      }
       // Useless Safepoint, so remove it
       return in(TypeFunc::Control);
     }
@@ -1262,6 +1286,14 @@ uint SafePointNode::match_edge(uint idx) const {
   return (TypeFunc::Parms == idx);
 }
 
+void SafePointNode::disconnect_from_root(PhaseIterGVN *igvn) {
+  assert(Opcode() == Op_SafePoint, "only value for safepoint in loops");
+  int nb = igvn->C->root()->find_prec_edge(this);
+  if (nb != -1) {
+    igvn->C->root()->rm_prec(nb);
+  }
+}
+
 //==============  SafePointScalarObjectNode  ==============
 
 SafePointScalarObjectNode::SafePointScalarObjectNode(const TypeOopPtr* tp,
@@ -1271,18 +1303,18 @@ SafePointScalarObjectNode::SafePointScalarObjectNode(const TypeOopPtr* tp,
                                                      uint first_index,
                                                      uint n_fields) :
   TypeNode(tp, 1), // 1 control input -- seems required.  Get from root.
-#ifdef ASSERT
-  _alloc(alloc),
-#endif
   _first_index(first_index),
   _n_fields(n_fields)
+#ifdef ASSERT
+  , _alloc(alloc)
+#endif
 {
   init_class_id(Class_SafePointScalarObject);
 }
 
 // Do not allow value-numbering for SafePointScalarObject node.
 uint SafePointScalarObjectNode::hash() const { return NO_HASH; }
-uint SafePointScalarObjectNode::cmp( const Node &n ) const {
+bool SafePointScalarObjectNode::cmp( const Node &n ) const {
   return (&n == this); // Always fail except on self
 }
 
@@ -1441,8 +1473,10 @@ Node *AllocateArrayNode::make_ideal_length(const TypeOopPtr* oop_type, PhaseTran
       if (!allow_new_nodes) return NULL;
       // Create a cast which is control dependent on the initialization to
       // propagate the fact that the array length must be positive.
+      InitializeNode* init = initialization();
+      assert(init != NULL, "initialization not found");
       length = new CastIINode(length, narrow_length_type);
-      length->set_req(0, initialization()->proj_out_or_null(0));
+      length->set_req(0, init->proj_out_or_null(0));
     }
   }
 
@@ -1614,7 +1648,10 @@ bool AbstractLockNode::find_matching_unlock(const Node* ctrl, LockNode* lock,
     Node *n = ctrl_proj->in(0);
     if (n != NULL && n->is_Unlock()) {
       UnlockNode *unlock = n->as_Unlock();
-      if (lock->obj_node()->eqv_uncast(unlock->obj_node()) &&
+      BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+      Node* lock_obj = bs->step_over_gc_barrier(lock->obj_node());
+      Node* unlock_obj = bs->step_over_gc_barrier(unlock->obj_node());
+      if (lock_obj->eqv_uncast(unlock_obj) &&
           BoxLockNode::same_slot(lock->box_node(), unlock->box_node()) &&
           !unlock->is_eliminated()) {
         lock_ops.append(unlock);
@@ -1659,7 +1696,10 @@ LockNode *AbstractLockNode::find_matching_lock(UnlockNode* unlock) {
   }
   if (ctrl->is_Lock()) {
     LockNode *lock = ctrl->as_Lock();
-    if (lock->obj_node()->eqv_uncast(unlock->obj_node()) &&
+    BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+    Node* lock_obj = bs->step_over_gc_barrier(lock->obj_node());
+    Node* unlock_obj = bs->step_over_gc_barrier(unlock->obj_node());
+    if (lock_obj->eqv_uncast(unlock_obj) &&
         BoxLockNode::same_slot(lock->box_node(), unlock->box_node())) {
       lock_result = lock;
     }
@@ -1690,7 +1730,10 @@ bool AbstractLockNode::find_lock_and_unlock_through_if(Node* node, LockNode* loc
       }
       if (lock1_node != NULL && lock1_node->is_Lock()) {
         LockNode *lock1 = lock1_node->as_Lock();
-        if (lock->obj_node()->eqv_uncast(lock1->obj_node()) &&
+        BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+        Node* lock_obj = bs->step_over_gc_barrier(lock->obj_node());
+        Node* lock1_obj = bs->step_over_gc_barrier(lock1->obj_node());
+        if (lock_obj->eqv_uncast(lock1_obj) &&
             BoxLockNode::same_slot(lock->box_node(), lock1->box_node()) &&
             !lock1->is_eliminated()) {
           lock_ops.append(lock1);
@@ -1907,6 +1950,8 @@ bool LockNode::is_nested_lock_region(Compile * c) {
     return false;
   }
 
+  BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+  obj = bs->step_over_gc_barrier(obj);
   // Look for external lock for the same object.
   SafePointNode* sfn = this->as_SafePoint();
   JVMState* youngest_jvms = sfn->jvms();
@@ -1917,6 +1962,7 @@ bool LockNode::is_nested_lock_region(Compile * c) {
     // Loop over monitors
     for (int idx = 0; idx < num_mon; idx++) {
       Node* obj_node = sfn->monitor_obj(jvms, idx);
+      obj_node = bs->step_over_gc_barrier(obj_node);
       BoxLockNode* box_node = sfn->monitor_box(jvms, idx)->as_BoxLock();
       if ((box_node->stack_slot() < stk_slot) && obj_node->eqv_uncast(obj)) {
         return true;
@@ -2038,4 +2084,3 @@ bool CallNode::may_modify_arraycopy_helper(const TypeOopPtr* dest_t, const TypeO
 
   return true;
 }
-

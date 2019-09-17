@@ -23,6 +23,8 @@
  */
 
 #include "precompiled.hpp"
+#include "gc/shared/barrierSet.hpp"
+#include "gc/shared/c2/barrierSetC2.hpp"
 #include "libadt/vectset.hpp"
 #include "memory/allocation.inline.hpp"
 #include "memory/resourceArea.hpp"
@@ -35,8 +37,10 @@
 #include "opto/node.hpp"
 #include "opto/opcodes.hpp"
 #include "opto/regmask.hpp"
+#include "opto/rootnode.hpp"
 #include "opto/type.hpp"
 #include "utilities/copy.hpp"
+#include "utilities/macros.hpp"
 
 class RegMask;
 // #include "phase.hpp"
@@ -499,10 +503,15 @@ Node *Node::clone() const {
     C->add_macro_node(n);
   if (is_expensive())
     C->add_expensive_node(n);
+  BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+  bs->register_potential_barrier_node(n);
   // If the cloned node is a range check dependent CastII, add it to the list.
   CastIINode* cast = n->isa_CastII();
   if (cast != NULL && cast->has_range_check()) {
     C->add_range_check_cast(cast);
+  }
+  if (n->Opcode() == Op_Opaque4) {
+    C->add_opaque4_node(n);
   }
 
   n->set_idx(C->next_unique()); // Get new unique index as well
@@ -537,6 +546,9 @@ Node *Node::clone() const {
   if (n->is_SafePoint()) {
     n->as_SafePoint()->clone_replaced_nodes();
   }
+  if (n->is_Load()) {
+    n->as_Load()->copy_barrier_info(this);
+  }
   return n;                     // Return the clone
 }
 
@@ -554,7 +566,6 @@ void Node::setup_is_top() {
     assert(!is_top(), "must not be top");
   }
 }
-
 
 //------------------------------~Node------------------------------------------
 // Fancy destructor; eagerly attempt to reclaim Node numberings and storage
@@ -612,10 +623,15 @@ void Node::destruct() {
   if (cast != NULL && cast->has_range_check()) {
     compile->remove_range_check_cast(cast);
   }
+  if (Opcode() == Op_Opaque4) {
+    compile->remove_opaque4_node(this);
+  }
 
   if (is_SafePoint()) {
     as_SafePoint()->delete_replaced_nodes();
   }
+  BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+  bs->unregister_potential_barrier_node(this);
 #ifdef ASSERT
   // We will not actually delete the storage, but we'll make the node unusable.
   *(address*)this = badAddress;  // smash the C++ vtbl, probably
@@ -694,7 +710,7 @@ bool Node::is_dead() const {
 //------------------------------is_unreachable---------------------------------
 bool Node::is_unreachable(PhaseIterGVN &igvn) const {
   assert(!is_Mach(), "doesn't work with MachNodes");
-  return outcnt() == 0 || igvn.type(this) == Type::TOP || in(0)->is_top();
+  return outcnt() == 0 || igvn.type(this) == Type::TOP || (in(0) != NULL && in(0)->is_top());
 }
 
 //------------------------------add_req----------------------------------------
@@ -877,13 +893,15 @@ int Node::disconnect_inputs(Node *n, Compile* C) {
 //-----------------------------uncast---------------------------------------
 // %%% Temporary, until we sort out CheckCastPP vs. CastPP.
 // Strip away casting.  (It is depth-limited.)
-Node* Node::uncast() const {
+// Optionally, keep casts with dependencies.
+Node* Node::uncast(bool keep_deps) const {
   // Should be inline:
   //return is_ConstraintCast() ? uncast_helper(this) : (Node*) this;
-  if (is_ConstraintCast())
-    return uncast_helper(this);
-  else
+  if (is_ConstraintCast()) {
+    return uncast_helper(this, keep_deps);
+  } else {
     return (Node*) this;
+  }
 }
 
 // Find out of current node that matches opcode.
@@ -915,7 +933,7 @@ bool Node::has_out_with(int opcode1, int opcode2, int opcode3, int opcode4) {
 
 
 //---------------------------uncast_helper-------------------------------------
-Node* Node::uncast_helper(const Node* p) {
+Node* Node::uncast_helper(const Node* p, bool keep_deps) {
 #ifdef ASSERT
   uint depth_count = 0;
   const Node* orig_p = p;
@@ -933,6 +951,9 @@ Node* Node::uncast_helper(const Node* p) {
     if (p == NULL || p->req() != 2) {
       break;
     } else if (p->is_ConstraintCast()) {
+      if (keep_deps && p->as_ConstraintCast()->carry_dependency()) {
+        break; // stop at casts with dependencies
+      }
       p = p->in(1);
     } else {
       break;
@@ -1117,7 +1138,7 @@ bool Node::has_special_unique_user() const {
   if (this->is_Store()) {
     // Condition for back-to-back stores folding.
     return n->Opcode() == op && n->in(MemNode::Memory) == this;
-  } else if (this->is_Load() || this->is_DecodeN()) {
+  } else if (this->is_Load() || this->is_DecodeN() || this->is_Phi()) {
     // Condition for removing an unused LoadNode or DecodeNNode from the MemBarAcquire precedence input
     return n->Opcode() == Op_MemBarAcquire;
   } else if (op == Op_AddL) {
@@ -1129,8 +1150,9 @@ bool Node::has_special_unique_user() const {
   } else if (is_If() && (n->is_IfFalse() || n->is_IfTrue())) {
     // See IfProjNode::Identity()
     return true;
+  } else {
+    return BarrierSet::barrier_set()->barrier_set_c2()->has_special_unique_user(this);
   }
-  return false;
 };
 
 //--------------------------find_exact_control---------------------------------
@@ -1296,6 +1318,9 @@ static void kill_dead_code( Node *dead, PhaseIterGVN *igvn ) {
 
   while (nstack.size() > 0) {
     dead = nstack.pop();
+    if (dead->Opcode() == Op_SafePoint) {
+      dead->as_SafePoint()->disconnect_from_root(igvn);
+    }
     if (dead->outcnt() > 0) {
       // Keep dead node on stack until all uses are processed.
       nstack.push(dead);
@@ -1352,6 +1377,11 @@ static void kill_dead_code( Node *dead, PhaseIterGVN *igvn ) {
       if (cast != NULL && cast->has_range_check()) {
         igvn->C->remove_range_check_cast(cast);
       }
+      if (dead->Opcode() == Op_Opaque4) {
+        igvn->C->remove_opaque4_node(dead);
+      }
+      BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+      bs->unregister_potential_barrier_node(dead);
       igvn->C->record_dead_node(dead->_idx);
       // Kill all inputs to the dead guy
       for (uint i=0; i < dead->req(); i++) {
@@ -1370,6 +1400,8 @@ static void kill_dead_code( Node *dead, PhaseIterGVN *igvn ) {
             // The restriction (outcnt() <= 2) is the same as in set_req_X()
             // and remove_globally_dead_node().
             igvn->add_users_to_worklist( n );
+          } else {
+            BarrierSet::barrier_set()->barrier_set_c2()->enqueue_useful_gc_barrier(igvn, n);
           }
         }
       }
@@ -1408,8 +1440,8 @@ uint Node::hash() const {
 
 //------------------------------cmp--------------------------------------------
 // Compare special parts of simple Nodes
-uint Node::cmp( const Node &n ) const {
-  return 1;                     // Must be same
+bool Node::cmp( const Node &n ) const {
+  return true;                  // Must be same
 }
 
 //------------------------------rematerialize-----------------------------------
@@ -1424,12 +1456,15 @@ bool Node::rematerialize() const {
 //------------------------------needs_anti_dependence_check---------------------
 // Nodes which use memory without consuming it, hence need antidependences.
 bool Node::needs_anti_dependence_check() const {
-  if( req() < 2 || (_flags & Flag_needs_anti_dependence_check) == 0 )
+  if (req() < 2 || (_flags & Flag_needs_anti_dependence_check) == 0) {
     return false;
-  else
-    return in(1)->bottom_type()->has_memory();
+  }
+  BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
+  if (!bs->needs_anti_dependence_check(this)) {
+    return false;
+  }
+  return in(1)->bottom_type()->has_memory();
 }
-
 
 // Get an integer constant from a ConNode (or CastIINode).
 // Return a default value if there is no apparent constant here.
@@ -2427,7 +2462,7 @@ void TypeNode::dump_compact_spec(outputStream *st) const {
 uint TypeNode::hash() const {
   return Node::hash() + _type->hash();
 }
-uint TypeNode::cmp( const Node &n ) const
+bool TypeNode::cmp( const Node &n ) const
 { return !Type::cmp( _type, ((TypeNode&)n)._type ); }
 const Type *TypeNode::bottom_type() const { return _type; }
 const Type* TypeNode::Value(PhaseGVN* phase) const { return _type; }

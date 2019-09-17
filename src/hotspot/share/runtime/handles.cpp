@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
 #include "memory/allocation.inline.hpp"
 #include "oops/constantPool.hpp"
 #include "oops/oop.inline.hpp"
-#include "runtime/atomic.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/thread.inline.hpp"
 
@@ -97,17 +96,10 @@ static uintx chunk_oops_do(OopClosure* f, Chunk* chunk, char* chunk_top) {
   // during GC phase 3, a handle may be a forward pointer that
   // is not yet valid, so loosen the assertion
   while (bottom < top) {
-    // This test can be moved up but for now check every oop.
-
-    assert(oopDesc::is_oop(*bottom, true), "handle should point to oop");
-
     f->do_oop(bottom++);
   }
   return handles_visited;
 }
-
-// Used for debugging handle allocation.
-NOT_PRODUCT(jint _nof_handlemarks  = 0;)
 
 void HandleArea::oops_do(OopClosure* f) {
   uintx handles_visited = 0;
@@ -134,44 +126,33 @@ void HandleMark::initialize(Thread* thread) {
   _size_in_bytes = _area->_size_in_bytes;
   debug_only(_area->_handle_mark_nesting++);
   assert(_area->_handle_mark_nesting > 0, "must stack allocate HandleMarks");
-  debug_only(Atomic::inc(&_nof_handlemarks);)
 
   // Link this in the thread
   set_previous_handle_mark(thread->last_handle_mark());
   thread->set_last_handle_mark(this);
 }
 
-
 HandleMark::~HandleMark() {
-  HandleArea* area = _area;   // help compilers with poor alias analysis
-  assert(area == _thread->handle_area(), "sanity check");
-  assert(area->_handle_mark_nesting > 0, "must stack allocate HandleMarks" );
-  debug_only(area->_handle_mark_nesting--);
+  assert(_area == _thread->handle_area(), "sanity check");
+  assert(_area->_handle_mark_nesting > 0, "must stack allocate HandleMarks" );
 
-  // Delete later chunks
-  if( _chunk->next() ) {
-    // reset arena size before delete chunks. Otherwise, the total
-    // arena size could exceed total chunk size
-    assert(area->size_in_bytes() > size_in_bytes(), "Sanity check");
-    area->set_size_in_bytes(size_in_bytes());
-    _chunk->next_chop();
-  } else {
-    assert(area->size_in_bytes() == size_in_bytes(), "Sanity check");
-  }
-  // Roll back arena to saved top markers
-  area->_chunk = _chunk;
-  area->_hwm = _hwm;
-  area->_max = _max;
+  pop_and_restore();
 #ifdef ASSERT
   // clear out first chunk (to detect allocation bugs)
   if (ZapVMHandleArea) {
     memset(_hwm, badHandleValue, _max - _hwm);
   }
-  Atomic::dec(&_nof_handlemarks);
 #endif
 
   // Unlink this from the thread
   _thread->set_last_handle_mark(previous_handle_mark());
+}
+
+void HandleMark::chop_later_chunks() {
+  // reset arena size before delete chunks. Otherwise, the total
+  // arena size could exceed total chunk size
+  _area->set_size_in_bytes(size_in_bytes());
+  _chunk->next_chop();
 }
 
 void* HandleMark::operator new(size_t size) throw() {
@@ -218,4 +199,4 @@ ResetNoHandleMark::~ResetNoHandleMark() {
   area->_no_handle_mark_nesting = _no_handle_mark_nesting;
 }
 
-#endif
+#endif // ASSERT

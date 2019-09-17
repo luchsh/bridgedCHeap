@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,10 +27,7 @@
  * @summary Similar to GCDuringDumping.java, this test adds the -XX:SharedArchiveConfigFile
  *          option for testing the interaction with GC and shared strings.
  * @library /test/lib /test/hotspot/jtreg/runtime/appcds /test/hotspot/jtreg/runtime/appcds/test-classes
- * @requires (sun.arch.data.model != "32") & (os.family != "windows")
- * @requires vm.cds
- * @requires vm.flavor != "minimal"
- * @requires vm.gc.G1
+ * @requires vm.cds.archived.java.heap
  * @modules java.base/jdk.internal.misc
  *          jdk.jartool/sun.tools.jar
  *          java.management
@@ -65,7 +62,8 @@ public class GCSharedStringsDuringDump {
         String appJar =
             ClassFileInstaller.writeJar("GCSharedStringsDuringDumpApp.jar", appClasses);
 
-        String gcLog = "-Xlog:gc*=info,gc+region=trace,gc+alloc+region=debug";
+        String gcLog = Boolean.getBoolean("test.cds.verbose.gc") ?
+            "-Xlog:gc*=info,gc+region=trace,gc+alloc+region=debug" : "-showversion";
 
         String sharedArchiveCfgFile =
             System.getProperty("user.dir") + File.separator + "GCSharedStringDuringDump_gen.txt";
@@ -90,13 +88,12 @@ public class GCSharedStringsDuringDump {
             // i = 1 -- run with agent = cause extra GCs
 
             String extraArg = (i == 0) ? "-showversion" : "-javaagent:" + agentJar;
-
+            String extraOption = (i == 0) ? "-showversion" : "-XX:+AllowArchivingWithJavaAgent";
             OutputAnalyzer output = TestCommon.dump(
                                 appJar, TestCommon.list("GCSharedStringsDuringDumpWb"),
                                 bootClassPath, extraArg, "-Xmx32m", gcLog,
-                                "-XX:+UseCompressedOops", "-XX:+UseG1GC",
-                                "-XX:SharedReadOnlySize=30m",
-                                "-XX:SharedArchiveConfigFile=" + sharedArchiveCfgFile);
+                                "-XX:SharedArchiveConfigFile=" + sharedArchiveCfgFile,
+                                "-XX:+UnlockDiagnosticVMOptions", extraOption);
 
             if (output.getStdout().contains("Too many string space regions") ||
                 output.getStderr().contains("Unable to write archive heap memory regions") ||
@@ -108,24 +105,24 @@ public class GCSharedStringsDuringDump {
                 TestCommon.testDump(
                     appJar, TestCommon.list("GCSharedStringsDuringDumpWb"),
                     bootClassPath, extraArg, "-Xmx8g", "-XX:NewSize=8m", gcLog,
-                    "-XX:+UseCompressedOops", "-XX:+UseG1GC",
-                    "-XX:SharedReadOnlySize=30m",
-                    "-XX:SharedArchiveConfigFile=" + sharedArchiveCfgFile);
+                    "-XX:SharedArchiveConfigFile=" + sharedArchiveCfgFile,
+                    "-XX:+UnlockDiagnosticVMOptions", extraOption);
             }
 
-            output = TestCommon.execCommon(
+            TestCommon.run(
                 "-cp", appJar,
                 bootClassPath,
+                extraArg,
+                "-Xlog:cds=info,class+path=info",
                 "-Xmx32m",
                 "-XX:+PrintSharedSpaces",
-                "-XX:+UseCompressedOops",
-                "-XX:+UseG1GC",
                 "-XX:+UnlockDiagnosticVMOptions",
+                extraOption,
                 "-XX:+WhiteBoxAPI",
                 "-XX:SharedReadOnlySize=30m",
                 gcLog,
-                "GCSharedStringsDuringDumpWb");
-            TestCommon.checkExec(output);
+                "GCSharedStringsDuringDumpWb")
+              .assertNormalExit();
         }
     }
 }

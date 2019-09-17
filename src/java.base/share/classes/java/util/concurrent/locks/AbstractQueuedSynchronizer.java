@@ -104,7 +104,7 @@ import java.util.concurrent.TimeUnit;
  * define a {@code readObject} method that restores this to a known
  * initial state upon deserialization.
  *
- * <h3>Usage</h3>
+ * <h2>Usage</h2>
  *
  * <p>To use this class as the basis of a synchronizer, redefine the
  * following methods, as applicable, by inspecting and/or modifying
@@ -187,7 +187,7 @@ import java.util.concurrent.TimeUnit;
  * {@link java.util.Queue} classes, and {@link LockSupport} blocking
  * support.
  *
- * <h3>Usage Examples</h3>
+ * <h2>Usage Examples</h2>
  *
  * <p>Here is a non-reentrant mutual exclusion lock class that uses
  * the value zero to represent the unlocked state, and one to
@@ -555,7 +555,7 @@ public abstract class AbstractQueuedSynchronizer
                 THREAD = l.findVarHandle(Node.class, "thread", Thread.class);
                 WAITSTATUS = l.findVarHandle(Node.class, "waitStatus", int.class);
             } catch (ReflectiveOperationException e) {
-                throw new Error(e);
+                throw new ExceptionInInitializerError(e);
             }
         }
     }
@@ -2308,7 +2308,7 @@ public abstract class AbstractQueuedSynchronizer
             HEAD = l.findVarHandle(AbstractQueuedSynchronizer.class, "head", Node.class);
             TAIL = l.findVarHandle(AbstractQueuedSynchronizer.class, "tail", Node.class);
         } catch (ReflectiveOperationException e) {
-            throw new Error(e);
+            throw new ExceptionInInitializerError(e);
         }
 
         // Reduce the risk of rare disastrous classloading in first call to

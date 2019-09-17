@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -45,12 +45,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Objects;
-import java.util.Set;
 import java.util.SimpleTimeZone;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.CRC32;
+
+import jdk.internal.util.StaticProperty;
 import sun.security.action.GetPropertyAction;
 
 /**
@@ -252,7 +251,7 @@ public final class ZoneInfoFile {
         AccessController.doPrivileged(new PrivilegedAction<Void>() {
             public Void run() {
                 try {
-                    String libDir = System.getProperty("java.home") + File.separator + "lib";
+                    String libDir = StaticProperty.javaHome() + File.separator + "lib";
                     try (DataInputStream dis = new DataInputStream(
                              new BufferedInputStream(new FileInputStream(
                                  new File(libDir, "tzdb.dat"))))) {
@@ -574,8 +573,12 @@ public final class ZoneInfoFile {
                     // we can then pass in the dom = -1, dow > 0 into ZoneInfo
                     //
                     // hacking, assume the >=24 is the result of ZRB optimization for
-                    // "last", it works for now.
-                    if (dom < 0 || dom >= 24) {
+                    // "last", it works for now. From tzdata2019a this hacking
+                    // will not work for Asia/Gaza and Asia/Hebron which follow
+                    // Palestine DST rules.
+                    if (dom < 0 || dom >= 24 &&
+                                   !(zoneId.equals("Asia/Gaza") ||
+                                     zoneId.equals("Asia/Hebron"))) {
                         params[1] = -1;
                         params[2] = toCalendarDOW[dow];
                     } else {

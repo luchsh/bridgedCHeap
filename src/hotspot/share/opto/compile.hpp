@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_OPTO_COMPILE_HPP
-#define SHARE_VM_OPTO_COMPILE_HPP
+#ifndef SHARE_OPTO_COMPILE_HPP
+#define SHARE_OPTO_COMPILE_HPP
 
 #include "asm/codeBuffer.hpp"
 #include "ci/compilerInterface.hpp"
@@ -33,7 +33,9 @@
 #include "compiler/compileBroker.hpp"
 #include "libadt/dict.hpp"
 #include "libadt/vectset.hpp"
+#include "jfr/jfrEvents.hpp"
 #include "memory/resourceArea.hpp"
+#include "oops/methodData.hpp"
 #include "opto/idealGraphPrinter.hpp"
 #include "opto/phasetype.hpp"
 #include "opto/phase.hpp"
@@ -41,7 +43,6 @@
 #include "runtime/deoptimization.hpp"
 #include "runtime/timerTrace.hpp"
 #include "runtime/vmThread.hpp"
-#include "trace/tracing.hpp"
 #include "utilities/ticks.hpp"
 
 class AddPNode;
@@ -51,8 +52,10 @@ class C2Compiler;
 class CallGenerator;
 class CloneMap;
 class ConnectionGraph;
+class IdealGraphPrinter;
 class InlineTree;
 class Int_Array;
+class LoadBarrierNode;
 class Matcher;
 class MachConstantNode;
 class MachConstantBaseNode;
@@ -87,6 +90,16 @@ class nmethod;
 class WarmCallInfo;
 class Node_Stack;
 struct Final_Reshape_Counts;
+
+enum LoopOptsMode {
+  LoopOptsDefault,
+  LoopOptsNone,
+  LoopOptsShenandoahExpand,
+  LoopOptsShenandoahPostExpand,
+  LoopOptsZBarrierInsertion,
+  LoopOptsSkipSplitIf,
+  LoopOptsVerify
+};
 
 typedef unsigned int node_idx_t;
 class NodeCloneInfo {
@@ -359,7 +372,6 @@ class Compile : public Phase {
   address               _stub_entry_point;      // Compile code entry for generated stub, or NULL
 
   // Control of this compilation.
-  int                   _num_loop_opts;         // Number of iterations for doing loop optimiztions
   int                   _max_inline_size;       // Max inline size for this compilation
   int                   _freq_inline_size;      // Max hot method inline size for this compilation
   int                   _fixed_slots;           // count of frame slots not allocated by the register
@@ -372,6 +384,7 @@ class Compile : public Phase {
   int                   _major_progress;        // Count of something big happening
   bool                  _inlining_progress;     // progress doing incremental inlining?
   bool                  _inlining_incrementally;// Are we doing incremental inlining (post parse)
+  bool                  _do_cleanup;            // Cleanup is needed before proceeding with incremental inlining
   bool                  _has_loops;             // True if the method _may_ have some loops
   bool                  _has_split_ifs;         // True if the method _may_ have some split-if
   bool                  _has_unsafe_access;     // True if the method _may_ produce faults in unsafe loads or stores.
@@ -403,9 +416,12 @@ class Compile : public Phase {
   // JSR 292
   bool                  _has_method_handle_invokes; // True if this method has MethodHandle invokes.
   RTMState              _rtm_state;             // State of Restricted Transactional Memory usage
+  int                   _loop_opts_cnt;         // loop opts round
+  bool                  _clinit_barrier_on_entry; // True if clinit barrier is needed on nmethod entry
 
   // Compilation environment.
   Arena                 _comp_arena;            // Arena with lifetime equivalent to Compile
+  void*                 _barrier_set_state;     // Potential GC barrier state for Compile
   ciEnv*                _env;                   // CI interface
   DirectiveSet*         _directive;             // Compiler directive
   CompileLog*           _log;                   // from CompilerThread
@@ -415,6 +431,7 @@ class Compile : public Phase {
   GrowableArray<Node*>* _predicate_opaqs;       // List of Opaque1 nodes for the loop predicates.
   GrowableArray<Node*>* _expensive_nodes;       // List of nodes that are expensive to compute and that we'd better not let the GVN freely common
   GrowableArray<Node*>* _range_check_casts;     // List of CastII nodes with a range check dependency
+  GrowableArray<Node*>* _opaque4_nodes;         // List of Opaque4 nodes that have a default value
   ConnectionGraph*      _congraph;
 #ifndef PRODUCT
   IdealGraphPrinter*    _printer;
@@ -528,6 +545,8 @@ class Compile : public Phase {
 
  public:
 
+  void* barrier_set_state() const { return _barrier_set_state; }
+
   outputStream* print_inlining_stream() const {
     assert(print_inlining() || print_intrinsics(), "PrintInlining off?");
     return _print_inlining_stream;
@@ -637,10 +656,11 @@ class Compile : public Phase {
   int               inlining_progress() const   { return _inlining_progress; }
   void          set_inlining_incrementally(bool z) { _inlining_incrementally = z; }
   int               inlining_incrementally() const { return _inlining_incrementally; }
+  void          set_do_cleanup(bool z)          { _do_cleanup = z; }
+  int               do_cleanup() const          { return _do_cleanup; }
   void          set_major_progress()            { _major_progress++; }
+  void          restore_major_progress(int progress) { _major_progress += progress; }
   void        clear_major_progress()            { _major_progress = 0; }
-  int               num_loop_opts() const       { return _num_loop_opts; }
-  void          set_num_loop_opts(int n)        { _num_loop_opts = n; }
   int               max_inline_size() const     { return _max_inline_size; }
   void          set_freq_inline_size(int n)     { _freq_inline_size = n; }
   int               freq_inline_size() const    { return _freq_inline_size; }
@@ -697,6 +717,8 @@ class Compile : public Phase {
   bool          profile_rtm() const              { return _rtm_state == ProfileRTM; }
   uint              max_node_limit() const       { return (uint)_max_node_limit; }
   void          set_max_node_limit(uint n)       { _max_node_limit = n; }
+  bool              clinit_barrier_on_entry()       { return _clinit_barrier_on_entry; }
+  void          set_clinit_barrier_on_entry(bool z) { _clinit_barrier_on_entry = z; }
 
   // check the CompilerOracle for special behaviours for this compile
   bool          method_has_option(const char * option) {
@@ -727,7 +749,15 @@ class Compile : public Phase {
     C->_latest_stage_start_counter.stamp();
   }
 
-  void print_method(CompilerPhaseType cpt, int level = 1) {
+  bool should_print(int level = 1) {
+#ifndef PRODUCT
+    return (_printer && _printer->should_print(level));
+#else
+    return false;
+#endif
+  }
+
+  void print_method(CompilerPhaseType cpt, int level = 1, int idx = 0) {
     EventCompilerPhase event;
     if (event.should_commit()) {
       event.set_starttime(C->_latest_stage_start_counter);
@@ -737,10 +767,15 @@ class Compile : public Phase {
       event.commit();
     }
 
-
 #ifndef PRODUCT
-    if (_printer && _printer->should_print(level)) {
-      _printer->print_method(CompilerPhaseTypeHelper::to_string(cpt), level);
+    if (should_print(level)) {
+      char output[1024];
+      if (idx != 0) {
+        sprintf(output, "%s:%d", CompilerPhaseTypeHelper::to_string(cpt), idx);
+      } else {
+        sprintf(output, "%s", CompilerPhaseTypeHelper::to_string(cpt));
+      }
+      _printer->print_method(output, level);
     }
 #endif
     C->_latest_stage_start_counter.stamp();
@@ -808,6 +843,16 @@ class Compile : public Phase {
   int   range_check_cast_count()       const { return _range_check_casts->length(); }
   // Remove all range check dependent CastIINodes.
   void  remove_range_check_casts(PhaseIterGVN &igvn);
+
+  void add_opaque4_node(Node* n);
+  void remove_opaque4_node(Node* n) {
+    if (_opaque4_nodes->contains(n)) {
+      _opaque4_nodes->remove(n);
+    }
+  }
+  Node* opaque4_node(int idx) const { return _opaque4_nodes->at(idx);  }
+  int   opaque4_count()       const { return _opaque4_nodes->length(); }
+  void  remove_opaque4_nodes(PhaseIterGVN &igvn);
 
   // remove the opaque nodes that protect the predicates so that the unused checks and
   // uncommon traps will be eliminated from the graph.
@@ -998,6 +1043,11 @@ class Compile : public Phase {
                       ciMethodData* logmd = NULL);
   // Report if there were too many recompiles at a method and bci.
   bool too_many_recompiles(ciMethod* method, int bci, Deoptimization::DeoptReason reason);
+  // Report if there were too many traps or recompiles at a method and bci.
+  bool too_many_traps_or_recompiles(ciMethod* method, int bci, Deoptimization::DeoptReason reason) {
+    return too_many_traps(method, bci, reason) ||
+           too_many_recompiles(method, bci, reason);
+  }
   // Return a bitset with the reasons where deoptimization is allowed,
   // i.e., where there were not too many uncommon traps.
   int _allowed_reasons;
@@ -1051,7 +1101,11 @@ class Compile : public Phase {
     if (!inlining_incrementally()) {
       return unique() > (uint)NodeCountInliningCutoff;
     } else {
-      return live_nodes() > (uint)LiveNodeCountInliningCutoff;
+      // Give some room for incremental inlining algorithm to "breathe"
+      // and avoid thrashing when live node count is close to the limit.
+      // Keep in mind that live_nodes() isn't accurate during inlining until
+      // dead node elimination step happens (see Compile::inline_incrementally).
+      return live_nodes() > (uint)LiveNodeCountInliningCutoff * 11 / 10;
     }
   }
 
@@ -1059,10 +1113,13 @@ class Compile : public Phase {
   void dec_number_of_mh_late_inlines() { assert(_number_of_mh_late_inlines > 0, "_number_of_mh_late_inlines < 0 !"); _number_of_mh_late_inlines--; }
   bool has_mh_late_inlines() const     { return _number_of_mh_late_inlines > 0; }
 
-  void inline_incrementally_one(PhaseIterGVN& igvn);
+  bool inline_incrementally_one();
+  void inline_incrementally_cleanup(PhaseIterGVN& igvn);
   void inline_incrementally(PhaseIterGVN& igvn);
   void inline_string_calls(bool parse_time);
   void inline_boxing_calls(PhaseIterGVN& igvn);
+  bool optimize_loops(PhaseIterGVN& igvn, LoopOptsMode mode);
+  void remove_root_to_sfpts_edges(PhaseIterGVN& igvn);
 
   // Matching, CFG layout, allocation, code generation
   PhaseCFG*         cfg()                       { return _cfg; }
@@ -1279,6 +1336,7 @@ class Compile : public Phase {
   // Function calls made by the public function final_graph_reshaping.
   // No need to be made public as they are not called elsewhere.
   void final_graph_reshaping_impl( Node *n, Final_Reshape_Counts &frc);
+  void final_graph_reshaping_main_switch(Node* n, Final_Reshape_Counts& frc, uint nop);
   void final_graph_reshaping_walk( Node_Stack &nstack, Node *root, Final_Reshape_Counts &frc );
   void eliminate_redundant_card_marks(Node* n);
 
@@ -1304,14 +1362,17 @@ class Compile : public Phase {
   // graph is strongly connected from root in both directions.
   void verify_graph_edges(bool no_dead_code = false) PRODUCT_RETURN;
 
-  // Verify GC barrier patterns
-  void verify_barriers() PRODUCT_RETURN;
-
   // End-of-run dumps.
   static void print_statistics() PRODUCT_RETURN;
 
   // Dump formatted assembly
-  void dump_asm(int *pcs = NULL, uint pc_limit = 0) PRODUCT_RETURN;
+#if defined(SUPPORT_OPTO_ASSEMBLY)
+  void dump_asm_on(outputStream* ost, int* pcs, uint pc_limit);
+  void dump_asm(int* pcs = NULL, uint pc_limit = 0) { dump_asm_on(tty, pcs, pc_limit); }
+#else
+  void dump_asm_on(outputStream* ost, int* pcs, uint pc_limit) { return; }
+  void dump_asm(int* pcs = NULL, uint pc_limit = 0) { return; }
+#endif
   void dump_pc(int *pcs, int pc_limit, Node *n);
 
   // Verify ADLC assumptions during startup
@@ -1338,6 +1399,9 @@ class Compile : public Phase {
   CloneMap&     clone_map();
   void          set_clone_map(Dict* d);
 
+  bool needs_clinit_barrier(ciField* ik,         ciMethod* accessing_method);
+  bool needs_clinit_barrier(ciMethod* ik,        ciMethod* accessing_method);
+  bool needs_clinit_barrier(ciInstanceKlass* ik, ciMethod* accessing_method);
 };
 
-#endif // SHARE_VM_OPTO_COMPILE_HPP
+#endif // SHARE_OPTO_COMPILE_HPP

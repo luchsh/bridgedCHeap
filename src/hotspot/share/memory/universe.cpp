@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,31 +25,32 @@
 #include "precompiled.hpp"
 #include "aot/aotLoader.hpp"
 #include "classfile/classLoader.hpp"
-#include "classfile/classLoaderData.hpp"
+#include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/javaClasses.hpp"
 #include "classfile/stringTable.hpp"
+#include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "classfile/vmSymbols.hpp"
+#include "code/codeBehaviours.hpp"
 #include "code/codeCache.hpp"
 #include "code/dependencies.hpp"
-#include "gc/shared/cardTableModRefBS.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "gc/shared/gcArguments.hpp"
-#include "gc/shared/gcLocker.inline.hpp"
-#include "gc/shared/generation.hpp"
+#include "gc/shared/gcConfig.hpp"
 #include "gc/shared/gcTraceTime.inline.hpp"
-#include "gc/shared/space.hpp"
 #include "interpreter/interpreter.hpp"
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
+#include "memory/heapShared.hpp"
 #include "memory/filemap.hpp"
 #include "memory/metadataFactory.hpp"
 #include "memory/metaspaceClosure.hpp"
+#include "memory/metaspaceCounters.hpp"
 #include "memory/metaspaceShared.hpp"
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
-#include "memory/universe.inline.hpp"
+#include "oops/compressedOops.hpp"
 #include "oops/constantPool.hpp"
 #include "oops/instanceClassLoaderKlass.hpp"
 #include "oops/instanceKlass.hpp"
@@ -61,8 +62,9 @@
 #include "prims/resolvedMethodTable.hpp"
 #include "runtime/arguments.hpp"
 #include "runtime/atomic.hpp"
-#include "runtime/commandLineFlagConstraintList.hpp"
 #include "runtime/deoptimization.hpp"
+#include "runtime/flags/flagSetting.hpp"
+#include "runtime/flags/jvmFlagConstraintList.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/init.hpp"
 #include "runtime/java.hpp"
@@ -71,7 +73,7 @@
 #include "runtime/synchronizer.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/timerTrace.hpp"
-#include "runtime/vm_operations.hpp"
+#include "runtime/vmOperations.hpp"
 #include "services/memoryService.hpp"
 #include "utilities/align.hpp"
 #include "utilities/copy.hpp"
@@ -82,21 +84,10 @@
 #include "utilities/macros.hpp"
 #include "utilities/ostream.hpp"
 #include "utilities/preserveException.hpp"
-#if INCLUDE_CDS
-#include "classfile/sharedClassUtil.hpp"
-#endif
 
 // Known objects
-Klass* Universe::_boolArrayKlassObj                 = NULL;
-Klass* Universe::_byteArrayKlassObj                 = NULL;
-Klass* Universe::_charArrayKlassObj                 = NULL;
-Klass* Universe::_intArrayKlassObj                  = NULL;
-Klass* Universe::_shortArrayKlassObj                = NULL;
-Klass* Universe::_longArrayKlassObj                 = NULL;
-Klass* Universe::_singleArrayKlassObj               = NULL;
-Klass* Universe::_doubleArrayKlassObj               = NULL;
-Klass* Universe::_typeArrayKlassObjs[T_VOID+1]      = { NULL /*, NULL...*/ };
-Klass* Universe::_objectArrayKlassObj               = NULL;
+Klass* Universe::_typeArrayKlassObjs[T_LONG+1]        = { NULL /*, NULL...*/ };
+Klass* Universe::_objectArrayKlassObj                 = NULL;
 oop Universe::_int_mirror                             = NULL;
 oop Universe::_float_mirror                           = NULL;
 oop Universe::_double_mirror                          = NULL;
@@ -116,8 +107,8 @@ oop Universe::_the_null_string                        = NULL;
 oop Universe::_the_min_jint_string                   = NULL;
 LatestMethodCache* Universe::_finalizer_register_cache = NULL;
 LatestMethodCache* Universe::_loader_addClass_cache    = NULL;
-LatestMethodCache* Universe::_pd_implies_cache         = NULL;
 LatestMethodCache* Universe::_throw_illegal_access_error_cache = NULL;
+LatestMethodCache* Universe::_throw_no_such_method_error_cache = NULL;
 LatestMethodCache* Universe::_do_stack_walk_cache     = NULL;
 oop Universe::_out_of_memory_error_java_heap          = NULL;
 oop Universe::_out_of_memory_error_metaspace          = NULL;
@@ -125,6 +116,7 @@ oop Universe::_out_of_memory_error_class_metaspace    = NULL;
 oop Universe::_out_of_memory_error_array_size         = NULL;
 oop Universe::_out_of_memory_error_gc_overhead_limit  = NULL;
 oop Universe::_out_of_memory_error_realloc_objects    = NULL;
+oop Universe::_out_of_memory_error_retry              = NULL;
 oop Universe::_delayed_stack_overflow_error_message   = NULL;
 objArrayOop Universe::_preallocated_out_of_memory_error_array = NULL;
 volatile jint Universe::_preallocated_out_of_memory_error_avail_count = 0;
@@ -134,12 +126,12 @@ oop Universe::_null_ptr_exception_instance            = NULL;
 oop Universe::_arithmetic_exception_instance          = NULL;
 oop Universe::_virtual_machine_error_instance         = NULL;
 oop Universe::_vm_exception                           = NULL;
-oop Universe::_allocation_context_notification_obj    = NULL;
 oop Universe::_reference_pending_list                 = NULL;
 
 Array<int>* Universe::_the_empty_int_array            = NULL;
 Array<u2>* Universe::_the_empty_short_array           = NULL;
 Array<Klass*>* Universe::_the_empty_klass_array     = NULL;
+Array<InstanceKlass*>* Universe::_the_empty_instance_klass_array  = NULL;
 Array<Method*>* Universe::_the_empty_method_array   = NULL;
 
 // These variables are guarded by FullGCALot_lock.
@@ -163,22 +155,19 @@ size_t          Universe::_heap_used_at_last_gc = 0;
 
 CollectedHeap*  Universe::_collectedHeap = NULL;
 
-NarrowPtrStruct Universe::_narrow_oop = { NULL, 0, true };
-NarrowPtrStruct Universe::_narrow_klass = { NULL, 0, true };
-address Universe::_narrow_ptrs_base;
-
 void Universe::basic_type_classes_do(void f(Klass*)) {
-  f(boolArrayKlassObj());
-  f(byteArrayKlassObj());
-  f(charArrayKlassObj());
-  f(intArrayKlassObj());
-  f(shortArrayKlassObj());
-  f(longArrayKlassObj());
-  f(singleArrayKlassObj());
-  f(doubleArrayKlassObj());
+  for (int i = T_BOOLEAN; i < T_LONG+1; i++) {
+    f(_typeArrayKlassObjs[i]);
+  }
 }
 
-void Universe::oops_do(OopClosure* f, bool do_all) {
+void Universe::basic_type_classes_do(KlassClosure *closure) {
+  for (int i = T_BOOLEAN; i < T_LONG+1; i++) {
+    closure->do_klass(_typeArrayKlassObjs[i]);
+  }
+}
+
+void Universe::oops_do(OopClosure* f) {
 
   f->do_oop((oop*) &_int_mirror);
   f->do_oop((oop*) &_float_mirror);
@@ -205,6 +194,7 @@ void Universe::oops_do(OopClosure* f, bool do_all) {
   f->do_oop((oop*)&_out_of_memory_error_array_size);
   f->do_oop((oop*)&_out_of_memory_error_gc_overhead_limit);
   f->do_oop((oop*)&_out_of_memory_error_realloc_objects);
+  f->do_oop((oop*)&_out_of_memory_error_retry);
   f->do_oop((oop*)&_delayed_stack_overflow_error_message);
   f->do_oop((oop*)&_preallocated_out_of_memory_error_array);
   f->do_oop((oop*)&_null_ptr_exception_instance);
@@ -213,7 +203,6 @@ void Universe::oops_do(OopClosure* f, bool do_all) {
   f->do_oop((oop*)&_main_thread_group);
   f->do_oop((oop*)&_system_thread_group);
   f->do_oop((oop*)&_vm_exception);
-  f->do_oop((oop*)&_allocation_context_notification_obj);
   f->do_oop((oop*)&_reference_pending_list);
   debug_only(f->do_oop((oop*)&_fullgc_alot_dummy_array);)
 }
@@ -223,15 +212,7 @@ void LatestMethodCache::metaspace_pointers_do(MetaspaceClosure* it) {
 }
 
 void Universe::metaspace_pointers_do(MetaspaceClosure* it) {
-  it->push(&_boolArrayKlassObj);
-  it->push(&_byteArrayKlassObj);
-  it->push(&_charArrayKlassObj);
-  it->push(&_intArrayKlassObj);
-  it->push(&_shortArrayKlassObj);
-  it->push(&_longArrayKlassObj);
-  it->push(&_singleArrayKlassObj);
-  it->push(&_doubleArrayKlassObj);
-  for (int i = 0; i < T_VOID+1; i++) {
+  for (int i = 0; i < T_LONG+1; i++) {
     it->push(&_typeArrayKlassObjs[i]);
   }
   it->push(&_objectArrayKlassObj);
@@ -239,49 +220,56 @@ void Universe::metaspace_pointers_do(MetaspaceClosure* it) {
   it->push(&_the_empty_int_array);
   it->push(&_the_empty_short_array);
   it->push(&_the_empty_klass_array);
+  it->push(&_the_empty_instance_klass_array);
   it->push(&_the_empty_method_array);
   it->push(&_the_array_interfaces_array);
 
   _finalizer_register_cache->metaspace_pointers_do(it);
   _loader_addClass_cache->metaspace_pointers_do(it);
-  _pd_implies_cache->metaspace_pointers_do(it);
   _throw_illegal_access_error_cache->metaspace_pointers_do(it);
+  _throw_no_such_method_error_cache->metaspace_pointers_do(it);
   _do_stack_walk_cache->metaspace_pointers_do(it);
 }
 
-// Serialize metadata in and out of CDS archive, not oops.
-void Universe::serialize(SerializeClosure* f, bool do_all) {
+// Serialize metadata and pointers to primitive type mirrors in and out of CDS archive
+void Universe::serialize(SerializeClosure* f) {
 
-  f->do_ptr((void**)&_boolArrayKlassObj);
-  f->do_ptr((void**)&_byteArrayKlassObj);
-  f->do_ptr((void**)&_charArrayKlassObj);
-  f->do_ptr((void**)&_intArrayKlassObj);
-  f->do_ptr((void**)&_shortArrayKlassObj);
-  f->do_ptr((void**)&_longArrayKlassObj);
-  f->do_ptr((void**)&_singleArrayKlassObj);
-  f->do_ptr((void**)&_doubleArrayKlassObj);
-  f->do_ptr((void**)&_objectArrayKlassObj);
-
-  {
-    for (int i = 0; i < T_VOID+1; i++) {
-      if (_typeArrayKlassObjs[i] != NULL) {
-        assert(i >= T_BOOLEAN, "checking");
-        f->do_ptr((void**)&_typeArrayKlassObjs[i]);
-      } else if (do_all) {
-        f->do_ptr((void**)&_typeArrayKlassObjs[i]);
-      }
-    }
+  for (int i = 0; i < T_LONG+1; i++) {
+    f->do_ptr((void**)&_typeArrayKlassObjs[i]);
   }
+
+  f->do_ptr((void**)&_objectArrayKlassObj);
+#if INCLUDE_CDS_JAVA_HEAP
+#ifdef ASSERT
+  if (DumpSharedSpaces && !HeapShared::is_heap_object_archiving_allowed()) {
+    assert(_int_mirror == NULL    && _float_mirror == NULL &&
+           _double_mirror == NULL && _byte_mirror == NULL  &&
+           _bool_mirror == NULL   && _char_mirror == NULL  &&
+           _long_mirror == NULL   && _short_mirror == NULL &&
+           _void_mirror == NULL, "mirrors should be NULL");
+  }
+#endif
+  f->do_oop(&_int_mirror);
+  f->do_oop(&_float_mirror);
+  f->do_oop(&_double_mirror);
+  f->do_oop(&_byte_mirror);
+  f->do_oop(&_bool_mirror);
+  f->do_oop(&_char_mirror);
+  f->do_oop(&_long_mirror);
+  f->do_oop(&_short_mirror);
+  f->do_oop(&_void_mirror);
+#endif
 
   f->do_ptr((void**)&_the_array_interfaces_array);
   f->do_ptr((void**)&_the_empty_int_array);
   f->do_ptr((void**)&_the_empty_short_array);
   f->do_ptr((void**)&_the_empty_method_array);
   f->do_ptr((void**)&_the_empty_klass_array);
+  f->do_ptr((void**)&_the_empty_instance_klass_array);
   _finalizer_register_cache->serialize(f);
   _loader_addClass_cache->serialize(f);
-  _pd_implies_cache->serialize(f);
   _throw_illegal_access_error_cache->serialize(f);
+  _throw_no_such_method_error_cache->serialize(f);
   _do_stack_walk_cache->serialize(f);
 }
 
@@ -302,7 +290,7 @@ void initialize_basic_type_klass(Klass* k, TRAPS) {
   } else
 #endif
   {
-    k->initialize_supers(ok, CHECK);
+    k->initialize_supers(ok, NULL, CHECK);
   }
   k->append_to_sibling_list();
 }
@@ -320,31 +308,18 @@ void Universe::genesis(TRAPS) {
       compute_base_vtable_size();
 
       if (!UseSharedSpaces) {
-        _boolArrayKlassObj      = TypeArrayKlass::create_klass(T_BOOLEAN, sizeof(jboolean), CHECK);
-        _charArrayKlassObj      = TypeArrayKlass::create_klass(T_CHAR,    sizeof(jchar),    CHECK);
-        _singleArrayKlassObj    = TypeArrayKlass::create_klass(T_FLOAT,   sizeof(jfloat),   CHECK);
-        _doubleArrayKlassObj    = TypeArrayKlass::create_klass(T_DOUBLE,  sizeof(jdouble),  CHECK);
-        _byteArrayKlassObj      = TypeArrayKlass::create_klass(T_BYTE,    sizeof(jbyte),    CHECK);
-        _shortArrayKlassObj     = TypeArrayKlass::create_klass(T_SHORT,   sizeof(jshort),   CHECK);
-        _intArrayKlassObj       = TypeArrayKlass::create_klass(T_INT,     sizeof(jint),     CHECK);
-        _longArrayKlassObj      = TypeArrayKlass::create_klass(T_LONG,    sizeof(jlong),    CHECK);
-
-        _typeArrayKlassObjs[T_BOOLEAN] = _boolArrayKlassObj;
-        _typeArrayKlassObjs[T_CHAR]    = _charArrayKlassObj;
-        _typeArrayKlassObjs[T_FLOAT]   = _singleArrayKlassObj;
-        _typeArrayKlassObjs[T_DOUBLE]  = _doubleArrayKlassObj;
-        _typeArrayKlassObjs[T_BYTE]    = _byteArrayKlassObj;
-        _typeArrayKlassObjs[T_SHORT]   = _shortArrayKlassObj;
-        _typeArrayKlassObjs[T_INT]     = _intArrayKlassObj;
-        _typeArrayKlassObjs[T_LONG]    = _longArrayKlassObj;
+        for (int i = T_BOOLEAN; i < T_LONG+1; i++) {
+          _typeArrayKlassObjs[i] = TypeArrayKlass::create_klass((BasicType)i, CHECK);
+        }
 
         ClassLoaderData* null_cld = ClassLoaderData::the_null_class_loader_data();
 
-        _the_array_interfaces_array = MetadataFactory::new_array<Klass*>(null_cld, 2, NULL, CHECK);
-        _the_empty_int_array        = MetadataFactory::new_array<int>(null_cld, 0, CHECK);
-        _the_empty_short_array      = MetadataFactory::new_array<u2>(null_cld, 0, CHECK);
-        _the_empty_method_array     = MetadataFactory::new_array<Method*>(null_cld, 0, CHECK);
-        _the_empty_klass_array      = MetadataFactory::new_array<Klass*>(null_cld, 0, CHECK);
+        _the_array_interfaces_array     = MetadataFactory::new_array<Klass*>(null_cld, 2, NULL, CHECK);
+        _the_empty_int_array            = MetadataFactory::new_array<int>(null_cld, 0, CHECK);
+        _the_empty_short_array          = MetadataFactory::new_array<u2>(null_cld, 0, CHECK);
+        _the_empty_method_array         = MetadataFactory::new_array<Method*>(null_cld, 0, CHECK);
+        _the_empty_klass_array          = MetadataFactory::new_array<Klass*>(null_cld, 0, CHECK);
+        _the_empty_instance_klass_array = MetadataFactory::new_array<InstanceKlass*>(null_cld, 0, CHECK);
       }
     }
 
@@ -364,7 +339,6 @@ void Universe::genesis(TRAPS) {
              SystemDictionary::Cloneable_klass(), "u3");
       assert(_the_array_interfaces_array->at(1) ==
              SystemDictionary::Serializable_klass(), "u3");
-      MetaspaceShared::fixup_mapped_heap_regions();
     } else
 #endif
     {
@@ -375,7 +349,7 @@ void Universe::genesis(TRAPS) {
 
     initialize_basic_type_klass(boolArrayKlassObj(), CHECK);
     initialize_basic_type_klass(charArrayKlassObj(), CHECK);
-    initialize_basic_type_klass(singleArrayKlassObj(), CHECK);
+    initialize_basic_type_klass(floatArrayKlassObj(), CHECK);
     initialize_basic_type_klass(doubleArrayKlassObj(), CHECK);
     initialize_basic_type_klass(byteArrayKlassObj(), CHECK);
     initialize_basic_type_klass(shortArrayKlassObj(), CHECK);
@@ -448,32 +422,41 @@ void Universe::genesis(TRAPS) {
     assert(i == _fullgc_alot_dummy_array->length(), "just checking");
   }
   #endif
-
-  // Initialize dependency array for null class loader
-  ClassLoaderData::the_null_class_loader_data()->init_dependencies(CHECK);
-
 }
 
 void Universe::initialize_basic_type_mirrors(TRAPS) {
-    assert(_int_mirror==NULL, "basic type mirrors already initialized");
-    _int_mirror     =
-      java_lang_Class::create_basic_type_mirror("int",    T_INT, CHECK);
-    _float_mirror   =
-      java_lang_Class::create_basic_type_mirror("float",  T_FLOAT,   CHECK);
-    _double_mirror  =
-      java_lang_Class::create_basic_type_mirror("double", T_DOUBLE,  CHECK);
-    _byte_mirror    =
-      java_lang_Class::create_basic_type_mirror("byte",   T_BYTE, CHECK);
-    _bool_mirror    =
-      java_lang_Class::create_basic_type_mirror("boolean",T_BOOLEAN, CHECK);
-    _char_mirror    =
-      java_lang_Class::create_basic_type_mirror("char",   T_CHAR, CHECK);
-    _long_mirror    =
-      java_lang_Class::create_basic_type_mirror("long",   T_LONG, CHECK);
-    _short_mirror   =
-      java_lang_Class::create_basic_type_mirror("short",  T_SHORT,   CHECK);
-    _void_mirror    =
-      java_lang_Class::create_basic_type_mirror("void",   T_VOID, CHECK);
+#if INCLUDE_CDS_JAVA_HEAP
+    if (UseSharedSpaces &&
+        HeapShared::open_archive_heap_region_mapped() &&
+        _int_mirror != NULL) {
+      assert(HeapShared::is_heap_object_archiving_allowed(), "Sanity");
+      assert(_float_mirror != NULL && _double_mirror != NULL &&
+             _byte_mirror  != NULL && _byte_mirror   != NULL &&
+             _bool_mirror  != NULL && _char_mirror   != NULL &&
+             _long_mirror  != NULL && _short_mirror  != NULL &&
+             _void_mirror  != NULL, "Sanity");
+    } else
+#endif
+    {
+      _int_mirror     =
+        java_lang_Class::create_basic_type_mirror("int",    T_INT, CHECK);
+      _float_mirror   =
+        java_lang_Class::create_basic_type_mirror("float",  T_FLOAT,   CHECK);
+      _double_mirror  =
+        java_lang_Class::create_basic_type_mirror("double", T_DOUBLE,  CHECK);
+      _byte_mirror    =
+        java_lang_Class::create_basic_type_mirror("byte",   T_BYTE, CHECK);
+      _bool_mirror    =
+        java_lang_Class::create_basic_type_mirror("boolean",T_BOOLEAN, CHECK);
+      _char_mirror    =
+        java_lang_Class::create_basic_type_mirror("char",   T_CHAR, CHECK);
+      _long_mirror    =
+        java_lang_Class::create_basic_type_mirror("long",   T_LONG, CHECK);
+      _short_mirror   =
+        java_lang_Class::create_basic_type_mirror("short",  T_SHORT,   CHECK);
+      _void_mirror    =
+        java_lang_Class::create_basic_type_mirror("void",   T_VOID, CHECK);
+    }
 
     _mirrors[T_INT]     = _int_mirror;
     _mirrors[T_FLOAT]   = _float_mirror;
@@ -495,8 +478,11 @@ void Universe::fixup_mirrors(TRAPS) {
   // that the number of objects allocated at this point is very small.
   assert(SystemDictionary::Class_klass_loaded(), "java.lang.Class should be loaded");
   HandleMark hm(THREAD);
-  // Cache the start of the static fields
-  InstanceMirrorKlass::init_offset_of_static_fields();
+
+  if (!UseSharedSpaces) {
+    // Cache the start of the static fields
+    InstanceMirrorKlass::init_offset_of_static_fields();
+  }
 
   GrowableArray <Klass*>* list = java_lang_Class::fixup_mirror_list();
   int list_length = list->length();
@@ -542,36 +528,6 @@ oop Universe::swap_reference_pending_list(oop list) {
 #undef assert_pll_locked
 #undef assert_pll_ownership
 
-
-static bool has_run_finalizers_on_exit = false;
-
-void Universe::run_finalizers_on_exit() {
-  if (has_run_finalizers_on_exit) return;
-  has_run_finalizers_on_exit = true;
-
-  // Called on VM exit. This ought to be run in a separate thread.
-  log_trace(ref)("Callback to run finalizers on exit");
-  {
-    PRESERVE_EXCEPTION_MARK;
-    Klass* finalizer_klass = SystemDictionary::Finalizer_klass();
-    JavaValue result(T_VOID);
-    JavaCalls::call_static(
-      &result,
-      finalizer_klass,
-      vmSymbols::run_finalizers_on_exit_name(),
-      vmSymbols::void_method_signature(),
-      THREAD
-    );
-    // Ignore any pending exceptions
-    CLEAR_PENDING_EXCEPTION;
-  }
-}
-
-
-// initialize_vtable could cause gc if
-// 1) we specified true to initialize_vtable and
-// 2) this ran after gc was enabled
-// In case those ever change we use handles for oops
 void Universe::reinitialize_vtable_of(Klass* ko, TRAPS) {
   // init vtable of k and all subclasses
   ko->vtable().initialize_vtable(false, CHECK);
@@ -584,6 +540,14 @@ void Universe::reinitialize_vtable_of(Klass* ko, TRAPS) {
   }
 }
 
+void Universe::reinitialize_vtables(TRAPS) {
+  // The vtables are initialized by starting at java.lang.Object and
+  // initializing through the subclass links, so that the super
+  // classes are always initialized first.
+  Klass* ok = SystemDictionary::Object_klass();
+  Universe::reinitialize_vtable_of(ok, THREAD);
+}
+
 
 void initialize_itable_for_klass(InstanceKlass* k, TRAPS) {
   k->itable().initialize_itable(false, CHECK);
@@ -591,6 +555,7 @@ void initialize_itable_for_klass(InstanceKlass* k, TRAPS) {
 
 
 void Universe::reinitialize_itables(TRAPS) {
+  MutexLocker mcld(ClassLoaderDataGraph_lock);
   ClassLoaderDataGraph::dictionary_classes_do(initialize_itable_for_klass, CHECK);
 }
 
@@ -606,12 +571,13 @@ bool Universe::should_fill_in_stack_trace(Handle throwable) {
   // preallocated errors with backtrace have been consumed. Also need to avoid
   // a potential loop which could happen if an out of memory occurs when attempting
   // to allocate the backtrace.
-  return ((throwable() != Universe::_out_of_memory_error_java_heap) &&
-          (throwable() != Universe::_out_of_memory_error_metaspace)  &&
-          (throwable() != Universe::_out_of_memory_error_class_metaspace)  &&
-          (throwable() != Universe::_out_of_memory_error_array_size) &&
-          (throwable() != Universe::_out_of_memory_error_gc_overhead_limit) &&
-          (throwable() != Universe::_out_of_memory_error_realloc_objects));
+  return ((!oopDesc::equals(throwable(), Universe::_out_of_memory_error_java_heap)) &&
+          (!oopDesc::equals(throwable(), Universe::_out_of_memory_error_metaspace))  &&
+          (!oopDesc::equals(throwable(), Universe::_out_of_memory_error_class_metaspace))  &&
+          (!oopDesc::equals(throwable(), Universe::_out_of_memory_error_array_size)) &&
+          (!oopDesc::equals(throwable(), Universe::_out_of_memory_error_gc_overhead_limit)) &&
+          (!oopDesc::equals(throwable(), Universe::_out_of_memory_error_realloc_objects)) &&
+          (!oopDesc::equals(throwable(), Universe::_out_of_memory_error_retry)));
 }
 
 
@@ -675,6 +641,10 @@ void* Universe::non_oop_word() {
   return (void*)_non_oop_bits;
 }
 
+static void initialize_global_behaviours() {
+  CompiledICProtectionBehaviour::set_current(new DefaultICProtectionBehaviour());
+}
+
 jint universe_init() {
   assert(!Universe::_fully_initialized, "called after initialize_vtables");
   guarantee(1 << LogHeapWordSize == sizeof(HeapWord),
@@ -687,10 +657,20 @@ jint universe_init() {
 
   JavaClasses::compute_hard_coded_offsets();
 
+  initialize_global_behaviours();
+
+  GCConfig::arguments()->initialize_heap_sizes();
+
   jint status = Universe::initialize_heap();
   if (status != JNI_OK) {
     return status;
   }
+
+  CompressedOops::initialize();
+
+  Universe::initialize_tlab();
+
+  SystemDictionary::initialize_oop_storage();
 
   Metaspace::global_initialize();
 
@@ -701,7 +681,7 @@ jint universe_init() {
   AOTLoader::universe_init();
 
   // Checks 'AfterMemoryInit' constraints.
-  if (!CommandLineFlagConstraintList::check_constraints(CommandLineFlagConstraint::AfterMemoryInit)) {
+  if (!JVMFlagConstraintList::check_constraints(JVMFlagConstraint::AfterMemoryInit)) {
     return JNI_EINVAL;
   }
 
@@ -713,8 +693,8 @@ jint universe_init() {
   // Metaspace::initialize_shared_spaces() tries to populate them.
   Universe::_finalizer_register_cache = new LatestMethodCache();
   Universe::_loader_addClass_cache    = new LatestMethodCache();
-  Universe::_pd_implies_cache         = new LatestMethodCache();
   Universe::_throw_illegal_access_error_cache = new LatestMethodCache();
+  Universe::_throw_no_such_method_error_cache = new LatestMethodCache();
   Universe::_do_stack_walk_cache = new LatestMethodCache();
 
 #if INCLUDE_CDS
@@ -731,13 +711,14 @@ jint universe_init() {
   {
     SymbolTable::create_table();
     StringTable::create_table();
+  }
 
 #if INCLUDE_CDS
-    if (DumpSharedSpaces) {
-      MetaspaceShared::prepare_for_dumping();
-    }
-#endif
+  if (DumpSharedSpaces || DynamicDumpSharedSpaces) {
+    MetaspaceShared::prepare_for_dumping();
   }
+#endif
+
   if (strlen(VerifySubSet) > 0) {
     Universe::initialize_verify_flags();
   }
@@ -747,105 +728,25 @@ jint universe_init() {
   return JNI_OK;
 }
 
-CollectedHeap* Universe::create_heap() {
+jint Universe::initialize_heap() {
   assert(_collectedHeap == NULL, "Heap already created");
-  assert(GCArguments::is_initialized(), "GC must be initialized here");
-  return GCArguments::arguments()->create_heap();
+  _collectedHeap = GCConfig::arguments()->create_heap();
+  jint status = _collectedHeap->initialize();
+
+  if (status == JNI_OK) {
+    log_info(gc)("Using %s", _collectedHeap->name());
+  }
+
+  return status;
 }
 
-// Choose the heap base address and oop encoding mode
-// when compressed oops are used:
-// Unscaled  - Use 32-bits oops without encoding when
-//     NarrowOopHeapBaseMin + heap_size < 4Gb
-// ZeroBased - Use zero based compressed oops with encoding when
-//     NarrowOopHeapBaseMin + heap_size < 32Gb
-// HeapBased - Use compressed oops with heap base + encoding.
-
-jint Universe::initialize_heap() {
-  jint status = JNI_ERR;
-
-  _collectedHeap = create_heap_ext();
-  if (_collectedHeap == NULL) {
-    _collectedHeap = create_heap();
-  }
-
-  status = _collectedHeap->initialize();
-  if (status != JNI_OK) {
-    return status;
-  }
-  log_info(gc)("Using %s", _collectedHeap->name());
-
-  GCArguments::arguments()->post_heap_initialize();
+void Universe::initialize_tlab() {
   ThreadLocalAllocBuffer::set_max_size(Universe::heap()->max_tlab_size());
-
-#ifdef _LP64
-  if (UseCompressedOops) {
-    // Subtract a page because something can get allocated at heap base.
-    // This also makes implicit null checking work, because the
-    // memory+1 page below heap_base needs to cause a signal.
-    // See needs_explicit_null_check.
-    // Only set the heap base for compressed oops because it indicates
-    // compressed oops for pstack code.
-    if ((uint64_t)Universe::heap()->reserved_region().end() > UnscaledOopHeapMax) {
-      // Didn't reserve heap below 4Gb.  Must shift.
-      Universe::set_narrow_oop_shift(LogMinObjAlignmentInBytes);
-    }
-    if ((uint64_t)Universe::heap()->reserved_region().end() <= OopEncodingHeapMax) {
-      // Did reserve heap below 32Gb. Can use base == 0;
-      Universe::set_narrow_oop_base(0);
-    }
-
-    Universe::set_narrow_ptrs_base(Universe::narrow_oop_base());
-
-    LogTarget(Info, gc, heap, coops) lt;
-    if (lt.is_enabled()) {
-      ResourceMark rm;
-      LogStream ls(lt);
-      Universe::print_compressed_oops_mode(&ls);
-    }
-
-    // Tell tests in which mode we run.
-    Arguments::PropertyList_add(new SystemProperty("java.vm.compressedOopsMode",
-                                                   narrow_oop_mode_to_string(narrow_oop_mode()),
-                                                   false));
-  }
-  // Universe::narrow_oop_base() is one page below the heap.
-  assert((intptr_t)Universe::narrow_oop_base() <= (intptr_t)(Universe::heap()->base() -
-         os::vm_page_size()) ||
-         Universe::narrow_oop_base() == NULL, "invalid value");
-  assert(Universe::narrow_oop_shift() == LogMinObjAlignmentInBytes ||
-         Universe::narrow_oop_shift() == 0, "invalid value");
-#endif
-
-  // We will never reach the CATCH below since Exceptions::_throw will cause
-  // the VM to exit if an exception is thrown during initialization
-
   if (UseTLAB) {
     assert(Universe::heap()->supports_tlab_allocation(),
            "Should support thread-local allocation buffers");
     ThreadLocalAllocBuffer::startup_initialization();
   }
-  return JNI_OK;
-}
-
-void Universe::print_compressed_oops_mode(outputStream* st) {
-  st->print("Heap address: " PTR_FORMAT ", size: " SIZE_FORMAT " MB",
-            p2i(Universe::heap()->base()), Universe::heap()->reserved_region().byte_size()/M);
-
-  st->print(", Compressed Oops mode: %s", narrow_oop_mode_to_string(narrow_oop_mode()));
-
-  if (Universe::narrow_oop_base() != 0) {
-    st->print(": " PTR_FORMAT, p2i(Universe::narrow_oop_base()));
-  }
-
-  if (Universe::narrow_oop_shift() != 0) {
-    st->print(", Oop shift amount: %d", Universe::narrow_oop_shift());
-  }
-
-  if (!Universe::narrow_oop_use_implicit_null_checks()) {
-    st->print(", no protected page in front of the heap");
-  }
-  st->cr();
 }
 
 ReservedSpace Universe::reserve_heap(size_t heap_size, size_t alignment) {
@@ -875,7 +776,7 @@ ReservedSpace Universe::reserve_heap(size_t heap_size, size_t alignment) {
       // Universe::initialize_heap() will reset this to NULL if unscaled
       // or zero-based narrow oops are actually used.
       // Else heap start and base MUST differ, so that NULL can be encoded nonambigous.
-      Universe::set_narrow_oop_base((address)total_rs.compressed_oop_base());
+      CompressedOops::set_base((address)total_rs.compressed_oop_base());
     }
 
     if (AllocateHeapAt != NULL) {
@@ -901,47 +802,13 @@ void Universe::update_heap_info_at_gc() {
   _heap_used_at_last_gc     = heap()->used();
 }
 
-
-const char* Universe::narrow_oop_mode_to_string(Universe::NARROW_OOP_MODE mode) {
-  switch (mode) {
-    case UnscaledNarrowOop:
-      return "32-bit";
-    case ZeroBasedNarrowOop:
-      return "Zero based";
-    case DisjointBaseNarrowOop:
-      return "Non-zero disjoint base";
-    case HeapBasedNarrowOop:
-      return "Non-zero based";
-    default:
-      ShouldNotReachHere();
-      return "";
-  }
-}
-
-
-Universe::NARROW_OOP_MODE Universe::narrow_oop_mode() {
-  if (narrow_oop_base_disjoint()) {
-    return DisjointBaseNarrowOop;
-  }
-
-  if (narrow_oop_base() != 0) {
-    return HeapBasedNarrowOop;
-  }
-
-  if (narrow_oop_shift() != 0) {
-    return ZeroBasedNarrowOop;
-  }
-
-  return UnscaledNarrowOop;
-}
-
 void initialize_known_method(LatestMethodCache* method_cache,
                              InstanceKlass* ik,
                              const char* method,
                              Symbol* signature,
                              bool is_static, TRAPS)
 {
-  TempNewSymbol name = SymbolTable::new_symbol(method, CHECK);
+  TempNewSymbol name = SymbolTable::new_symbol(method);
   Method* m = NULL;
   // The klass must be linked before looking up the method.
   if (!ik->link_class_or_fail(THREAD) ||
@@ -968,17 +835,16 @@ void Universe::initialize_known_methods(TRAPS) {
                           "throwIllegalAccessError",
                           vmSymbols::void_method_signature(), true, CHECK);
 
+  initialize_known_method(_throw_no_such_method_error_cache,
+                          SystemDictionary::internal_Unsafe_klass(),
+                          "throwNoSuchMethodError",
+                          vmSymbols::void_method_signature(), true, CHECK);
+
   // Set up method for registering loaded classes in class loader vector
   initialize_known_method(_loader_addClass_cache,
                           SystemDictionary::ClassLoader_klass(),
                           "addClass",
                           vmSymbols::class_void_signature(), false, CHECK);
-
-  // Set up method for checking protection domain
-  initialize_known_method(_pd_implies_cache,
-                          SystemDictionary::ProtectionDomain_klass(),
-                          "impliesCreateAccessControlContext",
-                          vmSymbols::void_boolean_signature(), false, CHECK);
 
   // Set up method for stack walking
   initialize_known_method(_do_stack_walk_cache,
@@ -1004,9 +870,7 @@ bool universe_post_init() {
   { ResourceMark rm;
     Interpreter::initialize();      // needed for interpreter entry points
     if (!UseSharedSpaces) {
-      HandleMark hm(THREAD);
-      Klass* ok = SystemDictionary::Object_klass();
-      Universe::reinitialize_vtable_of(ok, CHECK_false);
+      Universe::reinitialize_vtables(CHECK_false);
       Universe::reinitialize_itables(CHECK_false);
     }
   }
@@ -1025,6 +889,7 @@ bool universe_post_init() {
   Universe::_out_of_memory_error_gc_overhead_limit =
     ik->allocate_instance(CHECK_false);
   Universe::_out_of_memory_error_realloc_objects = ik->allocate_instance(CHECK_false);
+  Universe::_out_of_memory_error_retry = ik->allocate_instance(CHECK_false);
 
   // Setup preallocated cause message for delayed StackOverflowError
   if (StackReservedPages > 0) {
@@ -1070,6 +935,9 @@ bool universe_post_init() {
   msg = java_lang_String::create_from_str("Java heap space: failed reallocation of scalar replaced objects", CHECK_false);
   java_lang_Throwable::set_message(Universe::_out_of_memory_error_realloc_objects, msg());
 
+  msg = java_lang_String::create_from_str("Java heap space: failed retryable allocation", CHECK_false);
+  java_lang_Throwable::set_message(Universe::_out_of_memory_error_retry, msg());
+
   msg = java_lang_String::create_from_str("/ by zero", CHECK_false);
   java_lang_Throwable::set_message(Universe::_arithmetic_exception_instance, msg());
 
@@ -1104,7 +972,7 @@ bool universe_post_init() {
 
   MemoryService::set_universe_heap(Universe::heap());
 #if INCLUDE_CDS
-  SharedClassUtil::initialize(CHECK_false);
+  MetaspaceShared::post_initialize(CHECK_false);
 #endif
   return true;
 }
@@ -1155,8 +1023,9 @@ void Universe::initialize_verify_flags() {
   size_t length = strlen(VerifySubSet);
   char* subset_list = NEW_C_HEAP_ARRAY(char, length + 1, mtInternal);
   strncpy(subset_list, VerifySubSet, length + 1);
+  char* save_ptr;
 
-  char* token = strtok(subset_list, delimiter);
+  char* token = strtok_r(subset_list, delimiter, &save_ptr);
   while (token != NULL) {
     if (strcmp(token, "threads") == 0) {
       verify_flags |= Verify_Threads;
@@ -1173,15 +1042,17 @@ void Universe::initialize_verify_flags() {
     } else if (strcmp(token, "classloader_data_graph") == 0) {
       verify_flags |= Verify_ClassLoaderDataGraph;
     } else if (strcmp(token, "metaspace") == 0) {
-      verify_flags |= Verify_MetaspaceAux;
+      verify_flags |= Verify_MetaspaceUtils;
     } else if (strcmp(token, "jni_handles") == 0) {
       verify_flags |= Verify_JNIHandles;
     } else if (strcmp(token, "codecache_oops") == 0) {
       verify_flags |= Verify_CodeCacheOops;
+    } else if (strcmp(token, "resolved_method_table") == 0) {
+      verify_flags |= Verify_ResolvedMethodTable;
     } else {
       vm_exit_during_initialization(err_msg("VerifySubSet: \'%s\' memory sub-system is unknown, please correct it", token));
     }
-    token = strtok(NULL, delimiter);
+    token = strtok_r(NULL, delimiter, &save_ptr);
   }
   FREE_C_HEAP_ARRAY(char, subset_list);
 }
@@ -1230,7 +1101,7 @@ void Universe::verify(VerifyOption option, const char* prefix) {
   }
   if (should_verify_subset(Verify_CodeCache)) {
   {
-    MutexLockerEx mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker mu(CodeCache_lock, Mutex::_no_safepoint_check_flag);
     log_debug(gc, verify)("CodeCache");
     CodeCache::verify();
   }
@@ -1245,9 +1116,9 @@ void Universe::verify(VerifyOption option, const char* prefix) {
     ClassLoaderDataGraph::verify();
   }
 #endif
-  if (should_verify_subset(Verify_MetaspaceAux)) {
-    log_debug(gc, verify)("MetaspaceAux");
-    MetaspaceAux::verify_free_chunks();
+  if (should_verify_subset(Verify_MetaspaceUtils)) {
+    log_debug(gc, verify)("MetaspaceUtils");
+    MetaspaceUtils::verify_free_chunks();
   }
   if (should_verify_subset(Verify_JNIHandles)) {
     log_debug(gc, verify)("JNIHandles");
@@ -1256,6 +1127,10 @@ void Universe::verify(VerifyOption option, const char* prefix) {
   if (should_verify_subset(Verify_CodeCacheOops)) {
     log_debug(gc, verify)("CodeCache Oops");
     CodeCache::verify_oops();
+  }
+  if (should_verify_subset(Verify_ResolvedMethodTable)) {
+    log_debug(gc, verify)("ResolvedMethodTable Oops");
+    ResolvedMethodTable::verify();
   }
 
   _verify_in_progress = false;
@@ -1320,14 +1195,6 @@ uintptr_t Universe::verify_mark_bits() {
   return bits;
 }
 #endif // PRODUCT
-
-
-void Universe::compute_verify_oop_data() {
-  verify_oop_mask();
-  verify_oop_bits();
-  verify_mark_mask();
-  verify_mark_bits();
-}
 
 
 void LatestMethodCache::init(Klass* k, Method* m) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,14 +22,14 @@
  *
  */
 
-#ifndef SHARE_VM_CODE_RELOCINFO_HPP
-#define SHARE_VM_CODE_RELOCINFO_HPP
+#ifndef SHARE_CODE_RELOCINFO_HPP
+#define SHARE_CODE_RELOCINFO_HPP
 
-#include "memory/allocation.hpp"
 #include "runtime/os.hpp"
 #include "utilities/macros.hpp"
 
 class nmethod;
+class CodeBlob;
 class CompiledMethod;
 class Metadata;
 class NativeMovConstReg;
@@ -48,7 +48,7 @@ class NativeMovConstReg;
 //      oops in the code stream (strings, class loaders)
 //      Also, the source of relocation specs (oop_Relocation::spec, ...).
 //    RelocationHolder
-//      A ValueObj type which acts as a union holding a Relocation object.
+//      A value type which acts as a union holding a Relocation object.
 //      Represents a relocation spec passed into a CodeBuffer during assembly.
 //    RelocIterator
 //      A StackObj which iterates over the relocations associated with
@@ -252,7 +252,7 @@ class CodeBuffer;
 class CodeSection;
 class RelocIterator;
 
-class relocInfo VALUE_OBJ_CLASS_SPEC {
+class relocInfo {
   friend class RelocIterator;
  public:
   enum relocType {
@@ -345,7 +345,6 @@ class relocInfo VALUE_OBJ_CLASS_SPEC {
   static int offset_limit()     { return (1 << offset_width) * offset_unit; }
 
   void set_type(relocType type);
-  void set_format(int format);
 
   void remove() { set_type(none); }
 
@@ -422,7 +421,6 @@ class relocInfo VALUE_OBJ_CLASS_SPEC {
   // (since code is dynamically patched, we also need to dynamically update the relocation info)
   // Both methods takes old_type, so it is able to performe sanity checks on the information removed.
   static void change_reloc_info_for_address(RelocIterator *itr, address pc, relocType old_type, relocType new_type);
-  static void remove_reloc_info_for_address(RelocIterator *itr, address pc, relocType old_type);
 
   // Machine dependent stuff
 #include CPU_HEADER(relocInfo)
@@ -469,7 +467,7 @@ inline relocInfo prefix_relocInfo(int datalen = 0) {
 // Holder for flyweight relocation objects.
 // Although the flyweight subclasses are of varying sizes,
 // the holder is "one size fits all".
-class RelocationHolder VALUE_OBJ_CLASS_SPEC {
+class RelocationHolder {
   friend class Relocation;
   friend class CodeSection;
 
@@ -531,7 +529,6 @@ class RelocIterator : public StackObj {
   short           _databuf; // spare buffer for compressed data
   short*          _data;    // pointer to the relocation's data
   short           _datalen; // number of halfwords in _data
-  char            _format;  // position within the instruction
 
   // Base addresses needed to compute targets of section_word_type relocs.
   address _section_start[SECT_LIMIT];
@@ -588,23 +585,18 @@ class RelocIterator : public StackObj {
       return false;
     }
 
-    if (relocInfo::have_format)  _format = current()->format();
     return true;
   }
 
   // accessors
   address      limit()        const { return _limit; }
-  void     set_limit(address x);
   relocType    type()         const { return current()->type(); }
   int          format()       const { return (relocInfo::have_format) ? current()->format() : 0; }
   address      addr()         const { return _addr; }
   CompiledMethod*     code()  const { return _code; }
-  nmethod*     code_as_nmethod() const;
   short*       data()         const { return _data; }
   int          datalen()      const { return _datalen; }
   bool     has_current()      const { return _datalen >= 0; }
-
-  void       set_addr(address addr) { _addr = addr; }
   bool   addr_in_const()      const;
 
   address section_start(int n) const {
@@ -640,7 +632,7 @@ class RelocIterator : public StackObj {
 // It represents the relocation data of relocation record.
 // So, the RelocIterator unpacks relocInfos into Relocations.
 
-class Relocation VALUE_OBJ_CLASS_SPEC {
+class Relocation {
   friend class RelocationHolder;
   friend class RelocIterator;
 
@@ -793,7 +785,6 @@ class Relocation VALUE_OBJ_CLASS_SPEC {
   // accessors which only make sense for a bound Relocation
   address         addr()            const { return binding()->addr(); }
   CompiledMethod* code()            const { return binding()->code(); }
-  nmethod*        code_as_nmethod() const { return binding()->code_as_nmethod(); }
   bool            addr_in_const()   const { return binding()->addr_in_const(); }
  protected:
   short*   data()         const { return binding()->data(); }
@@ -815,7 +806,7 @@ class Relocation VALUE_OBJ_CLASS_SPEC {
   // all relocations are able to reassert their values
   virtual void set_value(address x);
 
-  virtual void clear_inline_cache()              { }
+  virtual bool clear_inline_cache()              { return true; }
 
   // This method assumes that all virtual/static (inline) caches are cleared (since for static_call_type and
   // ic_call_type is not always posisition dependent (depending on the state of the cache)). However, this is
@@ -1002,8 +993,6 @@ class metadata_Relocation : public DataRelocation {
 
   void fix_metadata_relocation();        // reasserts metadata value
 
-  void verify_metadata_relocation();
-
   address value()  { return (address) *metadata_addr(); }
 
   bool metadata_is_immediate()  { return metadata_index() == 0; }
@@ -1053,7 +1042,7 @@ class virtual_call_Relocation : public CallRelocation {
   void pack_data_to(CodeSection* dest);
   void unpack_data();
 
-  void clear_inline_cache();
+  bool clear_inline_cache();
 };
 
 
@@ -1084,7 +1073,7 @@ class opt_virtual_call_Relocation : public CallRelocation {
   void pack_data_to(CodeSection* dest);
   void unpack_data();
 
-  void clear_inline_cache();
+  bool clear_inline_cache();
 
   // find the matching static_stub
   address static_stub(bool is_aot);
@@ -1118,7 +1107,7 @@ class static_call_Relocation : public CallRelocation {
   void pack_data_to(CodeSection* dest);
   void unpack_data();
 
-  void clear_inline_cache();
+  bool clear_inline_cache();
 
   // find the matching static_stub
   address static_stub(bool is_aot);
@@ -1147,7 +1136,7 @@ class static_stub_Relocation : public Relocation {
   static_stub_Relocation() { }
 
  public:
-  void clear_inline_cache();
+  bool clear_inline_cache();
 
   address static_call() { return _static_call; }
   bool is_aot() { return _is_aot; }
@@ -1392,4 +1381,4 @@ inline RelocIterator::RelocIterator(CompiledMethod* nm, address begin, address l
   initialize(nm, begin, limit);
 }
 
-#endif // SHARE_VM_CODE_RELOCINFO_HPP
+#endif // SHARE_CODE_RELOCINFO_HPP

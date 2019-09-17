@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -47,6 +47,7 @@ import java.text.DateFormatSymbols;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.text.NumberFormat;
+import java.text.spi.NumberFormatProvider;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.Objects;
@@ -62,6 +63,8 @@ import java.time.temporal.UnsupportedTemporalTypeException;
 
 import jdk.internal.math.DoubleConsts;
 import jdk.internal.math.FormattedFloatingDecimal;
+import sun.util.locale.provider.LocaleProviderAdapter;
+import sun.util.locale.provider.ResourceBundleBasedAdapter;
 
 /**
  * An interpreter for printf-style format strings.  This class provides support
@@ -137,7 +140,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  *   // -&gt; s == "Duke's Birthday: May 23, 1995"
  * </pre></blockquote>
  *
- * <h3><a id="org">Organization</a></h3>
+ * <h2><a id="org">Organization</a></h2>
  *
  * <p> This specification is divided into two sections.  The first section, <a
  * href="#summary">Summary</a>, covers the basic formatting concepts.  This
@@ -147,13 +150,13 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * details.  It is intended for users who want more precise specification of
  * formatting behavior.
  *
- * <h3><a id="summary">Summary</a></h3>
+ * <h2><a id="summary">Summary</a></h2>
  *
  * <p> This section is intended to provide a brief overview of formatting
  * concepts.  For precise behavioral details, refer to the <a
  * href="#detail">Details</a> section.
  *
- * <h4><a id="syntax">Format String Syntax</a></h4>
+ * <h3><a id="syntax">Format String Syntax</a></h3>
  *
  * <p> Every method which produces formatted output requires a <i>format
  * string</i> and an <i>argument list</i>.  The format string is a {@link
@@ -233,7 +236,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  *
  * </ul>
  *
- * <h4> Conversions </h4>
+ * <h3> Conversions </h3>
  *
  * <p> Conversions are divided into the following categories:
  *
@@ -284,11 +287,11 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * {@code 'A'}, and {@code 'T'}) are the same as those for the corresponding
  * lower-case conversion characters except that the result is converted to
  * upper case according to the rules of the prevailing {@link java.util.Locale
- * Locale}.  The result is equivalent to the following invocation of {@link
- * String#toUpperCase(Locale)}
+ * Locale}. If there is no explicit locale specified, either at the
+ * construction of the instance or as a parameter to its method
+ * invocation, then the {@link java.util.Locale.Category#FORMAT default locale}
+ * is used.
  *
- * <pre>
- *    out.toUpperCase(Locale.getDefault(Locale.Category.FORMAT)) </pre>
  *
  * <table class="striped">
  * <caption style="display:none">genConv</caption>
@@ -373,7 +376,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * <p> Any characters not explicitly defined as conversions are illegal and are
  * reserved for future extensions.
  *
- * <h4><a id="dt">Date/Time Conversions</a></h4>
+ * <h3><a id="dt">Date/Time Conversions</a></h3>
  *
  * <p> The following date and time conversion suffix characters are defined for
  * the {@code 't'} and {@code 'T'} conversions.  The types are similar to but
@@ -547,7 +550,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * <p> Any characters not explicitly defined as date/time conversion suffixes
  * are illegal and are reserved for future extensions.
  *
- * <h4> Flags </h4>
+ * <h3> Flags </h3>
  *
  * <p> The following table summarizes the supported flags.  <i>y</i> means the
  * flag is supported for the indicated argument types.
@@ -633,13 +636,13 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * <p> Any characters not explicitly defined as flags are illegal and are
  * reserved for future extensions.
  *
- * <h4> Width </h4>
+ * <h3> Width </h3>
  *
  * <p> The width is the minimum number of characters to be written to the
  * output.  For the line separator conversion, width is not applicable; if it
  * is provided, an exception will be thrown.
  *
- * <h4> Precision </h4>
+ * <h3> Precision </h3>
  *
  * <p> For general argument types, the precision is the maximum number of
  * characters to be written to the output.
@@ -654,7 +657,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * and line separator conversions, the precision is not applicable; if a
  * precision is provided, an exception will be thrown.
  *
- * <h4> Argument Index </h4>
+ * <h3> Argument Index </h3>
  *
  * <p> The argument index is a decimal integer indicating the position of the
  * argument in the argument list.  The first argument is referenced by
@@ -673,7 +676,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * </pre></blockquote>
  *
  * <hr>
- * <h3><a id="detail">Details</a></h3>
+ * <h2><a id="detail">Details</a></h2>
  *
  * <p> This section is intended to provide behavioral details for formatting,
  * including conditions and exceptions, supported data types, localization, and
@@ -709,13 +712,12 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * {@code 'G'}, {@code 'A'}, and {@code 'T'}) are the same as those for the
  * corresponding lower-case conversion characters except that the result is
  * converted to upper case according to the rules of the prevailing {@link
- * java.util.Locale Locale}.  The result is equivalent to the following
- * invocation of {@link String#toUpperCase(Locale)}
+ * java.util.Locale Locale}. If there is no explicit locale specified,
+ * either at the construction of the instance or as a parameter to its method
+ * invocation, then the {@link java.util.Locale.Category#FORMAT default locale}
+ * is used.
  *
- * <pre>
- *    out.toUpperCase(Locale.getDefault(Locale.Category.FORMAT)) </pre>
- *
- * <h4><a id="dgen">General</a></h4>
+ * <h3><a id="dgen">General</a></h3>
  *
  * <p> The following general conversions may be applied to any argument type:
  *
@@ -812,7 +814,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * the precision.  If the precision is not specified then there is no explicit
  * limit on the number of characters.
  *
- * <h4><a id="dchar">Character</a></h4>
+ * <h3><a id="dchar">Character</a></h3>
  *
  * This conversion may be applied to {@code char} and {@link Character}.  It
  * may also be applied to the types {@code byte}, {@link Byte},
@@ -851,7 +853,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * <p> The precision is not applicable.  If the precision is specified then an
  * {@link IllegalFormatPrecisionException} will be thrown.
  *
- * <h4><a id="dnum">Numeric</a></h4>
+ * <h3><a id="dnum">Numeric</a></h3>
  *
  * <p> Numeric conversions are divided into the following categories:
  *
@@ -1545,7 +1547,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * href="#floatDPrec">precision</a> is the same as defined for Float and
  * Double.
  *
- * <h4><a id="ddt">Date/Time</a></h4>
+ * <h3><a id="ddt">Date/Time</a></h3>
  *
  * <p> This conversion may be applied to {@code long}, {@link Long}, {@link
  * Calendar}, {@link Date} and {@link TemporalAccessor TemporalAccessor}
@@ -1794,7 +1796,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * <p> The precision is not applicable.  If the precision is specified then an
  * {@link IllegalFormatPrecisionException} will be thrown.
  *
- * <h4><a id="dper">Percent</a></h4>
+ * <h3><a id="dper">Percent</a></h3>
  *
  * <p> The conversion does not correspond to any argument.
  *
@@ -1822,7 +1824,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * </tbody>
  * </table>
  *
- * <h4><a id="dls">Line Separator</a></h4>
+ * <h3><a id="dls">Line Separator</a></h3>
  *
  * <p> The conversion does not correspond to any argument.
  *
@@ -1841,7 +1843,7 @@ import jdk.internal.math.FormattedFloatingDecimal;
  * {@link IllegalFormatFlagsException}, {@link IllegalFormatWidthException},
  * and {@link IllegalFormatPrecisionException}, respectively will be thrown.
  *
- * <h4><a id="dpos">Argument Index</a></h4>
+ * <h3><a id="dpos">Argument Index</a></h3>
  *
  * <p> Format specifiers can reference arguments in three ways:
  *
@@ -2897,22 +2899,22 @@ public final class Formatter implements Closeable, Flushable {
                 break;
             case Conversion.CHARACTER:
             case Conversion.CHARACTER_UPPER:
-                printCharacter(arg);
+                printCharacter(arg, l);
                 break;
             case Conversion.BOOLEAN:
-                printBoolean(arg);
+                printBoolean(arg, l);
                 break;
             case Conversion.STRING:
                 printString(arg, l);
                 break;
             case Conversion.HASHCODE:
-                printHashCode(arg);
+                printHashCode(arg, l);
                 break;
             case Conversion.LINE_SEPARATOR:
                 a.append(System.lineSeparator());
                 break;
             case Conversion.PERCENT_SIGN:
-                a.append('%');
+                print("%", l);
                 break;
             default:
                 assert false;
@@ -2921,7 +2923,7 @@ public final class Formatter implements Closeable, Flushable {
 
         private void printInteger(Object arg, Locale l) throws IOException {
             if (arg == null)
-                print("null");
+                print("null", l);
             else if (arg instanceof Byte)
                 print(((Byte)arg).byteValue(), l);
             else if (arg instanceof Short)
@@ -2938,7 +2940,7 @@ public final class Formatter implements Closeable, Flushable {
 
         private void printFloat(Object arg, Locale l) throws IOException {
             if (arg == null)
-                print("null");
+                print("null", l);
             else if (arg instanceof Float)
                 print(((Float)arg).floatValue(), l);
             else if (arg instanceof Double)
@@ -2951,7 +2953,7 @@ public final class Formatter implements Closeable, Flushable {
 
         private void printDateTime(Object arg, Locale l) throws IOException {
             if (arg == null) {
-                print("null");
+                print("null", l);
                 return;
             }
             Calendar cal = null;
@@ -2982,9 +2984,9 @@ public final class Formatter implements Closeable, Flushable {
             print(cal, c, l);
         }
 
-        private void printCharacter(Object arg) throws IOException {
+        private void printCharacter(Object arg, Locale l) throws IOException {
             if (arg == null) {
-                print("null");
+                print("null", l);
                 return;
             }
             String s = null;
@@ -3011,7 +3013,7 @@ public final class Formatter implements Closeable, Flushable {
             } else {
                 failConversion(c, arg);
             }
-            print(s);
+            print(s, l);
         }
 
         private void printString(Object arg, Locale l) throws IOException {
@@ -3024,13 +3026,13 @@ public final class Formatter implements Closeable, Flushable {
                 if (f.contains(Flags.ALTERNATE))
                     failMismatch(Flags.ALTERNATE, 's');
                 if (arg == null)
-                    print("null");
+                    print("null", l);
                 else
-                    print(arg.toString());
+                    print(arg.toString(), l);
             }
         }
 
-        private void printBoolean(Object arg) throws IOException {
+        private void printBoolean(Object arg, Locale l) throws IOException {
             String s;
             if (arg != null)
                 s = ((arg instanceof Boolean)
@@ -3038,22 +3040,27 @@ public final class Formatter implements Closeable, Flushable {
                      : Boolean.toString(true));
             else
                 s = Boolean.toString(false);
-            print(s);
+            print(s, l);
         }
 
-        private void printHashCode(Object arg) throws IOException {
+        private void printHashCode(Object arg, Locale l) throws IOException {
             String s = (arg == null
                         ? "null"
                         : Integer.toHexString(arg.hashCode()));
-            print(s);
+            print(s, l);
         }
 
-        private void print(String s) throws IOException {
+        private void print(String s, Locale l) throws IOException {
             if (precision != -1 && precision < s.length())
                 s = s.substring(0, precision);
             if (f.contains(Flags.UPPERCASE))
-                s = s.toUpperCase(Locale.getDefault(Locale.Category.FORMAT));
+                s = toUpperCaseWithLocale(s, l);
             appendJustified(a, s);
+        }
+
+        private String toUpperCaseWithLocale(String s, Locale l) {
+            return s.toUpperCase(Objects.requireNonNullElse(l,
+                    Locale.getDefault(Locale.Category.FORMAT)));
         }
 
         private Appendable appendJustified(Appendable a, CharSequence cs) throws IOException {
@@ -3276,7 +3283,7 @@ public final class Formatter implements Closeable, Flushable {
                     trailingZeros(sb, width - len);
                 }
                 if (f.contains(Flags.UPPERCASE))
-                    s = s.toUpperCase(Locale.getDefault(Locale.Category.FORMAT));
+                    s = toUpperCaseWithLocale(s, l);
                 sb.append(s);
             }
 
@@ -3351,7 +3358,7 @@ public final class Formatter implements Closeable, Flushable {
                     trailingZeros(sb, width - len);
                 }
                 if (f.contains(Flags.UPPERCASE))
-                    s = s.toUpperCase(Locale.getDefault(Locale.Category.FORMAT));
+                    s = toUpperCaseWithLocale(s, l);
                 sb.append(s);
             }
 
@@ -3950,7 +3957,7 @@ public final class Formatter implements Closeable, Flushable {
 
             // justify based on width
             if (f.contains(Flags.UPPERCASE)) {
-                appendJustified(a, sb.toString().toUpperCase(Locale.getDefault(Locale.Category.FORMAT)));
+                appendJustified(a, toUpperCaseWithLocale(sb.toString(), l));
             } else {
                 appendJustified(a, sb);
             }
@@ -4132,8 +4139,7 @@ public final class Formatter implements Closeable, Flushable {
                 StringBuilder tsb = new StringBuilder();
                 print(tsb, t, DateTime.AM_PM, l);
 
-                sb.append(tsb.toString().toUpperCase(Objects.requireNonNullElse(l,
-                                               Locale.getDefault(Locale.Category.FORMAT))));
+                sb.append(toUpperCaseWithLocale(tsb.toString(), l));
                 break;
             }
             case DateTime.DATE_TIME:    { // 'c' (Sat Nov 04 12:02:33 EST 1999)
@@ -4171,7 +4177,7 @@ public final class Formatter implements Closeable, Flushable {
             print(sb, t, c, l);
             // justify based on width
             if (f.contains(Flags.UPPERCASE)) {
-                appendJustified(a, sb.toString().toUpperCase(Locale.getDefault(Locale.Category.FORMAT)));
+                appendJustified(a, toUpperCaseWithLocale(sb.toString(), l));
             } else {
                 appendJustified(a, sb);
             }
@@ -4373,8 +4379,7 @@ public final class Formatter implements Closeable, Flushable {
                     // this may be in wrong place for some locales
                     StringBuilder tsb = new StringBuilder();
                     print(tsb, t, DateTime.AM_PM, l);
-                    sb.append(tsb.toString().toUpperCase(Objects.requireNonNullElse(l,
-                                        Locale.getDefault(Locale.Category.FORMAT))));
+                    sb.append(toUpperCaseWithLocale(tsb.toString(), l));
                     break;
                 }
                 case DateTime.DATE_TIME:    { // 'c' (Sat Nov 04 12:02:33 EST 1999)
@@ -4474,8 +4479,33 @@ public final class Formatter implements Closeable, Flushable {
                 } else {
                     DecimalFormatSymbols dfs = DecimalFormatSymbols.getInstance(l);
                     grpSep = dfs.getGroupingSeparator();
-                    DecimalFormat df = (DecimalFormat) NumberFormat.getIntegerInstance(l);
+                    DecimalFormat df = null;
+                    NumberFormat nf = NumberFormat.getNumberInstance(l);
+                    if (nf instanceof DecimalFormat) {
+                        df = (DecimalFormat) nf;
+                    } else {
+
+                        // Use DecimalFormat constructor to obtain the instance,
+                        // in case NumberFormat.getNumberInstance(l)
+                        // returns instance other than DecimalFormat
+                        LocaleProviderAdapter adapter = LocaleProviderAdapter
+                                .getAdapter(NumberFormatProvider.class, l);
+                        if (!(adapter instanceof ResourceBundleBasedAdapter)) {
+                            adapter = LocaleProviderAdapter.getResourceBundleBased();
+                        }
+                        String[] all = adapter.getLocaleResources(l)
+                                .getNumberPatterns();
+                        df = new DecimalFormat(all[0], dfs);
+                    }
                     grpSize = df.getGroupingSize();
+                    // Some locales do not use grouping (the number
+                    // pattern for these locales does not contain group, e.g.
+                    // ("#0.###")), but specify a grouping separator.
+                    // To avoid unnecessary identification of the position of
+                    // grouping separator, reset its value with null character
+                    if (!df.isGroupingUsed() || grpSize == 0) {
+                        grpSep = '\0';
+                    }
                 }
             }
 

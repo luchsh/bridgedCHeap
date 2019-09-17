@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,6 +21,8 @@
  * questions.
  */
 
+package gc.g1;
+
 /*
  * @test TestGCLogMessages
  * @bug 8035406 8027295 8035398 8019342 8027959 8048179 8027962 8069330 8076463 8150630 8160055 8177059 8166191
@@ -33,7 +35,7 @@
  *          java.management
  * @build sun.hotspot.WhiteBox
  * @run driver ClassFileInstaller sun.hotspot.WhiteBox
- * @run main TestGCLogMessages
+ * @run main gc.g1.TestGCLogMessages
  */
 
 import jdk.test.lib.process.OutputAnalyzer;
@@ -98,15 +100,18 @@ public class TestGCLogMessages {
         new LogMessageWithLevel("Processed Buffers", Level.DEBUG),
         new LogMessageWithLevel("Scanned Cards", Level.DEBUG),
         new LogMessageWithLevel("Skipped Cards", Level.DEBUG),
-        new LogMessageWithLevel("Scan HCC", Level.TRACE),
+        new LogMessageWithLevel("Scan HCC", Level.DEBUG),
         // Scan RS
         new LogMessageWithLevel("Scan RS", Level.DEBUG),
         new LogMessageWithLevel("Scanned Cards", Level.DEBUG),
         new LogMessageWithLevel("Claimed Cards", Level.DEBUG),
         new LogMessageWithLevel("Skipped Cards", Level.DEBUG),
+        // Object Copy
+        new LogMessageWithLevel("Object Copy", Level.DEBUG),
+        new LogMessageWithLevel("Scanned Cards", Level.DEBUG),
+        new LogMessageWithLevel("Claimed Cards", Level.DEBUG),
         // Ext Root Scan
         new LogMessageWithLevel("Thread Roots", Level.TRACE),
-        new LogMessageWithLevel("StringTable Roots", Level.TRACE),
         new LogMessageWithLevel("Universe Roots", Level.TRACE),
         new LogMessageWithLevel("JNI Handles Roots", Level.TRACE),
         new LogMessageWithLevel("ObjectSynchronizer Roots", Level.TRACE),
@@ -114,7 +119,6 @@ public class TestGCLogMessages {
         new LogMessageWithLevel("SystemDictionary Roots", Level.TRACE),
         new LogMessageWithLevel("CLDG Roots", Level.TRACE),
         new LogMessageWithLevel("JVMTI Roots", Level.TRACE),
-        new LogMessageWithLevel("SATB Filtering", Level.TRACE),
         new LogMessageWithLevel("CM RefProcessor Roots", Level.TRACE),
         new LogMessageWithLevel("Wait For Strong CLD", Level.TRACE),
         new LogMessageWithLevel("Weak CLD Roots", Level.TRACE),
@@ -124,8 +128,11 @@ public class TestGCLogMessages {
         new LogMessageWithLevel("Redirtied Cards", Level.TRACE),
         // Misc Top-level
         new LogMessageWithLevel("Code Roots Purge", Level.DEBUG),
-        new LogMessageWithLevel("String Dedup Fixup", Level.DEBUG),
+        new LogMessageWithLevel("String Deduplication", Level.DEBUG),
+        new LogMessageWithLevel("Queue Fixup", Level.DEBUG),
+        new LogMessageWithLevel("Table Fixup", Level.DEBUG),
         new LogMessageWithLevel("Expand Heap After Collection", Level.DEBUG),
+        new LogMessageWithLevel("Region Register", Level.DEBUG),
         // Free CSet
         new LogMessageWithLevel("Free Collection Set", Level.DEBUG),
         new LogMessageWithLevel("Free Collection Set Serial", Level.TRACE),
@@ -133,9 +140,6 @@ public class TestGCLogMessages {
         new LogMessageWithLevel("Non-Young Free Collection Set", Level.TRACE),
         // Humongous Eager Reclaim
         new LogMessageWithLevel("Humongous Reclaim", Level.DEBUG),
-        new LogMessageWithLevel("Humongous Register", Level.DEBUG),
-        // Preserve CM Referents
-        new LogMessageWithLevel("Preserve CM Refs", Level.DEBUG),
         // Merge PSS
         new LogMessageWithLevel("Merge Per-Thread State", Level.DEBUG),
         // TLAB handling
@@ -143,7 +147,11 @@ public class TestGCLogMessages {
         new LogMessageWithLevel("Resize TLABs", Level.DEBUG),
         // Reference Processing
         new LogMessageWithLevel("Reference Processing", Level.DEBUG),
-        new LogMessageWithLevel("Reference Enqueuing", Level.DEBUG),
+        // VM internal reference processing
+        new LogMessageWithLevel("Weak Processing", Level.DEBUG),
+        new LogMessageWithLevel("JNI weak processing", Level.DEBUG),
+        new LogMessageWithLevel("StringTable weak processing", Level.DEBUG),
+        new LogMessageWithLevel("VM weak processing", Level.DEBUG),
 
         new LogMessageWithLevelC2OrJVMCIOnly("DerivedPointerTable Update", Level.DEBUG),
         new LogMessageWithLevel("Start New Collection Set", Level.DEBUG),

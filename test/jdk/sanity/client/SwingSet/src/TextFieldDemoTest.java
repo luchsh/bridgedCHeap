@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,6 +32,7 @@ import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
 import javax.swing.JFormattedTextField;
+import javax.swing.UIManager;
 
 import static org.jemmy2ext.JemmyExt.*;
 
@@ -64,14 +65,14 @@ import static org.testng.AssertJUnit.*;
  *          java.logging
  * @build org.jemmy2ext.JemmyExt
  * @build com.sun.swingset3.demos.textfield.TextFieldDemo
- * @run testng TextFieldDemoTest
+ * @run testng/timeout=600 TextFieldDemoTest
  */
 @Listeners(GuiTestListener.class)
 public class TextFieldDemoTest {
 
-    @Test
-    public void test() throws Exception {
-
+    @Test(dataProvider = "availableLookAndFeels", dataProviderClass = TestHelpers.class)
+    public void test(String lookAndFeel) throws Exception {
+        UIManager.setLookAndFeel(lookAndFeel);
         new ClassReference(TextFieldDemo.class.getCanonicalName()).startApplication();
 
         JFrameOperator frame = new JFrameOperator(DEMO_TITLE);
@@ -101,6 +102,7 @@ public class TextFieldDemoTest {
         JButtonOperator jbo = new JButtonOperator(containerOperator, GO);
         JLabelOperator dowLabel = new JLabelOperator(containerOperator);
         Calendar calendar = Calendar.getInstance(Locale.ENGLISH);
+        calendar.setTime((Date) getUIValue(jtfo, jtf -> ((JFormattedTextField)jtf).getValue()));
 
         // Check default date Day of the Week
         jbo.push();
@@ -143,11 +145,12 @@ public class TextFieldDemoTest {
         });
 
         // Check non-matching passwords
+        final Color backgroundColor = UIManager.getColor("TextField.background");
         password2.typeText("passwereertegrs");
         password1.waitState(new ComponentChooser() {
             public boolean checkComponent(Component comp) {
-                return password1.getBackground().equals(Color.white) &&
-                       password2.getBackground().equals(Color.white);
+                return password1.getBackground().equals(backgroundColor) &&
+                       password2.getBackground().equals(backgroundColor);
             }
             public String getDescription() {
                 return "Passwords not to match";

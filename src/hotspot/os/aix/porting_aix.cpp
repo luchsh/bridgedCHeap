@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2013 SAP SE. All rights reserved.
+ * Copyright (c) 2012, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,7 +34,15 @@
 #include "utilities/align.hpp"
 #include "utilities/debug.hpp"
 
+// distinguish old xlc and xlclang++, where
+// <ibmdemangle.h> is suggested but not found in GA release (might come with a fix)
+#if defined(__clang__)
+#define DISABLE_DEMANGLE
+// #include <ibmdemangle.h>
+#else
 #include <demangle.h>
+#endif
+
 #include <sys/debug.h>
 #include <pthread.h>
 #include <ucontext.h>
@@ -142,7 +150,7 @@ bool AixSymbols::get_function_name (
   // in that case I try reading the traceback table unsafe - I rather risk secondary crashes in
   // error files than not having a callstack.)
 #define CHECK_POINTER_READABLE(p) \
-  if (!MiscUtils::is_readable_pointer(p)) { \
+  if (!os::is_readable_pointer(p)) { \
     trcVerbose("pc not readable"); \
     return false; \
   }
@@ -230,13 +238,14 @@ bool AixSymbols::get_function_name (
       const short l = MIN2<short>(*((short*)pc2), namelen - 1);
       // Be very careful.
       int i = 0; char* const p = (char*)pc2 + sizeof(short);
-      while (i < l && MiscUtils::is_readable_pointer(p + i)) {
+      while (i < l && os::is_readable_pointer(p + i)) {
         p_name[i] = p[i];
         i++;
       }
       p_name[i] = '\0';
 
       // If it is a C++ name, try and demangle it using the Demangle interface (see demangle.h).
+#ifndef DISABLE_DEMANGLE
       if (demangle) {
         char* rest;
         Name* const name = Demangle(p_name, rest);
@@ -249,6 +258,7 @@ bool AixSymbols::get_function_name (
           delete name;
         }
       }
+#endif
     } else {
       strncpy(p_name, "<nameless function>", namelen-1);
       p_name[namelen-1] = '\0';
@@ -489,7 +499,7 @@ static void print_info_for_pc (outputStream* st, codeptr_t pc, char* buf,
   const struct tbtable* tb = NULL;
   int displacement = -1;
 
-  if (!MiscUtils::is_readable_pointer(pc)) {
+  if (!os::is_readable_pointer(pc)) {
     st->print("(invalid)");
     return;
   }
@@ -697,7 +707,7 @@ void AixNativeCallstack::print_callstack_for_context(outputStream* st, const uco
   print_info_for_pc(st, cur_iar, buf, buf_size, demangle);
   st->cr();
 
-  if (cur_iar && MiscUtils::is_readable_pointer(cur_iar)) {
+  if (cur_iar && os::is_readable_pointer(cur_iar)) {
     decode_instructions_at_pc(
       "Decoded instructions at iar:",
       cur_iar, 32, 16, st);
@@ -710,7 +720,7 @@ void AixNativeCallstack::print_callstack_for_context(outputStream* st, const uco
   print_info_for_pc(st, cur_lr, buf, buf_size, demangle);
   st->cr();
 
-  if (cur_lr && MiscUtils::is_readable_pointer(cur_lr)) {
+  if (cur_lr && os::is_readable_pointer(cur_lr)) {
     decode_instructions_at_pc(
       "Decoded instructions at lr:",
       cur_lr, 32, 16, st);
@@ -729,7 +739,7 @@ void AixNativeCallstack::print_callstack_for_context(outputStream* st, const uco
   // Check and print rtoc.
   st->print("rtoc: "  PTR64_FORMAT " ", p2i(cur_rtoc));
   if (cur_rtoc == NULL || cur_rtoc == (codeptr_t)-1 ||
-      !MiscUtils::is_readable_pointer(cur_rtoc)) {
+      !os::is_readable_pointer(cur_rtoc)) {
     st->print("(invalid)");
   } else if (((uintptr_t)cur_rtoc) & 0x7) {
     st->print("(unaligned)");

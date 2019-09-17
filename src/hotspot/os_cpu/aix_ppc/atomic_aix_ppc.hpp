@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2014 SAP SE. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,11 +23,11 @@
  *
  */
 
-#ifndef OS_CPU_AIX_OJDKPPC_VM_ATOMIC_AIX_PPC_HPP
-#define OS_CPU_AIX_OJDKPPC_VM_ATOMIC_AIX_PPC_HPP
+#ifndef OS_CPU_AIX_PPC_ATOMIC_AIX_PPC_HPP
+#define OS_CPU_AIX_PPC_ATOMIC_AIX_PPC_HPP
 
-#ifndef _LP64
-#error "Atomic currently only impleneted for PPC64"
+#ifndef PPC64
+#error "Atomic currently only implemented for PPC64"
 #endif
 
 #include "utilities/debug.hpp"
@@ -35,76 +35,91 @@
 // Implementation of class atomic
 
 //
-//   machine barrier instructions:
+// machine barrier instructions:
 //
-//   - ppc_sync            two-way memory barrier, aka fence
-//   - ppc_lwsync          orders  Store|Store,
-//                                  Load|Store,
-//                                  Load|Load,
-//                         but not Store|Load
-//   - ppc_eieio           orders memory accesses for device memory (only)
-//   - ppc_isync           invalidates speculatively executed instructions
-//                         From the POWER ISA 2.06 documentation:
-//                          "[...] an isync instruction prevents the execution of
-//                         instructions following the isync until instructions
-//                         preceding the isync have completed, [...]"
-//                         From IBM's AIX assembler reference:
-//                          "The isync [...] instructions causes the processor to
-//                         refetch any instructions that might have been fetched
-//                         prior to the isync instruction. The instruction isync
-//                         causes the processor to wait for all previous instructions
-//                         to complete. Then any instructions already fetched are
-//                         discarded and instruction processing continues in the
-//                         environment established by the previous instructions."
+// - sync            two-way memory barrier, aka fence
+// - lwsync          orders  Store|Store,
+//                            Load|Store,
+//                            Load|Load,
+//                   but not Store|Load
+// - eieio           orders memory accesses for device memory (only)
+// - isync           invalidates speculatively executed instructions
+//                   From the POWER ISA 2.06 documentation:
+//                    "[...] an isync instruction prevents the execution of
+//                   instructions following the isync until instructions
+//                   preceding the isync have completed, [...]"
+//                   From IBM's AIX assembler reference:
+//                    "The isync [...] instructions causes the processor to
+//                   refetch any instructions that might have been fetched
+//                   prior to the isync instruction. The instruction isync
+//                   causes the processor to wait for all previous instructions
+//                   to complete. Then any instructions already fetched are
+//                   discarded and instruction processing continues in the
+//                   environment established by the previous instructions."
 //
-//   semantic barrier instructions:
-//   (as defined in orderAccess.hpp)
+// semantic barrier instructions:
+// (as defined in orderAccess.hpp)
 //
-//   - ppc_release         orders Store|Store,       (maps to ppc_lwsync)
-//                                 Load|Store
-//   - ppc_acquire         orders  Load|Store,       (maps to ppc_lwsync)
-//                                 Load|Load
-//   - ppc_fence           orders Store|Store,       (maps to ppc_sync)
-//                                 Load|Store,
-//                                 Load|Load,
-//                                Store|Load
+// - release         orders Store|Store,       (maps to lwsync)
+//                           Load|Store
+// - acquire         orders  Load|Store,       (maps to lwsync)
+//                           Load|Load
+// - fence           orders Store|Store,       (maps to sync)
+//                           Load|Store,
+//                           Load|Load,
+//                          Store|Load
 //
 
-#define strasm_sync                       "\n  sync    \n"
-#define strasm_lwsync                     "\n  lwsync  \n"
-#define strasm_isync                      "\n  isync   \n"
-#define strasm_release                    strasm_lwsync
-#define strasm_acquire                    strasm_lwsync
-#define strasm_fence                      strasm_sync
-#define strasm_nobarrier                  ""
-#define strasm_nobarrier_clobber_memory   ""
+inline void pre_membar(atomic_memory_order order) {
+  switch (order) {
+    case memory_order_relaxed:
+    case memory_order_acquire: break;
+    case memory_order_release:
+    case memory_order_acq_rel: __asm__ __volatile__ ("lwsync" : : : "memory"); break;
+    default /*conservative*/ : __asm__ __volatile__ ("sync"   : : : "memory"); break;
+  }
+}
+
+inline void post_membar(atomic_memory_order order) {
+  switch (order) {
+    case memory_order_relaxed:
+    case memory_order_release: break;
+    case memory_order_acquire:
+    case memory_order_acq_rel: __asm__ __volatile__ ("isync"  : : : "memory"); break;
+    default /*conservative*/ : __asm__ __volatile__ ("sync"   : : : "memory"); break;
+  }
+}
+
 
 template<size_t byte_size>
 struct Atomic::PlatformAdd
   : Atomic::AddAndFetch<Atomic::PlatformAdd<byte_size> >
 {
   template<typename I, typename D>
-  D add_and_fetch(I add_value, D volatile* dest) const;
+  D add_and_fetch(I add_value, D volatile* dest, atomic_memory_order order) const;
 };
 
 template<>
 template<typename I, typename D>
-inline D Atomic::PlatformAdd<4>::add_and_fetch(I add_value, D volatile* dest) const {
+inline D Atomic::PlatformAdd<4>::add_and_fetch(I add_value, D volatile* dest,
+                                               atomic_memory_order order) const {
   STATIC_ASSERT(4 == sizeof(I));
   STATIC_ASSERT(4 == sizeof(D));
 
   D result;
 
+  pre_membar(order);
+
   __asm__ __volatile__ (
-    strasm_lwsync
     "1: lwarx   %0,  0, %2    \n"
     "   add     %0, %0, %1    \n"
     "   stwcx.  %0,  0, %2    \n"
     "   bne-    1b            \n"
-    strasm_isync
     : /*%0*/"=&r" (result)
     : /*%1*/"r" (add_value), /*%2*/"r" (dest)
     : "cc", "memory" );
+
+  post_membar(order);
 
   return result;
 }
@@ -112,22 +127,25 @@ inline D Atomic::PlatformAdd<4>::add_and_fetch(I add_value, D volatile* dest) co
 
 template<>
 template<typename I, typename D>
-inline D Atomic::PlatformAdd<8>::add_and_fetch(I add_value, D volatile* dest) const {
+inline D Atomic::PlatformAdd<8>::add_and_fetch(I add_value, D volatile* dest,
+                                               atomic_memory_order order) const {
   STATIC_ASSERT(8 == sizeof(I));
   STATIC_ASSERT(8 == sizeof(D));
 
   D result;
 
+  pre_membar(order);
+
   __asm__ __volatile__ (
-    strasm_lwsync
     "1: ldarx   %0,  0, %2    \n"
     "   add     %0, %0, %1    \n"
     "   stdcx.  %0,  0, %2    \n"
     "   bne-    1b            \n"
-    strasm_isync
     : /*%0*/"=&r" (result)
     : /*%1*/"r" (add_value), /*%2*/"r" (dest)
     : "cc", "memory" );
+
+  post_membar(order);
 
   return result;
 }
@@ -135,24 +153,22 @@ inline D Atomic::PlatformAdd<8>::add_and_fetch(I add_value, D volatile* dest) co
 template<>
 template<typename T>
 inline T Atomic::PlatformXchg<4>::operator()(T exchange_value,
-                                             T volatile* dest) const {
-  STATIC_ASSERT(4 == sizeof(T));
+                                             T volatile* dest,
+                                             atomic_memory_order order) const {
   // Note that xchg doesn't necessarily do an acquire
   // (see synchronizer.cpp).
 
   T old_value;
   const uint64_t zero = 0;
 
+  pre_membar(order);
+
   __asm__ __volatile__ (
-    /* lwsync */
-    strasm_lwsync
     /* atomic loop */
     "1:                                                 \n"
     "   lwarx   %[old_value], %[dest], %[zero]          \n"
     "   stwcx.  %[exchange_value], %[dest], %[zero]     \n"
     "   bne-    1b                                      \n"
-    /* isync */
-    strasm_sync
     /* exit */
     "2:                                                 \n"
     /* out */
@@ -167,6 +183,8 @@ inline T Atomic::PlatformXchg<4>::operator()(T exchange_value,
     : "cc",
       "memory"
     );
+
+  post_membar(order);
 
   return old_value;
 }
@@ -174,7 +192,8 @@ inline T Atomic::PlatformXchg<4>::operator()(T exchange_value,
 template<>
 template<typename T>
 inline T Atomic::PlatformXchg<8>::operator()(T exchange_value,
-                                             T volatile* dest) const {
+                                             T volatile* dest,
+                                             atomic_memory_order order) const {
   STATIC_ASSERT(8 == sizeof(T));
   // Note that xchg doesn't necessarily do an acquire
   // (see synchronizer.cpp).
@@ -182,16 +201,14 @@ inline T Atomic::PlatformXchg<8>::operator()(T exchange_value,
   T old_value;
   const uint64_t zero = 0;
 
+  pre_membar(order);
+
   __asm__ __volatile__ (
-    /* lwsync */
-    strasm_lwsync
     /* atomic loop */
     "1:                                                 \n"
     "   ldarx   %[old_value], %[dest], %[zero]          \n"
     "   stdcx.  %[exchange_value], %[dest], %[zero]     \n"
     "   bne-    1b                                      \n"
-    /* isync */
-    strasm_sync
     /* exit */
     "2:                                                 \n"
     /* out */
@@ -207,25 +224,9 @@ inline T Atomic::PlatformXchg<8>::operator()(T exchange_value,
       "memory"
     );
 
+  post_membar(order);
+
   return old_value;
-}
-
-inline void cmpxchg_pre_membar(cmpxchg_memory_order order) {
-  if (order != memory_order_relaxed) {
-    __asm__ __volatile__ (
-      /* fence */
-      strasm_sync
-      );
-  }
-}
-
-inline void cmpxchg_post_membar(cmpxchg_memory_order order) {
-  if (order != memory_order_relaxed) {
-    __asm__ __volatile__ (
-      /* fence */
-      strasm_sync
-      );
-  }
 }
 
 template<>
@@ -233,7 +234,7 @@ template<typename T>
 inline T Atomic::PlatformCmpxchg<1>::operator()(T exchange_value,
                                                 T volatile* dest,
                                                 T compare_value,
-                                                cmpxchg_memory_order order) const {
+                                                atomic_memory_order order) const {
   STATIC_ASSERT(1 == sizeof(T));
 
   // Note that cmpxchg guarantees a two-way memory barrier across
@@ -254,7 +255,7 @@ inline T Atomic::PlatformCmpxchg<1>::operator()(T exchange_value,
 
   unsigned int old_value, value32;
 
-  cmpxchg_pre_membar(order);
+  pre_membar(order);
 
   __asm__ __volatile__ (
     /* simple guard */
@@ -293,7 +294,7 @@ inline T Atomic::PlatformCmpxchg<1>::operator()(T exchange_value,
       "memory"
     );
 
-  cmpxchg_post_membar(order);
+  post_membar(order);
 
   return PrimitiveConversions::cast<T>((unsigned char)old_value);
 }
@@ -303,7 +304,7 @@ template<typename T>
 inline T Atomic::PlatformCmpxchg<4>::operator()(T exchange_value,
                                                 T volatile* dest,
                                                 T compare_value,
-                                                cmpxchg_memory_order order) const {
+                                                atomic_memory_order order) const {
   STATIC_ASSERT(4 == sizeof(T));
 
   // Note that cmpxchg guarantees a two-way memory barrier across
@@ -313,7 +314,7 @@ inline T Atomic::PlatformCmpxchg<4>::operator()(T exchange_value,
   T old_value;
   const uint64_t zero = 0;
 
-  cmpxchg_pre_membar(order);
+  pre_membar(order);
 
   __asm__ __volatile__ (
     /* simple guard */
@@ -343,7 +344,7 @@ inline T Atomic::PlatformCmpxchg<4>::operator()(T exchange_value,
       "memory"
     );
 
-  cmpxchg_post_membar(order);
+  post_membar(order);
 
   return old_value;
 }
@@ -353,7 +354,7 @@ template<typename T>
 inline T Atomic::PlatformCmpxchg<8>::operator()(T exchange_value,
                                                 T volatile* dest,
                                                 T compare_value,
-                                                cmpxchg_memory_order order) const {
+                                                atomic_memory_order order) const {
   STATIC_ASSERT(8 == sizeof(T));
 
   // Note that cmpxchg guarantees a two-way memory barrier across
@@ -363,7 +364,7 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T exchange_value,
   T old_value;
   const uint64_t zero = 0;
 
-  cmpxchg_pre_membar(order);
+  pre_membar(order);
 
   __asm__ __volatile__ (
     /* simple guard */
@@ -393,18 +394,9 @@ inline T Atomic::PlatformCmpxchg<8>::operator()(T exchange_value,
       "memory"
     );
 
-  cmpxchg_post_membar(order);
+  post_membar(order);
 
   return old_value;
 }
 
-#undef strasm_sync
-#undef strasm_lwsync
-#undef strasm_isync
-#undef strasm_release
-#undef strasm_acquire
-#undef strasm_fence
-#undef strasm_nobarrier
-#undef strasm_nobarrier_clobber_memory
-
-#endif // OS_CPU_AIX_OJDKPPC_VM_ATOMIC_AIX_PPC_HPP
+#endif // OS_CPU_AIX_PPC_ATOMIC_AIX_PPC_HPP

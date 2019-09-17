@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,8 +37,8 @@ import jdk.javadoc.internal.doclets.toolkit.Content;
 import jdk.javadoc.internal.doclets.toolkit.DocletException;
 import jdk.javadoc.internal.doclets.toolkit.MethodWriter;
 import jdk.javadoc.internal.doclets.toolkit.util.DocFinder;
-import jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberMap;
 
+import static jdk.javadoc.internal.doclets.toolkit.util.VisibleMemberTable.Kind.*;
 
 /**
  * Builds documentation for a method.
@@ -60,16 +60,6 @@ public class MethodBuilder extends AbstractMemberBuilder {
     private ExecutableElement currentMethod;
 
     /**
-     * The class whose methods are being documented.
-     */
-    private final TypeElement typeElement;
-
-    /**
-     * The visible methods for the given class.
-     */
-    private final VisibleMemberMap visibleMemberMap;
-
-    /**
      * The writer to output the method documentation.
      */
     private final MethodWriter writer;
@@ -77,7 +67,7 @@ public class MethodBuilder extends AbstractMemberBuilder {
     /**
      * The methods being documented.
      */
-    private final List<Element> methods;
+    private final List<? extends Element> methods;
 
 
     /**
@@ -90,12 +80,9 @@ public class MethodBuilder extends AbstractMemberBuilder {
     private MethodBuilder(Context context,
             TypeElement typeElement,
             MethodWriter writer) {
-        super(context);
-        this.typeElement = typeElement;
+        super(context, typeElement);
         this.writer = writer;
-        visibleMemberMap = configuration.getVisibleMemberMap(typeElement,
-                VisibleMemberMap.Kind.METHODS);
-        methods = visibleMemberMap.getLeafMembers();
+        methods = getVisibleMembers(METHODS);
     }
 
     /**
@@ -139,10 +126,10 @@ public class MethodBuilder extends AbstractMemberBuilder {
             return;
         }
         if (hasMembersToDocument()) {
-            Content methodDetailsTree = writer.getMethodDetailsTreeHeader(typeElement,
+            Content methodDetailsTreeHeader = writer.getMethodDetailsTreeHeader(typeElement,
                     memberDetailsTree);
+            Content methodDetailsTree = writer.getMemberTreeHeader();
 
-            Element lastElement = methods.get(methods.size() - 1);
             for (Element method : methods) {
                 currentMethod = (ExecutableElement)method;
                 Content methodDocTree = writer.getMethodDocTreeHeader(currentMethod, methodDetailsTree);
@@ -152,10 +139,9 @@ public class MethodBuilder extends AbstractMemberBuilder {
                 buildMethodComments(methodDocTree);
                 buildTagInfo(methodDocTree);
 
-                methodDetailsTree.addContent(writer.getMethodDoc(
-                        methodDocTree, currentMethod == lastElement));
+                methodDetailsTree.add(writer.getMethodDoc(methodDocTree));
             }
-            memberDetailsTree.addContent(writer.getMethodDetails(methodDetailsTree));
+            memberDetailsTree.add(writer.getMethodDetails(methodDetailsTreeHeader, methodDetailsTree));
         }
     }
 
@@ -165,7 +151,7 @@ public class MethodBuilder extends AbstractMemberBuilder {
      * @param methodDocTree the content tree to which the documentation will be added
      */
     protected void buildSignature(Content methodDocTree) {
-        methodDocTree.addContent(writer.getSignature(currentMethod));
+        methodDocTree.add(writer.getSignature(currentMethod));
     }
 
     /**

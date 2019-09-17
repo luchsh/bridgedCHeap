@@ -24,7 +24,6 @@ such as:
 
 So how about stop automatic memory management, and delegate some even all the work
 to native library (glibc, jemalloc, etc.) ?
-just like what we did in the dark age before Saint James Gosling's enlightenment :P
 
 The idea was inspired by OpenJDK's [Epsilon GC proposal](http://openjdk.java.net/jeps/318), which does not do GC either.
 This project steps forward by trying to leverage native memory management

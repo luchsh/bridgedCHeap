@@ -26,12 +26,13 @@ import java.awt.image.BufferedImage;
 
 /*
  * @test
+ * @key headful
  * @summary Check the return value of the getActionCommand method
  *          of the ActionEvent triggered when TrayIcon is double clicked
  *          (single clicked, on Mac)
  * @author Dmitriy Ermashov (dmitriy.ermashov@oracle.com)
  * @modules java.desktop/java.awt:open
- * @library ../../../../lib/testlibrary ../
+ * @library /lib/client ../
  * @library /java/awt/patchlib
  * @build java.desktop/java.awt.Helper
  * @build ExtendedRobot SystemTrayIconHelper

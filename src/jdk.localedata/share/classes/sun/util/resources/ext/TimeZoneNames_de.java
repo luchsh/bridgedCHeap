@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -371,7 +371,7 @@ public final class TimeZoneNames_de extends TimeZoneNamesBundle {
             {"Africa/Nouakchott", GMT},
             {"Africa/Ouagadougou", GMT},
             {"Africa/Porto-Novo", WAT},
-            {"Africa/Sao_Tome", WAT},
+            {"Africa/Sao_Tome", GMT},
             {"Africa/Timbuktu", GMT},
             {"Africa/Tripoli", EET},
             {"Africa/Tunis", CET},
@@ -446,7 +446,7 @@ public final class TimeZoneNames_de extends TimeZoneNamesBundle {
                                               "Westgr\u00f6nl\u00e4ndische Sommerzeit", "WGST",
                                               "Westgr\u00F6nl\u00E4ndische Zeit", "WGT"}},
             {"America/Goose_Bay", AST},
-            {"America/Grand_Turk", AST},
+            {"America/Grand_Turk", EST},
             {"America/Grenada", AST},
             {"America/Guadeloupe", AST},
             {"America/Guatemala", CST},
@@ -667,9 +667,9 @@ public final class TimeZoneNames_de extends TimeZoneNamesBundle {
                                            "Magadanische Sommerzeit", "MAGST",
                                            "Magadanische Zeit", "MAGT"}},
             {"Asia/Makassar", CIT},
-            {"Asia/Manila", new String[] {"Philippinische Zeit", "PHT",
-                                          "Philippinische Sommerzeit", "PHST",
-                                          "Philippinische Zeit", "PHT"}},
+            {"Asia/Manila", new String[] {"Philippines Standard Time", "PST",
+                                          "Philippines Daylight Time", "PDT",
+                                          "Philippines Time", "PT"}},
             {"Asia/Muscat", GST},
             {"Asia/Nicosia", EET},
             {"Asia/Novokuznetsk", KRAT},

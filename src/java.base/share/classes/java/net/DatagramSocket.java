@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.nio.channels.DatagramChannel;
 import java.security.AccessController;
 import java.security.PrivilegedExceptionAction;
+import java.util.Objects;
 import java.util.Set;
 import java.util.Collections;
 
@@ -304,7 +305,7 @@ class DatagramSocket implements java.io.Closeable {
     private void checkOldImpl() {
         if (impl == null)
             return;
-        // DatagramSocketImpl.peekdata() is a protected method, therefore we need to use
+        // DatagramSocketImpl.peekData() is a protected method, therefore we need to use
         // getDeclaredMethod, therefore we need permission to access the member
         try {
             AccessController.doPrivileged(
@@ -660,7 +661,7 @@ class DatagramSocket implements java.io.Closeable {
                 throw new SocketException("Socket is closed");
             checkAddress (p.getAddress(), "send");
             if (connectState == ST_NOT_CONNECTED) {
-                // check the address is ok wiht the security manager on every send.
+                // check the address is ok with the security manager on every send.
                 SecurityManager security = System.getSecurityManager();
 
                 // The reason you want to synchronize on datagram packet
@@ -1070,7 +1071,7 @@ class DatagramSocket implements java.io.Closeable {
      *
      * @param on  whether to enable or disable the
      * @exception SocketException if an error occurs enabling or
-     *            disabling the {@code SO_RESUEADDR} socket option,
+     *            disabling the {@code SO_REUSEADDR} socket option,
      *            or the socket is closed.
      * @since 1.4
      * @see #getReuseAddress()
@@ -1343,6 +1344,9 @@ class DatagramSocket implements java.io.Closeable {
     public <T> DatagramSocket setOption(SocketOption<T> name, T value)
         throws IOException
     {
+        Objects.requireNonNull(name);
+        if (isClosed())
+            throw new SocketException("Socket is closed");
         getImpl().setOption(name, value);
         return this;
     }
@@ -1371,6 +1375,9 @@ class DatagramSocket implements java.io.Closeable {
      * @since 9
      */
     public <T> T getOption(SocketOption<T> name) throws IOException {
+        Objects.requireNonNull(name);
+        if (isClosed())
+            throw new SocketException("Socket is closed");
         return getImpl().getOption(name);
     }
 

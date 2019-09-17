@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,23 +25,22 @@
 /*
  * @test
  * @summary Exercise GC with shared strings
- * @requires vm.cds
- * @requires vm.gc.G1
- * @requires (sun.arch.data.model != "32") & (os.family != "windows")
+ * @requires vm.cds.archived.java.heap
  * @library /test/hotspot/jtreg/runtime/appcds /test/lib
- * @modules java.base/jdk.internal.misc
- * @modules java.management
- *          jdk.jartool/sun.tools.jar
+ * @modules jdk.jartool/sun.tools.jar
  * @build HelloStringGC sun.hotspot.WhiteBox
  * @run driver ClassFileInstaller sun.hotspot.WhiteBox
- * @run main ExerciseGC
+ * @run driver ExerciseGC
  */
 public class ExerciseGC {
     public static void main(String[] args) throws Exception {
+        SharedStringsUtils.run(args, ExerciseGC::test);
+    }
+    public static void test(String[] args) throws Exception {
         SharedStringsUtils.buildJarAndWhiteBox("HelloStringGC");
 
         SharedStringsUtils.dumpWithWhiteBox(TestCommon.list("HelloStringGC"),
-            "SharedStringsBasic.txt");
+            "SharedStringsBasic.txt", "-Xlog:cds,cds+hashtables");
 
         SharedStringsUtils.runWithArchiveAndWhiteBox("HelloStringGC",
             "-XX:+UnlockDiagnosticVMOptions", "-XX:+VerifyBeforeGC");

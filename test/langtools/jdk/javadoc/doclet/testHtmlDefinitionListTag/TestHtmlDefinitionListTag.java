@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,18 +23,20 @@
 
 /*
  * @test
- * @bug 6786690 6820360 8025633 8026567 8175200 8183511 8186332 8074407
+ * @bug 6786690 6820360 8025633 8026567 8175200 8183511 8186332 8074407 8182765
  * @summary This test verifies the nesting of definition list tags.
  * @author Bhavesh Patel
- * @library ../lib
+ * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
- * @build JavadocTester
+ * @build javadoc.tester.*
  * @run main TestHtmlDefinitionListTag
  */
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import javadoc.tester.JavadocTester;
 
 public class TestHtmlDefinitionListTag extends JavadocTester {
 
@@ -44,7 +46,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
     }
 
     @Test
-    void test_Comment_Deprecated() {
+    public void test_Comment_Deprecated() {
 //        tester.run(ARGS1, TEST_ALL, NEGATED_TEST_NO_C5);
 //        tester.runTestsOnHTML(NO_TEST,  NEGATED_TEST_C5);
 //        tester.runTestsOnHTML(TEST_CMNT_DEPR, NO_TEST);
@@ -58,7 +60,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
     }
 
     @Test
-    void test_NoComment_Deprecated() {
+    public void test_NoComment_Deprecated() {
 //        tester.run(ARGS2, TEST_ALL, NEGATED_TEST_NO_C5);
 //        tester.runTestsOnHTML(NO_TEST,  NEGATED_TEST_C5);
 //        tester.runTestsOnHTML(NO_TEST, TEST_CMNT_DEPR);
@@ -73,7 +75,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
     }
 
     @Test
-    void test_Comment_NoDeprecated() {
+    public void test_Comment_NoDeprecated() {
 //        tester.run(ARGS3, TEST_ALL, NEGATED_TEST_NO_C5);
 //        tester.runTestsOnHTML(TEST_NODEPR, TEST_NOCMNT_NODEPR);
         javadoc("-Xdoclint:none",
@@ -88,7 +90,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
     }
 
     @Test
-    void testNoCommentNoDeprecated() {
+    public void testNoCommentNoDeprecated() {
 //        tester.run(ARGS4, TEST_ALL, NEGATED_TEST_NO_C5);
 //        tester.runTestsOnHTML(TEST_NOCMNT_NODEPR, TEST_CMNT_DEPR);
         javadoc("-Xdoclint:none",
@@ -166,7 +168,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "<dt><span class=\"simpleTagLabel\">Since:</span></dt>\n"
                 + "<dd>1.4</dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:</span></dt>\n"
-                + "<dd><a href=\"#setUndecorated-boolean-\">"
+                + "<dd><a href=\"#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a></dd>\n"
                 + "</dl>",
                 "<dl>\n"
@@ -193,7 +195,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "<dd>1.4</dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:</span></dt>\n"
                 + "<dd>"
-                + "<a href=\"#readObject--\"><code>readObject()"
+                + "<a href=\"#readObject()\"><code>readObject()"
                 + "</code></a></dd>\n"
                 + "</dl>",
                 "<dl>\n"
@@ -201,7 +203,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "<dd><code>java.io.IOException</code></dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:"
                 + "</span></dt>\n"
-                + "<dd><a href=\"#setUndecorated-boolean-\">"
+                + "<dd><a href=\"#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a></dd>\n"
                 + "</dl>");
 
@@ -223,12 +225,12 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "java.io.IOException</code></dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:</span>"
                 + "</dt>\n"
-                + "<dd><a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + "<dd><a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>C1.setUndecorated(boolean)</code></a></dd>\n"
                 + "</dl>",
                 "<span class=\"deprecatedLabel\">Deprecated.</span>\n"
                 + "<div class=\"deprecationComment\">As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a>.</div>\n"
                 + "</div>\n"
                 + "<div class=\"block\">This field indicates whether the C1 is "
@@ -239,12 +241,12 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "<dd>1.4</dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:</span>"
                 + "</dt>\n"
-                + "<dd><a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + "<dd><a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>C1.setUndecorated(boolean)</code></a></dd>\n"
                 + "</dl>",
                 "<span class=\"deprecatedLabel\">Deprecated.</span>\n"
                 + "<div class=\"deprecationComment\">As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a>.</div>\n"
                 + "</div>\n"
                 + "<div class=\"block\">Reads the object stream.</div>\n"
@@ -310,7 +312,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "<dt><span class=\"simpleTagLabel\">Since:</span></dt>\n"
                 + "<dd>1.4</dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:</span></dt>\n"
-                + "<dd><a href=\"#readObject--\">"
+                + "<dd><a href=\"#readObject()\">"
                 + "<code>readObject()</code></a></dd>\n"
                 + "</dl>",
                 "<dl>\n"
@@ -319,7 +321,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "<dd><code>java.io.IOException</code></dd>\n"
                 + "<dt>"
                 + "<span class=\"seeLabel\">See Also:</span></dt>\n"
-                + "<dd><a href=\"#setUndecorated-boolean-\">"
+                + "<dd><a href=\"#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a></dd>\n"
                 + "</dl>");
 
@@ -331,12 +333,12 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "java.io.IOException</code></dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:</span>"
                 + "</dt>\n"
-                + "<dd><a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + "<dd><a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>C1.setUndecorated(boolean)</code></a></dd>\n"
                 + "</dl>",
                 "<span class=\"deprecatedLabel\">Deprecated.</span>\n"
                 + "<div class=\"deprecationComment\">As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a>.</div>\n"
                 + "</div>\n"
                 + "<div class=\"block\">This field indicates whether the C1 is "
@@ -347,12 +349,12 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "<dd>1.4</dd>\n"
                 + "<dt><span class=\"seeLabel\">See Also:</span>"
                 + "</dt>\n"
-                + "<dd><a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + "<dd><a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>C1.setUndecorated(boolean)</code></a></dd>\n"
                 + "</dl>",
                 "<span class=\"deprecatedLabel\">Deprecated.</span>\n"
                 + "<div class=\"deprecationComment\">As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a>.</div>\n"
                 + "</div>\n"
                 + "<div class=\"block\">Reads the object stream.</div>\n"
@@ -371,19 +373,23 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
         // Test with -nocomment and -nodeprecated options. The ClassDocs whould
         // not display definition lists for any member details.
         checkOutput("pkg1/C1.html", expectFound,
-                "<pre>public&nbsp;void&nbsp;readObject()\n" +
-                "                throws java.io.IOException</pre>\n" +
+                "<div class=\"memberSignature\"><span class=\"modifiers\">public</span>&nbsp;" +
+                "<span class=\"returnType\">void</span>&nbsp;<span class=\"memberName\">readObject</span>()\n" +
+                "                throws <span class=\"exceptions\">java.io.IOException</span></div>\n" +
+                "</section>\n" +
                 "</li>");
 
         checkOutput("pkg1/C2.html", expectFound,
-                "<pre>public&nbsp;C2()</pre>\n" +
+                "<div class=\"memberSignature\"><span class=\"modifiers\">public</span>" +
+                "&nbsp;<span class=\"memberName\">C2</span>()</div>\n" +
+                "</section>\n" +
                 "</li>");
 
         checkOutput("pkg1/C1.ModalExclusionType.html", expectFound,
-                "<pre>public " +
-                "static final&nbsp;<a href=\"C1.ModalExclusionType.html\" " +
-                "title=\"enum in pkg1\">C1.ModalExclusionType</a> " +
-                "APPLICATION_EXCLUDE</pre>\n" +
+                "<div class=\"memberSignature\"><span class=\"modifiers\">public static final</span>&nbsp;" +
+                "<span class=\"returnType\"><a href=\"C1.ModalExclusionType.html\" title=\"enum in pkg1\">" +
+                "C1.ModalExclusionType</a></span>&nbsp;<span class=\"memberName\">APPLICATION_EXCLUDE</span></div>\n" +
+                "</section>\n" +
                 "</li>");
 
         checkOutput("serialized-form.html", expectFound,
@@ -392,7 +398,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 "<div class=\"deprecationBlock\"><span class=\"deprecatedLabel\">" +
                 "Deprecated.</span>\n"
                 + "<div class=\"deprecationComment\">As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated-boolean-\"><code>"
+                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\"><code>"
                 + "setUndecorated(boolean)</code></a>.</div>\n"
                 + "</div>\n"
                 +
@@ -401,7 +407,7 @@ public class TestHtmlDefinitionListTag extends JavadocTester {
                 + "Deprecated.</span>\n"
                 + "<div class=\"deprecationComment\">As of JDK version"
                 + " 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated-boolean-\">"
+                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
                 + "<code>setUndecorated(boolean)</code></a>.</div>\n"
                 + "</div>\n"
                 + "</li>");

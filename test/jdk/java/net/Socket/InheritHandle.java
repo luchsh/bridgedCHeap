@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2007, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,15 +22,19 @@
  */
 
 /* @test
-   @bug  6598160
-   @summary Windows IPv6 Socket implementation doesn't set the handle to not inherit
-   @author Chris Hegarty
+ * @bug  6598160
+ * @library /test/lib
+ * @summary Windows IPv6 Socket implementation doesn't set the handle to not inherit
+ * @author Chris Hegarty
+ * @run main InheritHandle
+ * @run main/othervm -Djava.net.preferIPv4Stack=true InheritHandle
  */
 
 import java.net.BindException;
 import java.net.ServerSocket;
 import java.io.File;
 import java.io.IOException;
+import jdk.test.lib.net.IPSupport;
 
 /**
  * This test is only really applicable to Windows machines that are running IPv6, but
@@ -43,6 +47,8 @@ public class InheritHandle
                          "bin" + File.separator + "java";
 
     public static void main(String[] args) {
+        IPSupport.throwSkippedExceptionIfNonOperational();
+
         if (args.length == 1) {
             doWait();
         } else {

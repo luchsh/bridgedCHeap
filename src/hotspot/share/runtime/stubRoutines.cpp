@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,7 @@
 #include "memory/resourceArea.hpp"
 #include "oops/access.inline.hpp"
 #include "oops/oop.inline.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/timerTrace.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
@@ -73,7 +73,6 @@ address StubRoutines::_d2l_wrapper                              = NULL;
 
 jint    StubRoutines::_fpu_cntrl_wrd_std                        = 0;
 jint    StubRoutines::_fpu_cntrl_wrd_24                         = 0;
-jint    StubRoutines::_fpu_cntrl_wrd_64                         = 0;
 jint    StubRoutines::_fpu_cntrl_wrd_trunc                      = 0;
 jint    StubRoutines::_mxcsr_std                                = 0;
 jint    StubRoutines::_fpu_subnormal_bias1[3]                   = { 0, 0, 0 };
@@ -128,6 +127,7 @@ address StubRoutines::_cipherBlockChaining_encryptAESCrypt = NULL;
 address StubRoutines::_cipherBlockChaining_decryptAESCrypt = NULL;
 address StubRoutines::_counterMode_AESCrypt                = NULL;
 address StubRoutines::_ghash_processBlocks                 = NULL;
+address StubRoutines::_base64_encodeBlock                  = NULL;
 
 address StubRoutines::_sha1_implCompress     = NULL;
 address StubRoutines::_sha1_implCompressMB   = NULL;
@@ -161,11 +161,6 @@ address StubRoutines::_dlibm_sin_cos_huge = NULL;
 address StubRoutines::_dlibm_reduce_pi04l = NULL;
 address StubRoutines::_dlibm_tan_cot_huge = NULL;
 address StubRoutines::_dtan = NULL;
-
-double (* StubRoutines::_intrinsic_log10 )(double) = NULL;
-double (* StubRoutines::_intrinsic_sin   )(double) = NULL;
-double (* StubRoutines::_intrinsic_cos   )(double) = NULL;
-double (* StubRoutines::_intrinsic_tan   )(double) = NULL;
 
 address StubRoutines::_safefetch32_entry                 = NULL;
 address StubRoutines::_safefetch32_fault_pc              = NULL;
@@ -410,7 +405,7 @@ JRT_LEAF(void, StubRoutines::oop_copy(oop* src, oop* dest, size_t count))
   SharedRuntime::_oop_array_copy_ctr++;        // Slow-path oop array copy
 #endif // !PRODUCT
   assert(count != 0, "count should be non-zero");
-  HeapAccess<>::oop_arraycopy(NULL, NULL, (HeapWord*)src, (HeapWord*)dest, count);
+  ArrayAccess<>::oop_arraycopy_raw((HeapWord*)src, (HeapWord*)dest, count);
 JRT_END
 
 JRT_LEAF(void, StubRoutines::oop_copy_uninit(oop* src, oop* dest, size_t count))
@@ -418,7 +413,7 @@ JRT_LEAF(void, StubRoutines::oop_copy_uninit(oop* src, oop* dest, size_t count))
   SharedRuntime::_oop_array_copy_ctr++;        // Slow-path oop array copy
 #endif // !PRODUCT
   assert(count != 0, "count should be non-zero");
-  HeapAccess<ARRAYCOPY_DEST_NOT_INITIALIZED>::oop_arraycopy(NULL, NULL, (HeapWord*)src, (HeapWord*)dest, count);
+  ArrayAccess<IS_DEST_UNINITIALIZED>::oop_arraycopy_raw((HeapWord*)src, (HeapWord*)dest, count);
 JRT_END
 
 JRT_LEAF(void, StubRoutines::arrayof_jbyte_copy(HeapWord* src, HeapWord* dest, size_t count))
@@ -454,7 +449,7 @@ JRT_LEAF(void, StubRoutines::arrayof_oop_copy(HeapWord* src, HeapWord* dest, siz
   SharedRuntime::_oop_array_copy_ctr++;        // Slow-path oop array copy
 #endif // !PRODUCT
   assert(count != 0, "count should be non-zero");
-  HeapAccess<ARRAYCOPY_ARRAYOF>::oop_arraycopy(NULL, NULL, src, dest, count);
+  ArrayAccess<ARRAYCOPY_ARRAYOF>::oop_arraycopy_raw(src, dest, count);
 JRT_END
 
 JRT_LEAF(void, StubRoutines::arrayof_oop_copy_uninit(HeapWord* src, HeapWord* dest, size_t count))
@@ -462,7 +457,7 @@ JRT_LEAF(void, StubRoutines::arrayof_oop_copy_uninit(HeapWord* src, HeapWord* de
   SharedRuntime::_oop_array_copy_ctr++;        // Slow-path oop array copy
 #endif // !PRODUCT
   assert(count != 0, "count should be non-zero");
-  HeapAccess<ARRAYCOPY_ARRAYOF | ARRAYCOPY_DEST_NOT_INITIALIZED>::oop_arraycopy(NULL, NULL, src, dest, count);
+  ArrayAccess<ARRAYCOPY_ARRAYOF | IS_DEST_UNINITIALIZED>::oop_arraycopy_raw(src, dest, count);
 JRT_END
 
 address StubRoutines::select_fill_function(BasicType t, bool aligned, const char* &name) {

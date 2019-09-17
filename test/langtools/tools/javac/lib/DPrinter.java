@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -81,6 +81,7 @@ import com.sun.tools.javac.tree.TreeScanner;
 import com.sun.tools.javac.util.Assert;
 import com.sun.tools.javac.util.Context;
 import com.sun.tools.javac.util.Convert;
+import com.sun.tools.javac.util.ListBuffer;
 import com.sun.tools.javac.util.Log;
 
 
@@ -405,7 +406,7 @@ public class DPrinter {
             printScope("origin",
                     (Scope) getField(scope, scope.getClass(), "origin"), Details.FULL);
         } else if (scope instanceof CompoundScope) {
-            printList("delegates", (List<?>) getField(scope, CompoundScope.class, "subScopes"));
+            printList("delegates", ((ListBuffer<?>) getField(scope, CompoundScope.class, "subScopes")).toList());
         } else {
             for (Symbol sym : scope.getSymbols()) {
                 printSymbol(sym.name.toString(), sym, Details.SUMMARY);
@@ -736,7 +737,7 @@ public class DPrinter {
 
         @Override
         public void visitCase(JCCase tree) {
-            printTree("pat", tree.pat);
+            printList("pat", tree.pats);
             printList("stats", tree.stats);
         }
 
@@ -782,6 +783,11 @@ public class DPrinter {
         @Override
         public void visitBreak(JCBreak tree) {
             printName("label", tree.label);
+        }
+
+        @Override
+        public void visitYield(JCYield tree) {
+            printTree("value", tree.value);
         }
 
         @Override
@@ -1335,8 +1341,8 @@ public class DPrinter {
             // null or bot. So, only print the bound for subtypes of TypeVar,
             // or if the bound is (erroneously) not null or bot.
             if (!type.hasTag(TypeTag.TYPEVAR)
-                    || !(type.bound == null || type.bound.hasTag(TypeTag.BOT))) {
-                printType("bound", type.bound, Details.FULL);
+                    || !(type.getUpperBound() == null || type.getUpperBound().hasTag(TypeTag.BOT))) {
+                printType("bound", type.getUpperBound(), Details.FULL);
             }
             printType("lower", type.lower, Details.FULL);
             return visitType(type, null);

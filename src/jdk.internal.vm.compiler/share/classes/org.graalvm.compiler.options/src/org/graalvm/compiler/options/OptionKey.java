@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,11 +20,13 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.options;
 
 import java.util.Formatter;
 
-import org.graalvm.collections.EconomicMap;
+import jdk.internal.vm.compiler.collections.EconomicMap;
 
 /**
  * A key for an option. The value for an option is obtained from an {@link OptionValues} object.
@@ -136,6 +138,18 @@ public class OptionKey<T> {
     public T getValue(OptionValues values) {
         assert checkDescriptorExists();
         return values.get(this);
+    }
+
+    /**
+     * Gets the value of this option in {@code values} if it is present, otherwise
+     * {@link #getDefaultValue()}.
+     */
+    @SuppressWarnings("unchecked")
+    public T getValueOrDefault(EconomicMap<OptionKey<?>, Object> values) {
+        if (!values.containsKey(this)) {
+            return defaultValue;
+        }
+        return (T) values.get(this);
     }
 
     /**

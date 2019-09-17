@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes;
 
 import static org.graalvm.compiler.nodeinfo.InputType.Association;
@@ -33,6 +35,7 @@ import org.graalvm.compiler.graph.iterators.NodeIterable;
 import org.graalvm.compiler.graph.spi.Simplifiable;
 import org.graalvm.compiler.graph.spi.SimplifierTool;
 import org.graalvm.compiler.nodeinfo.NodeInfo;
+import org.graalvm.compiler.nodes.util.GraphUtil;
 
 @NodeInfo(allowedUsageTypes = {Association}, cycles = CYCLES_0, size = SIZE_0)
 public final class LoopExitNode extends BeginStateSplitNode implements IterableNodeType, Simplifiable {
@@ -100,11 +103,21 @@ public final class LoopExitNode extends BeginStateSplitNode implements IterableN
         });
     }
 
+    public void removeExit() {
+        this.removeProxies();
+        FrameState loopStateAfter = this.stateAfter();
+        graph().replaceFixedWithFixed(this, graph().add(new BeginNode()));
+        if (loopStateAfter != null) {
+            GraphUtil.tryKillUnused(loopStateAfter);
+        }
+    }
+
     @Override
     public void simplify(SimplifierTool tool) {
         Node prev = this.predecessor();
         while (tool.allUsagesAvailable() && prev instanceof BeginNode && prev.hasNoUsages()) {
             AbstractBeginNode begin = (AbstractBeginNode) prev;
+            this.setNodeSourcePosition(begin.getNodeSourcePosition());
             prev = prev.predecessor();
             graph().removeFixed(begin);
         }

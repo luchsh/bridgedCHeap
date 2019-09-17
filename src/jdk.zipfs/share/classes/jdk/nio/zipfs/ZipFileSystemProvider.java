@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,27 +25,33 @@
 
 package jdk.nio.zipfs;
 
-import java.io.*;
-import java.nio.channels.*;
-import java.nio.file.*;
-import java.nio.file.DirectoryStream.Filter;
-import java.nio.file.attribute.*;
-import java.nio.file.spi.FileSystemProvider;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.channels.AsynchronousFileChannel;
+import java.nio.channels.FileChannel;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.file.*;
+import java.nio.file.DirectoryStream.Filter;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileAttributeView;
+import java.nio.file.spi.FileSystemProvider;
+import java.security.AccessController;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import java.util.zip.ZipException;
 import java.util.concurrent.ExecutorService;
+import java.util.zip.ZipException;
 
-/*
- *
- * @author  Xueming Shen, Rajendra Gutupalli, Jaya Hangal
+/**
+ * @author Xueming Shen, Rajendra Gutupalli, Jaya Hangal
  */
-
 public class ZipFileSystemProvider extends FileSystemProvider {
-
 
     private final Map<Path, ZipFileSystem> filesystems = new HashMap<>();
 
@@ -98,7 +104,7 @@ public class ZipFileSystemProvider extends FileSystemProvider {
                 if (filesystems.containsKey(realPath))
                     throw new FileSystemAlreadyExistsException();
             }
-            ZipFileSystem zipfs = null;
+            ZipFileSystem zipfs;
             try {
                 if (env.containsKey("multi-release")) {
                     zipfs = new JarFileSystem(this, path, env);
@@ -124,17 +130,14 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     public FileSystem newFileSystem(Path path, Map<String, ?> env)
         throws IOException
     {
-        if (path.getFileSystem() != FileSystems.getDefault()) {
-            throw new UnsupportedOperationException();
-        }
         ensureFile(path);
-         try {
-             ZipFileSystem zipfs;
-             if (env.containsKey("multi-release")) {
-                 zipfs = new JarFileSystem(this, path, env);
-             } else {
-                 zipfs = new ZipFileSystem(this, path, env);
-             }
+        try {
+            ZipFileSystem zipfs;
+            if (env.containsKey("multi-release")) {
+                zipfs = new JarFileSystem(this, path, env);
+            } else {
+                zipfs = new ZipFileSystem(this, path, env);
+            }
             return zipfs;
         } catch (ZipException ze) {
             String pname = path.toString();
@@ -172,7 +175,7 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     }
 
     // Checks that the given file is a UnixPath
-    static final ZipPath toZipPath(Path path) {
+    private static ZipPath toZipPath(Path path) {
         if (path == null)
             throw new NullPointerException();
         if (!(path instanceof ZipPath))
@@ -205,11 +208,10 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <V extends FileAttributeView> V
         getFileAttributeView(Path path, Class<V> type, LinkOption... options)
     {
-        return ZipFileAttributeView.get(toZipPath(path), type);
+        return toZipPath(path).getFileAttributeView(type);
     }
 
     @Override
@@ -239,7 +241,6 @@ public class ZipFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             ExecutorService exec,
             FileAttribute<?>... attrs)
-            throws IOException
     {
         throw new UnsupportedOperationException();
     }
@@ -284,26 +285,23 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     }
 
     @Override
-    @SuppressWarnings("unchecked") // Cast to A
     public <A extends BasicFileAttributes> A
         readAttributes(Path path, Class<A> type, LinkOption... options)
         throws IOException
     {
-        if (type == BasicFileAttributes.class || type == ZipFileAttributes.class)
-            return (A)toZipPath(path).getAttributes();
-        return null;
+        return toZipPath(path).readAttributes(type);
     }
 
     @Override
     public Map<String, Object>
-        readAttributes(Path path, String attribute, LinkOption... options)
+        readAttributes(Path path, String attributes, LinkOption... options)
         throws IOException
     {
-        return toZipPath(path).readAttributes(attribute, options);
+        return toZipPath(path).readAttributes(attributes, options);
     }
 
     @Override
-    public Path readSymbolicLink(Path link) throws IOException {
+    public Path readSymbolicLink(Path link) {
         throw new UnsupportedOperationException("Not supported.");
     }
 
@@ -318,7 +316,13 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     //////////////////////////////////////////////////////////////
     void removeFileSystem(Path zfpath, ZipFileSystem zfs) throws IOException {
         synchronized (filesystems) {
-            zfpath = zfpath.toRealPath();
+            Path tempPath = zfpath;
+            PrivilegedExceptionAction<Path> action = tempPath::toRealPath;
+            try {
+                zfpath = AccessController.doPrivileged(action);
+            } catch (PrivilegedActionException e) {
+                throw (IOException) e.getException();
+            }
             if (filesystems.get(zfpath) == zfs)
                 filesystems.remove(zfpath);
         }

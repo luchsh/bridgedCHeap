@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,10 +22,11 @@
  *
  */
 
-#ifndef SHARE_VM_UTILITIES_GROWABLEARRAY_HPP
-#define SHARE_VM_UTILITIES_GROWABLEARRAY_HPP
+#ifndef SHARE_UTILITIES_GROWABLEARRAY_HPP
+#define SHARE_UTILITIES_GROWABLEARRAY_HPP
 
 #include "memory/allocation.hpp"
+#include "oops/oop.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/ostream.hpp"
@@ -151,6 +152,12 @@ class GenericGrowableArray : public ResourceObj {
 template<class E> class GrowableArrayIterator;
 template<class E, class UnaryPredicate> class GrowableArrayFilterIterator;
 
+template<class E>
+class CompareClosure : public Closure {
+public:
+    virtual int do_compare(const E&, const E&) = 0;
+};
+
 template<class E> class GrowableArray : public GenericGrowableArray {
   friend class VMStructs;
 
@@ -210,6 +217,15 @@ template<class E> class GrowableArray : public GenericGrowableArray {
   DEBUG_ONLY(E* data_addr() const      { return _data; })
 
   void print();
+
+  inline static bool safe_equals(oop obj1, oop obj2) {
+    return oopDesc::equals(obj1, obj2);
+  }
+
+  template <class X>
+  inline static bool safe_equals(X i1, X i2) {
+    return i1 == i2;
+  }
 
   int append(const E& elem) {
     check_nesting();
@@ -295,7 +311,7 @@ template<class E> class GrowableArray : public GenericGrowableArray {
 
   bool contains(const E& elem) const {
     for (int i = 0; i < _len; i++) {
-      if (_data[i] == elem) return true;
+      if (safe_equals(_data[i], elem)) return true;
     }
     return false;
   }
@@ -422,6 +438,37 @@ template<class E> class GrowableArray : public GenericGrowableArray {
       int mid = (int)(((uint)max + min) / 2);
       E value = at(mid);
       int diff = compare(key, value);
+      if (diff > 0) {
+        min = mid + 1;
+      } else if (diff < 0) {
+        max = mid - 1;
+      } else {
+        found = true;
+        return mid;
+      }
+    }
+    return min;
+  }
+
+  E insert_sorted(CompareClosure<E>* cc, const E& key) {
+    bool found;
+    int location = find_sorted(cc, key, found);
+    if (!found) {
+      insert_before(location, key);
+    }
+    return at(location);
+  }
+
+  template<typename K>
+  int find_sorted(CompareClosure<E>* cc, const K& key, bool& found) {
+    found = false;
+    int min = 0;
+    int max = length() - 1;
+
+    while (max >= min) {
+      int mid = (int)(((uint)max + min) / 2);
+      E value = at(mid);
+      int diff = cc->do_compare(key, value);
       if (diff > 0) {
         min = mid + 1;
       } else if (diff < 0) {
@@ -574,4 +621,4 @@ typedef GrowableArray<int> intArray;
 typedef GrowableArray<int> intStack;
 typedef GrowableArray<bool> boolArray;
 
-#endif // SHARE_VM_UTILITIES_GROWABLEARRAY_HPP
+#endif // SHARE_UTILITIES_GROWABLEARRAY_HPP

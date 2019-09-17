@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2015 SAP SE. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,10 +25,13 @@
 
 #include "precompiled.hpp"
 #include "asm/macroAssembler.inline.hpp"
+#include "code/compiledIC.hpp"
 #include "memory/resourceArea.hpp"
 #include "nativeInst_ppc.hpp"
-#include "oops/oop.inline.hpp"
+#include "oops/compressedOops.inline.hpp"
+#include "oops/oop.hpp"
 #include "runtime/handles.hpp"
+#include "runtime/orderAccess.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
 #include "utilities/ostream.hpp"
@@ -92,7 +95,8 @@ address NativeCall::destination() const {
 // during code generation, where no patching lock is needed.
 void NativeCall::set_destination_mt_safe(address dest, bool assert_lock) {
   assert(!assert_lock ||
-         (Patching_lock->is_locked() || SafepointSynchronize::is_at_safepoint()),
+         (Patching_lock->is_locked() || SafepointSynchronize::is_at_safepoint()) ||
+         CompiledICLocker::is_safe(addr_at(0)),
          "concurrent code patching");
 
   ResourceMark rm;
@@ -194,7 +198,7 @@ intptr_t NativeMovConstReg::data() const {
   CodeBlob* cb = CodeCache::find_blob_unsafe(addr);
   if (MacroAssembler::is_set_narrow_oop(addr, cb->content_begin())) {
     narrowOop no = (narrowOop)MacroAssembler::get_narrow_oop(addr, cb->content_begin());
-    return cast_from_oop<intptr_t>(oopDesc::decode_heap_oop(no));
+    return cast_from_oop<intptr_t>(CompressedOops::decode(no));
   } else {
     assert(MacroAssembler::is_load_const_from_method_toc_at(addr), "must be load_const_from_pool");
 
@@ -358,8 +362,8 @@ void NativeJump::verify() {
 
 void NativeGeneralJump::insert_unconditional(address code_pos, address entry) {
   CodeBuffer cb(code_pos, BytesPerInstWord + 1);
-  MacroAssembler* a = new MacroAssembler(&cb);
-  a->b(entry);
+  MacroAssembler a(&cb);
+  a.b(entry);
   ICache::ppc64_flush_icache_bytes(code_pos, NativeGeneralJump::instruction_size);
 }
 
@@ -415,4 +419,3 @@ void NativeCallTrampolineStub::set_destination(address new_destination) {
 
   *(address*)(ctable + destination_toc_offset()) = new_destination;
 }
-

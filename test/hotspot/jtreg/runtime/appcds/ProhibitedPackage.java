@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,15 +26,13 @@
  * @test
  * @summary AppCDS handling of prohibited package.
  * @requires vm.cds
- * @requires vm.cds
  * @library /test/lib
- * @modules java.base/jdk.internal.misc
- *          java.management
- *          jdk.jartool/sun.tools.jar
+ * @modules jdk.jartool/sun.tools.jar
  * @compile test-classes/ProhibitedHelper.java test-classes/Prohibited.jasm
- * @run main ProhibitedPackage
+ * @run driver ProhibitedPackage
  */
 
+import jdk.test.lib.cds.CDSOptions;
 import jdk.test.lib.Platform;
 import jdk.test.lib.process.OutputAnalyzer;
 
@@ -46,7 +44,8 @@ public class ProhibitedPackage {
         String appJar = TestCommon.getTestJar("prohibited_pkg.jar");
 
         // Test support for customer loaders
-        if (Platform.areCustomLoadersSupportedForCDS()) {
+        if (Platform.areCustomLoadersSupportedForCDS() &&
+            !TestCommon.isDynamicArchive()) {
             String classlist[] = new String[] {
                 "java/lang/Object id: 1",
                 "java/lang/Prohibited id: 2 super: 1 source: " + appJar
@@ -77,21 +76,22 @@ public class ProhibitedPackage {
         OutputAnalyzer output;
 
         // -Xshare:on
-        output = TestCommon.execCommon(
+        TestCommon.run(
             "-XX:+UnlockDiagnosticVMOptions", "-XX:+WhiteBoxAPI",
-            "-cp", appJar, "-Xlog:class+load=info", "ProhibitedHelper");
-        TestCommon.checkExec(output, "Prohibited package name: java.lang");
+            "-cp", appJar, "ProhibitedHelper")
+          .assertNormalExit("Prohibited package name: java.lang");
 
         // -Xshare:auto
         output = TestCommon.execAuto(
             "-XX:+UnlockDiagnosticVMOptions", "-XX:+WhiteBoxAPI",
-            "-cp", appJar, "-Xlog:class+load=info", "ProhibitedHelper");
-        TestCommon.checkExec(output, "Prohibited package name: java.lang");
+            "-cp", appJar, "ProhibitedHelper");
+        CDSOptions opts = (new CDSOptions()).setXShareMode("auto");
+        TestCommon.checkExec(output, opts, "Prohibited package name: java.lang");
 
         // -Xshare:off
         output = TestCommon.execOff(
             "-XX:+UnlockDiagnosticVMOptions", "-XX:+WhiteBoxAPI",
-            "-cp", appJar, "-Xlog:class+load=info", "ProhibitedHelper");
+            "-cp", appJar, "ProhibitedHelper");
         output.shouldContain("Prohibited package name: java.lang");
     }
 }

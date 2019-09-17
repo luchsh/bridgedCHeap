@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,8 +21,8 @@
  * questions.
  *
  */
-#ifndef SHARE_VM_LOGGING_LOGCONFIGURATION_HPP
-#define SHARE_VM_LOGGING_LOGCONFIGURATION_HPP
+#ifndef SHARE_LOGGING_LOGCONFIGURATION_HPP
+#define SHARE_LOGGING_LOGCONFIGURATION_HPP
 
 #include "logging/logLevel.hpp"
 #include "memory/allocation.hpp"
@@ -30,7 +30,7 @@
 
 class LogOutput;
 class LogDecorators;
-class LogTagLevelExpression;
+class LogSelectionList;
 
 // Global configuration of logging. Handles parsing and configuration of the logging framework,
 // and manages the list of configured log outputs. The actual tag and level configuration is
@@ -38,6 +38,7 @@ class LogTagLevelExpression;
 // are iterated over and updated accordingly.
 class LogConfiguration : public AllStatic {
  friend class VMError;
+ friend class LogTestFixture;
  public:
   // Function for listeners
   typedef void (*UpdateListenerFunction)(void);
@@ -75,7 +76,7 @@ class LogConfiguration : public AllStatic {
   static size_t find_output(const char* name);
 
   // Configure output (add or update existing configuration) to log on tag-level combination using specified decorators.
-  static void configure_output(size_t idx, const LogTagLevelExpression& tag_level_expression, const LogDecorators& decorators);
+  static void configure_output(size_t idx, const LogSelectionList& tag_level_expression, const LogDecorators& decorators);
 
   // This should be called after any configuration change while still holding ConfigurationLock
   static void notify_update_listeners();
@@ -118,10 +119,10 @@ class LogConfiguration : public AllStatic {
   static void describe(outputStream* out);
 
   // Prints usage help for command line log configuration.
-  static void print_command_line_help(FILE* out);
+  static void print_command_line_help(outputStream* out);
 
   // Rotates all LogOutput
   static void rotate_all_outputs();
 };
 
-#endif // SHARE_VM_LOGGING_LOGCONFIGURATION_HPP
+#endif // SHARE_LOGGING_LOGCONFIGURATION_HPP

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,6 +36,7 @@
 #include "compiler/disassembler.hpp"
 #include "interpreter/interpreter.hpp"
 #include "logging/log.hpp"
+#include "logging/logStream.hpp"
 #include "memory/allocation.inline.hpp"
 #include "memory/filemap.hpp"
 #include "oops/oop.inline.hpp"
@@ -47,12 +48,12 @@
 #include "runtime/atomic.hpp"
 #include "runtime/extendedPC.hpp"
 #include "runtime/globals.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "runtime/objectMonitor.hpp"
-#include "runtime/orderAccess.inline.hpp"
+#include "runtime/orderAccess.hpp"
 #include "runtime/osThread.hpp"
 #include "runtime/perfMemory.hpp"
 #include "runtime/sharedRuntime.hpp"
@@ -99,6 +100,8 @@
 // for enumerating dll libraries
 #include <vdmdbg.h>
 #include <psapi.h>
+#include <mmsystem.h>
+#include <winsock2.h>
 
 // for timer info max values which include all bits
 #define ALL_64_BITS CONST64(-1)
@@ -123,6 +126,11 @@ static FILETIME process_kernel_time;
   #define __CPU__ i486
 #endif
 
+#if INCLUDE_AOT
+PVOID  topLevelVectoredExceptionHandler = NULL;
+LONG WINAPI topLevelVectoredExceptionFilter(struct _EXCEPTION_POINTERS* exceptionInfo);
+#endif
+
 // save DLL module handle, used by GetModuleFileName
 
 HINSTANCE vm_lib_handle;
@@ -141,6 +149,12 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved) {
     if (ForceTimeHighResolution) {
       timeEndPeriod(1L);
     }
+#if INCLUDE_AOT
+    if (topLevelVectoredExceptionHandler != NULL) {
+      RemoveVectoredExceptionHandler(topLevelVectoredExceptionHandler);
+      topLevelVectoredExceptionHandler = NULL;
+    }
+#endif
     break;
   default:
     break;
@@ -187,7 +201,7 @@ void os::init_system_properties_values() {
     char *home_path;
     char *dll_path;
     char *pslash;
-    char *bin = "\\bin";
+    const char *bin = "\\bin";
     char home_dir[MAX_PATH + 1];
     char *alt_home_dir = ::getenv("_ALT_JAVA_HOME_DIR");
 
@@ -228,7 +242,7 @@ void os::init_system_properties_values() {
     FREE_C_HEAP_ARRAY(char, dll_path);
 
     if (!set_boot_path('\\', ';')) {
-      return;
+      vm_exit_during_initialization("Failed setting boot class path.", NULL);
     }
   }
 
@@ -363,6 +377,39 @@ size_t os::current_stack_size() {
   return sz;
 }
 
+bool os::committed_in_range(address start, size_t size, address& committed_start, size_t& committed_size) {
+  MEMORY_BASIC_INFORMATION minfo;
+  committed_start = NULL;
+  committed_size = 0;
+  address top = start + size;
+  const address start_addr = start;
+  while (start < top) {
+    VirtualQuery(start, &minfo, sizeof(minfo));
+    if ((minfo.State & MEM_COMMIT) == 0) {  // not committed
+      if (committed_start != NULL) {
+        break;
+      }
+    } else {  // committed
+      if (committed_start == NULL) {
+        committed_start = start;
+      }
+      size_t offset = start - (address)minfo.BaseAddress;
+      committed_size += minfo.RegionSize - offset;
+    }
+    start = (address)minfo.BaseAddress + minfo.RegionSize;
+  }
+
+  if (committed_start == NULL) {
+    assert(committed_size == 0, "Sanity");
+    return false;
+  } else {
+    assert(committed_start >= start_addr && committed_start < top, "Out of range");
+    // current region may go beyond the limit, trim to the limit
+    committed_size = MIN2(committed_size, size_t(top - committed_start));
+    return true;
+  }
+}
+
 struct tm* os::localtime_pd(const time_t* clock, struct tm* res) {
   const struct tm* time_struct_ptr = localtime(clock);
   if (time_struct_ptr != NULL) {
@@ -385,6 +432,9 @@ LONG WINAPI topLevelExceptionFilter(struct _EXCEPTION_POINTERS* exceptionInfo);
 
 // Thread start routine for all newly created threads
 static unsigned __stdcall thread_native_entry(Thread* thread) {
+
+  thread->record_stack_base_and_size();
+
   // Try to randomize the cache line index of hot stack frames.
   // This helps when threads of the same stack traces evict each other's
   // cache lines. The threads can be either from the same JVM instance, or
@@ -418,11 +468,14 @@ static unsigned __stdcall thread_native_entry(Thread* thread) {
   // by VM, so VM can generate error dump when an exception occurred in non-
   // Java thread (e.g. VM thread).
   __try {
-    thread->run();
+    thread->call_run();
   } __except(topLevelExceptionFilter(
                                      (_EXCEPTION_POINTERS*)_exception_info())) {
     // Nothing to do.
   }
+
+  // Note: at this point the thread object may already have deleted itself.
+  // Do not dereference it from here on out.
 
   log_info(os, thread)("Thread finished (tid: " UINTX_FORMAT ").", os::current_thread_id());
 
@@ -431,15 +484,6 @@ static unsigned __stdcall thread_native_entry(Thread* thread) {
   // which frees the CodeHeap containing the Atomic::add code
   if (thread != VMThread::vm_thread() && VMThread::vm_thread() != NULL) {
     Atomic::dec(&os::win32::_os_thread_count);
-  }
-
-  // If a thread has not deleted itself ("delete this") as part of its
-  // termination sequence, we have to ensure thread-local-storage is
-  // cleared before we actually terminate. No threads should ever be
-  // deleted asynchronously with respect to their termination.
-  if (Thread::current_or_null_safe() != NULL) {
-    assert(Thread::current_or_null_safe() == thread, "current thread is wrong");
-    thread->clear_thread_current();
   }
 
   // Thread must not return from exit_process_or_thread(), but if it does,
@@ -559,7 +603,7 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   HANDLE interrupt_event = CreateEvent(NULL, true, false, NULL);
   if (interrupt_event == NULL) {
     delete osthread;
-    return NULL;
+    return false;
   }
   osthread->set_interrupt_event(interrupt_event);
   osthread->set_interrupted(false);
@@ -626,6 +670,10 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   } else {
     log_warning(os, thread)("Failed to start thread - _beginthreadex failed (%s) for attributes: %s.",
       os::errno_name(errno), describe_beginthreadex_attributes(buf, sizeof(buf), stack_size, initflag));
+    // Log some OS information which might explain why creating the thread failed.
+    log_info(os, thread)("Number of threads approx. running in the VM: %d", Threads::number_of_threads());
+    LogStream st(Log(os, thread)::info());
+    os::print_memory_info(&st);
   }
 
   if (thread_handle == NULL) {
@@ -633,7 +681,7 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
     CloseHandle(osthread->interrupt_event());
     thread->set_osthread(NULL);
     delete osthread;
-    return NULL;
+    return false;
   }
 
   Atomic::inc(&os::win32::_os_thread_count);
@@ -880,13 +928,9 @@ double os::elapsedVTime() {
 }
 
 jlong os::javaTimeMillis() {
-  if (UseFakeTimers) {
-    return fake_time++;
-  } else {
-    FILETIME wt;
-    GetSystemTimeAsFileTime(&wt);
-    return windows_to_java_time(wt);
-  }
+  FILETIME wt;
+  GetSystemTimeAsFileTime(&wt);
+  return windows_to_java_time(wt);
 }
 
 void os::javaTimeSystemUTC(jlong &seconds, jlong &nanos) {
@@ -978,11 +1022,6 @@ void os::shutdown() {
   }
 }
 
-
-static BOOL (WINAPI *_MiniDumpWriteDump)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
-                                         PMINIDUMP_EXCEPTION_INFORMATION,
-                                         PMINIDUMP_USER_STREAM_INFORMATION,
-                                         PMINIDUMP_CALLBACK_INFORMATION);
 
 static HANDLE dumpFile = NULL;
 
@@ -1140,11 +1179,10 @@ DIR * os::opendir(const char *dirname) {
   return dirp;
 }
 
-// parameter dbuf unused on Windows
-struct dirent * os::readdir(DIR *dirp, dirent *dbuf) {
+struct dirent * os::readdir(DIR *dirp) {
   assert(dirp != NULL, "just checking");      // hotspot change
   if (dirp->handle == INVALID_HANDLE_VALUE) {
-    return 0;
+    return NULL;
   }
 
   strcpy(dirp->dirent.d_name, dirp->find_data.cFileName);
@@ -1152,7 +1190,7 @@ struct dirent * os::readdir(DIR *dirp, dirent *dbuf) {
   if (!FindNextFile(dirp->handle, &dirp->find_data)) {
     if (GetLastError() == ERROR_INVALID_HANDLE) {
       errno = EBADF;
-      return 0;
+      return NULL;
     }
     FindClose(dirp->handle);
     dirp->handle = INVALID_HANDLE_VALUE;
@@ -1329,12 +1367,18 @@ static int _print_module(const char* fname, address base_address,
 void * os::dll_load(const char *name, char *ebuf, int ebuflen) {
   void * result = LoadLibrary(name);
   if (result != NULL) {
+    Events::log(NULL, "Loaded shared library %s", name);
     // Recalculate pdb search path if a DLL was loaded successfully.
     SymbolEngine::recalc_search_path();
     return result;
   }
-
   DWORD errcode = GetLastError();
+  // Read system error message into ebuf
+  // It may or may not be overwritten below (in the for loop and just above)
+  lasterror(ebuf, (size_t) ebuflen);
+  ebuf[ebuflen - 1] = '\0';
+  Events::log(NULL, "Loading shared library %s failed, error code %lu", name, errcode);
+
   if (errcode == ERROR_MOD_NOT_FOUND) {
     strncpy(ebuf, "Can't find dependent libraries", ebuflen - 1);
     ebuf[ebuflen - 1] = '\0';
@@ -1346,11 +1390,6 @@ void * os::dll_load(const char *name, char *ebuf, int ebuflen) {
   // for an architecture other than Hotspot is running in
   // - then print to buffer "DLL was built for a different architecture"
   // else call os::lasterror to obtain system error message
-
-  // Read system error message into ebuf
-  // It may or may not be overwritten below (in the for loop and just above)
-  lasterror(ebuf, (size_t) ebuflen);
-  ebuf[ebuflen - 1] = '\0';
   int fd = ::open(name, O_RDONLY | O_BINARY, 0);
   if (fd < 0) {
     return NULL;
@@ -1499,19 +1538,45 @@ void os::get_summary_os_info(char* buf, size_t buflen) {
   if (nl != NULL) *nl = '\0';
 }
 
-int os::log_vsnprintf(char* buf, size_t len, const char* fmt, va_list args) {
-  int ret = vsnprintf(buf, len, fmt, args);
-  // Get the correct buffer size if buf is too small
-  if (ret < 0) {
-    return _vscprintf(fmt, args);
+int os::vsnprintf(char* buf, size_t len, const char* fmt, va_list args) {
+#if _MSC_VER >= 1900
+  // Starting with Visual Studio 2015, vsnprint is C99 compliant.
+  int result = ::vsnprintf(buf, len, fmt, args);
+  // If an encoding error occurred (result < 0) then it's not clear
+  // whether the buffer is NUL terminated, so ensure it is.
+  if ((result < 0) && (len > 0)) {
+    buf[len - 1] = '\0';
   }
-  return ret;
+  return result;
+#else
+  // Before Visual Studio 2015, vsnprintf is not C99 compliant, so use
+  // _vsnprintf, whose behavior seems to be *mostly* consistent across
+  // versions.  However, when len == 0, avoid _vsnprintf too, and just
+  // go straight to _vscprintf.  The output is going to be truncated in
+  // that case, except in the unusual case of empty output.  More
+  // importantly, the documentation for various versions of Visual Studio
+  // are inconsistent about the behavior of _vsnprintf when len == 0,
+  // including it possibly being an error.
+  int result = -1;
+  if (len > 0) {
+    result = _vsnprintf(buf, len, fmt, args);
+    // If output (including NUL terminator) is truncated, the buffer
+    // won't be NUL terminated.  Add the trailing NUL specified by C99.
+    if ((result < 0) || ((size_t)result >= len)) {
+      buf[len - 1] = '\0';
+    }
+  }
+  if (result < 0) {
+    result = _vscprintf(fmt, args);
+  }
+  return result;
+#endif // _MSC_VER dispatch
 }
 
 static inline time_t get_mtime(const char* filename) {
   struct stat st;
   int ret = os::stat(filename, &st);
-  assert(ret == 0, "failed to stat() file '%s': %s", filename, strerror(errno));
+  assert(ret == 0, "failed to stat() file '%s': %s", filename, os::strerror(errno));
   return st.st_mtime;
 }
 
@@ -1537,6 +1602,10 @@ void os::print_os_info(outputStream* st) {
 #endif
   st->print("OS:");
   os::win32::print_windows_version(st);
+
+#ifdef _LP64
+  VM_Version::print_platform_virtualization_info(st);
+#endif
 }
 
 void os::win32::print_windows_version(outputStream* st) {
@@ -1636,7 +1705,13 @@ void os::win32::print_windows_version(outputStream* st) {
     if (is_workstation) {
       st->print("10");
     } else {
-      st->print("Server 2016");
+      // distinguish Windows Server 2016 and 2019 by build number
+      // Windows server 2019 GA 10/2018 build number is 17763
+      if (build_number > 17762) {
+        st->print("Server 2019");
+      } else {
+        st->print("Server 2016");
+      }
     }
     break;
 
@@ -1689,14 +1764,52 @@ void os::print_memory_info(outputStream* st) {
   // value if total memory is larger than 4GB
   MEMORYSTATUSEX ms;
   ms.dwLength = sizeof(ms);
-  GlobalMemoryStatusEx(&ms);
+  int r1 = GlobalMemoryStatusEx(&ms);
 
-  st->print(", physical %uk", os::physical_memory() >> 10);
-  st->print("(%uk free)", os::available_memory() >> 10);
+  if (r1 != 0) {
+    st->print(", system-wide physical " INT64_FORMAT "M ",
+             (int64_t) ms.ullTotalPhys >> 20);
+    st->print("(" INT64_FORMAT "M free)\n", (int64_t) ms.ullAvailPhys >> 20);
 
-  st->print(", swap %uk", ms.ullTotalPageFile >> 10);
-  st->print("(%uk free)", ms.ullAvailPageFile >> 10);
+    st->print("TotalPageFile size " INT64_FORMAT "M ",
+             (int64_t) ms.ullTotalPageFile >> 20);
+    st->print("(AvailPageFile size " INT64_FORMAT "M)",
+             (int64_t) ms.ullAvailPageFile >> 20);
+
+    // on 32bit Total/AvailVirtual are interesting (show us how close we get to 2-4 GB per process borders)
+#if defined(_M_IX86)
+    st->print(", user-mode portion of virtual address-space " INT64_FORMAT "M ",
+             (int64_t) ms.ullTotalVirtual >> 20);
+    st->print("(" INT64_FORMAT "M free)", (int64_t) ms.ullAvailVirtual >> 20);
+#endif
+  } else {
+    st->print(", GlobalMemoryStatusEx did not succeed so we miss some memory values.");
+  }
+
+  // extended memory statistics for a process
+  PROCESS_MEMORY_COUNTERS_EX pmex;
+  ZeroMemory(&pmex, sizeof(PROCESS_MEMORY_COUNTERS_EX));
+  pmex.cb = sizeof(pmex);
+  int r2 = GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*) &pmex, sizeof(pmex));
+
+  if (r2 != 0) {
+    st->print("\ncurrent process WorkingSet (physical memory assigned to process): " INT64_FORMAT "M, ",
+             (int64_t) pmex.WorkingSetSize >> 20);
+    st->print("peak: " INT64_FORMAT "M\n", (int64_t) pmex.PeakWorkingSetSize >> 20);
+
+    st->print("current process commit charge (\"private bytes\"): " INT64_FORMAT "M, ",
+             (int64_t) pmex.PrivateUsage >> 20);
+    st->print("peak: " INT64_FORMAT "M", (int64_t) pmex.PeakPagefileUsage >> 20);
+  } else {
+    st->print("\nGetProcessMemoryInfo did not succeed so we miss some memory values.");
+  }
+
   st->cr();
+}
+
+bool os::signal_sent_by_kill(const void* siginfo) {
+  // TODO: Is this possible?
+  return false;
 }
 
 void os::print_siginfo(outputStream *st, const void* siginfo) {
@@ -1730,6 +1843,11 @@ void os::print_siginfo(outputStream *st, const void* siginfo) {
     }
   }
   st->cr();
+}
+
+bool os::signal_thread(Thread* thread, int sig, const char* reason) {
+  // TODO: Can we kill thread?
+  return false;
 }
 
 void os::print_signal_handlers(outputStream* st, char* buf, size_t buflen) {
@@ -1937,7 +2055,7 @@ int os::sigexitnum_pd() {
 static volatile jint pending_signals[NSIG+1] = { 0 };
 static Semaphore* sig_sem = NULL;
 
-void os::signal_init_pd() {
+static void jdk_misc_signal_init() {
   // Initialize signal structures
   memset((void*)pending_signals, 0, sizeof(pending_signals));
 
@@ -1958,10 +2076,8 @@ void os::signal_init_pd() {
   // the CTRL-BREAK thread dump mechanism is also disabled in this
   // case.  See bugs 4323062, 4345157, and related bugs.
 
-  if (!ReduceSignalUsage) {
-    // Add a CTRL-C handler
-    SetConsoleCtrlHandler(consoleHandler, TRUE);
-  }
+  // Add a CTRL-C handler
+  SetConsoleCtrlHandler(consoleHandler, TRUE);
 }
 
 void os::signal_notify(int sig) {
@@ -1969,7 +2085,7 @@ void os::signal_notify(int sig) {
     Atomic::inc(&pending_signals[sig]);
     sig_sem->signal();
   } else {
-    // Signal thread is not created with ReduceSignalUsage and signal_init_pd
+    // Signal thread is not created with ReduceSignalUsage and jdk_misc_signal_init
     // initialization isn't called.
     assert(ReduceSignalUsage, "signal semaphore should be created");
   }
@@ -2070,7 +2186,7 @@ extern "C" void events();
 
 #define def_excpt(val) { #val, (val) }
 
-static const struct { char* name; uint number; } exceptlabels[] = {
+static const struct { const char* name; uint number; } exceptlabels[] = {
     def_excpt(EXCEPTION_ACCESS_VIOLATION),
     def_excpt(EXCEPTION_DATATYPE_MISALIGNMENT),
     def_excpt(EXCEPTION_BREAKPOINT),
@@ -2236,6 +2352,25 @@ bool os::win32::get_frame_at_stack_banging_point(JavaThread* thread,
   return true;
 }
 
+#if INCLUDE_AOT
+LONG WINAPI topLevelVectoredExceptionFilter(struct _EXCEPTION_POINTERS* exceptionInfo) {
+  PEXCEPTION_RECORD exceptionRecord = exceptionInfo->ExceptionRecord;
+  address addr = (address) exceptionRecord->ExceptionInformation[1];
+  address pc = (address) exceptionInfo->ContextRecord->Rip;
+
+  // Handle the case where we get an implicit exception in AOT generated
+  // code.  AOT DLL's loaded are not registered for structured exceptions.
+  // If the exception occurred in the codeCache or AOT code, pass control
+  // to our normal exception handler.
+  CodeBlob* cb = CodeCache::find_blob(pc);
+  if (cb != NULL) {
+    return topLevelExceptionFilter(exceptionInfo);
+  }
+
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 //-----------------------------------------------------------------------------
 LONG WINAPI topLevelExceptionFilter(struct _EXCEPTION_POINTERS* exceptionInfo) {
   if (InterceptOSException) return EXCEPTION_CONTINUE_SEARCH;
@@ -2331,23 +2466,6 @@ LONG WINAPI topLevelExceptionFilter(struct _EXCEPTION_POINTERS* exceptionInfo) {
   }
 #endif // _WIN64
 
-  // Check to see if we caught the safepoint code in the
-  // process of write protecting the memory serialization page.
-  // It write enables the page immediately after protecting it
-  // so just return.
-  if (exception_code == EXCEPTION_ACCESS_VIOLATION) {
-    if (t != NULL && t->is_Java_thread()) {
-      JavaThread* thread = (JavaThread*) t;
-      PEXCEPTION_RECORD exceptionRecord = exceptionInfo->ExceptionRecord;
-      address addr = (address) exceptionRecord->ExceptionInformation[1];
-      if (os::is_memory_serialize_page(thread, addr)) {
-        // Block current thread until the memory serialize page permission restored.
-        os::block_on_serialize_page_trap();
-        return EXCEPTION_CONTINUE_EXECUTION;
-      }
-    }
-  }
-
   if ((exception_code == EXCEPTION_ACCESS_VIOLATION) &&
       VM_Version::is_cpuinfo_segv_addr(pc)) {
     // Verify that OS save/restore AVX registers.
@@ -2426,7 +2544,7 @@ LONG WINAPI topLevelExceptionFilter(struct _EXCEPTION_POINTERS* exceptionInfo) {
 #endif
           {
             // Null pointer exception.
-            if (!MacroAssembler::needs_explicit_null_check((intptr_t)addr)) {
+            if (MacroAssembler::uses_implicit_null_check((void*)addr)) {
               address stub = SharedRuntime::continuation_for_implicit_exception(thread, pc, SharedRuntime::IMPLICIT_NULL);
               if (stub != NULL) return Handle_Exception(exceptionInfo, stub);
             }
@@ -2868,14 +2986,15 @@ void os::large_page_init() {
 int os::create_file_for_heap(const char* dir) {
 
   const char name_template[] = "/jvmheap.XXXXXX";
-  char *fullname = (char*)os::malloc((strlen(dir) + strlen(name_template) + 1), mtInternal);
+
+  size_t fullname_len = strlen(dir) + strlen(name_template);
+  char *fullname = (char*)os::malloc(fullname_len + 1, mtInternal);
   if (fullname == NULL) {
     vm_exit_during_initialization(err_msg("Malloc failed during creation of backing file for heap (%s)", os::strerror(errno)));
     return -1;
   }
-
-  (void)strncpy(fullname, dir, strlen(dir)+1);
-  (void)strncat(fullname, name_template, strlen(name_template));
+  int n = snprintf(fullname, fullname_len + 1, "%s%s", dir, name_template);
+  assert((size_t)n == fullname_len, "Unexpected number of characters in string");
 
   os::native_path(fullname);
 
@@ -3440,6 +3559,21 @@ void os::naked_short_sleep(jlong ms) {
   Sleep(ms);
 }
 
+// Windows does not provide sleep functionality with nanosecond resolution, so we
+// try to approximate this with spinning combined with yielding if another thread
+// is ready to run on the current processor.
+void os::naked_short_nanosleep(jlong ns) {
+  assert(ns > -1 && ns < NANOUNITS, "Un-interruptable sleep, short time use only");
+
+  int64_t start = os::javaTimeNanos();
+  do {
+    if (SwitchToThread() == 0) {
+      // Nothing else is ready to run on this cpu, spin a little
+      SpinPause();
+    }
+  } while (os::javaTimeNanos() - start < ns);
+}
+
 // Sleep forever; naked call to OS-specific sleep; use with CAUTION
 void os::infinite_sleep() {
   while (true) {    // sleep forever ...
@@ -3522,11 +3656,6 @@ OSReturn os::get_native_priority(const Thread* const thread,
   *priority_ptr = os_prio;
   return OS_OK;
 }
-
-
-// Hint to the underlying OS that a task switch would not be good.
-// Void return because it's a hint and can fail.
-void os::hint_no_preempt() {}
 
 void os::interrupt(Thread* thread) {
   debug_only(Thread::check_for_dangling_thread_pointer(thread);)
@@ -3944,7 +4073,7 @@ void os::init(void) {
   init_page_sizes((size_t) win32::vm_page_size());
 
   // This may be overridden later when argument processing is done.
-  FLAG_SET_ERGO(bool, UseLargePagesIndividualAllocation, false);
+  FLAG_SET_ERGO(UseLargePagesIndividualAllocation, false);
 
   // Initialize main_process and main_thread
   main_process = GetCurrentProcess();  // Remember main_process is a pseudo handle
@@ -3969,7 +4098,22 @@ static jint initSock();
 
 // this is called _after_ the global arguments have been parsed
 jint os::init_2(void) {
+
+  // This could be set any time but all platforms
+  // have to set it the same so we have to mirror Solaris.
+  DEBUG_ONLY(os::set_mutex_init_done();)
+
   // Setup Windows Exceptions
+
+#if INCLUDE_AOT
+  // If AOT is enabled we need to install a vectored exception handler
+  // in order to forward implicit exceptions from code in AOT
+  // generated DLLs.  This is necessary since these DLLs are not
+  // registered for structured exceptions like codecache methods are.
+  if (UseAOT) {
+    topLevelVectoredExceptionHandler = AddVectoredExceptionHandler( 1, topLevelVectoredExceptionFilter);
+  }
+#endif
 
   // for debugging float code generation bugs
   if (ForceFloatExceptions) {
@@ -4075,6 +4219,11 @@ jint os::init_2(void) {
   }
 
   SymbolEngine::recalc_search_path();
+
+  // Initialize data for jdk.internal.misc.Signal
+  if (!ReduceSignalUsage) {
+    jdk_misc_signal_init();
+  }
 
   return JNI_OK;
 }
@@ -4361,10 +4510,11 @@ bool os::dir_is_empty(const char* path) {
     return false;
   }
   strcpy(search_path, path);
+  os::native_path(search_path);
   // Append "*", or possibly "\\*", to path
-  if (path[1] == ':' &&
-    (path[2] == '\0' ||
-    (path[2] == '\\' && path[3] == '\0'))) {
+  if (search_path[1] == ':' &&
+       (search_path[2] == '\0' ||
+         (search_path[2] == '\\' && search_path[3] == '\0'))) {
     // No '\\' needed for cases like "Z:" or "Z:\"
     strcat(search_path, "*");
   }
@@ -4424,7 +4574,7 @@ jlong os::lseek(int fd, jlong offset, int whence) {
   return (jlong) ::_lseeki64(fd, offset, whence);
 }
 
-size_t os::read_at(int fd, void *buf, unsigned int nBytes, jlong offset) {
+ssize_t os::read_at(int fd, void *buf, unsigned int nBytes, jlong offset) {
   OVERLAPPED ov;
   DWORD nread;
   BOOL result;
@@ -4591,9 +4741,6 @@ int os::fsync(int fd) {
 
 static int nonSeekAvailable(int, long *);
 static int stdinAvailable(int, long *);
-
-#define S_ISCHR(mode)   (((mode) & _S_IFCHR) == _S_IFCHR)
-#define S_ISFIFO(mode)  (((mode) & _S_IFIFO) == _S_IFIFO)
 
 // This code is a copy of JDK's sysAvailable
 // from src/windows/hpi/src/sys_api_md.c
@@ -4764,6 +4911,9 @@ char* os::pd_map_memory(int fd, const char* file_name, size_t file_offset,
       return NULL;
     }
 
+    // Record virtual memory allocation
+    MemTracker::record_virtual_memory_reserve_and_commit((address)addr, bytes, CALLER_PC);
+
     DWORD bytes_read;
     OVERLAPPED overlapped;
     overlapped.Offset = (DWORD)file_offset;
@@ -4832,17 +4982,13 @@ char* os::pd_remap_memory(int fd, const char* file_name, size_t file_offset,
                           char *addr, size_t bytes, bool read_only,
                           bool allow_exec) {
   // This OS does not allow existing memory maps to be remapped so we
-  // have to unmap the memory before we remap it.
-  if (!os::unmap_memory(addr, bytes)) {
-    return NULL;
-  }
+  // would have to unmap the memory before we remap it.
 
-  // There is a very small theoretical window between the unmap_memory()
-  // call above and the map_memory() call below where a thread in native
-  // code may be able to access an address that is no longer mapped.
-
-  return os::map_memory(fd, file_name, file_offset, addr, bytes,
-                        read_only, allow_exec);
+  // Because there is a small window between unmapping memory and mapping
+  // it in again with different protections, CDS archives are mapped RW
+  // on windows, so this function isn't called.
+  ShouldNotReachHere();
+  return NULL;
 }
 
 
@@ -5165,15 +5311,35 @@ void Parker::unpark() {
   SetEvent(_ParkEvent);
 }
 
+// Platform Monitor implementation
+
+// Must already be locked
+int os::PlatformMonitor::wait(jlong millis) {
+  assert(millis >= 0, "negative timeout");
+  int ret = OS_TIMEOUT;
+  int status = SleepConditionVariableCS(&_cond, &_mutex,
+                                        millis == 0 ? INFINITE : millis);
+  if (status != 0) {
+    ret = OS_OK;
+  }
+  #ifndef PRODUCT
+  else {
+    DWORD err = GetLastError();
+    assert(err == ERROR_TIMEOUT, "SleepConditionVariableCS: %ld:", err);
+  }
+  #endif
+  return ret;
+}
+
 // Run the specified command in a separate process. Return its exit value,
 // or -1 on failure (e.g. can't create a new process).
-int os::fork_and_exec(char* cmd) {
+int os::fork_and_exec(char* cmd, bool use_vfork_if_available) {
   STARTUPINFO si;
   PROCESS_INFORMATION pi;
   DWORD exit_code;
 
   char * cmd_string;
-  char * cmd_prefix = "cmd /C ";
+  const char * cmd_prefix = "cmd /C ";
   size_t len = strlen(cmd) + strlen(cmd_prefix) + 1;
   cmd_string = NEW_C_HEAP_ARRAY_RETURN_NULL(char, len, mtInternal);
   if (cmd_string == NULL) {
@@ -5244,22 +5410,6 @@ bool os::find(address addr, outputStream* st) {
     result = true;
   }
   return result;
-}
-
-LONG WINAPI os::win32::serialize_fault_filter(struct _EXCEPTION_POINTERS* e) {
-  DWORD exception_code = e->ExceptionRecord->ExceptionCode;
-
-  if (exception_code == EXCEPTION_ACCESS_VIOLATION) {
-    JavaThread* thread = JavaThread::current();
-    PEXCEPTION_RECORD exceptionRecord = e->ExceptionRecord;
-    address addr = (address) exceptionRecord->ExceptionInformation[1];
-
-    if (os::is_memory_serialize_page(thread, addr)) {
-      return EXCEPTION_CONTINUE_EXECUTION;
-    }
-  }
-
-  return EXCEPTION_CONTINUE_SEARCH;
 }
 
 static jint initSock() {
@@ -5473,12 +5623,8 @@ char* os::build_agent_function_name(const char *sym_name, const char *lib_name,
 // that is reported is when the test tries to allocate at a particular location but gets a
 // different valid one. A NULL return value at this point is not considered an error but may
 // be legitimate.
-// If -XX:+VerboseInternalVMTests is enabled, print some explanatory messages.
 void TestReserveMemorySpecial_test() {
   if (!UseLargePages) {
-    if (VerboseInternalVMTests) {
-      tty->print("Skipping test because large pages are disabled");
-    }
     return;
   }
   // save current value of globals
@@ -5492,10 +5638,6 @@ void TestReserveMemorySpecial_test() {
   const size_t large_allocation_size = os::large_page_size() * 4;
   char* result = os::reserve_memory_special(large_allocation_size, os::large_page_size(), NULL, false);
   if (result == NULL) {
-    if (VerboseInternalVMTests) {
-      tty->print("Failed to allocate control block with size " SIZE_FORMAT ". Skipping remainder of test.",
-                          large_allocation_size);
-    }
   } else {
     os::release_memory_special(result, large_allocation_size);
 
@@ -5505,10 +5647,6 @@ void TestReserveMemorySpecial_test() {
     char* expected_location = result + os::large_page_size();
     char* actual_location = os::reserve_memory_special(expected_allocation_size, os::large_page_size(), expected_location, false);
     if (actual_location == NULL) {
-      if (VerboseInternalVMTests) {
-        tty->print("Failed to allocate any memory at " PTR_FORMAT " size " SIZE_FORMAT ". Skipping remainder of test.",
-                            expected_location, large_allocation_size);
-      }
     } else {
       // release memory
       os::release_memory_special(actual_location, expected_allocation_size);
@@ -5540,8 +5678,8 @@ void TestReserveMemorySpecial_test() {
 */
 int os::get_signal_number(const char* name) {
   static const struct {
-    char* name;
-    int   number;
+    const char* name;
+    int         number;
   } siglabels [] =
     // derived from version 6.0 VC98/include/signal.h
   {"ABRT",      SIGABRT,        // abnormal termination triggered by abort cl

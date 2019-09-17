@@ -60,8 +60,12 @@ import sun.awt.OSInfo;
  * long term persistence.
  *
  * @author unattributed
+ * @deprecated The Motif Look and Feel is deprecated with the intent to remove
+ *             it in some future release. It is recommended to use
+ *             {@link javax.swing.plaf.metal.MetalLookAndFeel} instead.
  */
 @SuppressWarnings("serial") // Superclass is not serializable across versions
+@Deprecated(since="13", forRemoval=true)
 public class MotifLookAndFeel extends BasicLookAndFeel
 {
     public String getName() {
@@ -636,7 +640,9 @@ public class MotifLookAndFeel extends BasicLookAndFeel
             "Menu.submenuPopupOffsetX", -2,
             "Menu.submenuPopupOffsetY", 3,
             "Menu.shortcutKeys", new int[]{
-                SwingUtilities2.getSystemMnemonicKeyMask(), metaMask
+                SwingUtilities2.getSystemMnemonicKeyMask(), metaMask,
+                SwingUtilities2.setAltGraphMask(
+                        SwingUtilities2.getSystemMnemonicKeyMask())
             },
             "Menu.cancelMode", "hideMenuTree",
 

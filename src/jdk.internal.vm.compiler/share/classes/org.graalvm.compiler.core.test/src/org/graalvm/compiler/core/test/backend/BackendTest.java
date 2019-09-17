@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,9 +20,12 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.core.test.backend;
 
 import org.graalvm.compiler.core.GraalCompiler;
+import org.graalvm.compiler.core.gen.LIRCompilerBackend;
 import org.graalvm.compiler.core.test.GraalCompilerTest;
 import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.lir.gen.LIRGenerationResult;
@@ -50,7 +53,7 @@ public abstract class BackendTest extends GraalCompilerTest {
             throw debug.handle(e);
         }
 
-        LIRGenerationResult lirGen = GraalCompiler.emitLIR(getBackend(), graph, null, null, createLIRSuites(graph.getOptions()));
+        LIRGenerationResult lirGen = LIRCompilerBackend.emitLIR(getBackend(), graph, null, null, createLIRSuites(graph.getOptions()));
         return lirGen;
     }
 

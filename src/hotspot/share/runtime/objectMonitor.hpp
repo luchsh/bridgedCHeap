@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,14 +22,16 @@
  *
  */
 
-#ifndef SHARE_VM_RUNTIME_OBJECTMONITOR_HPP
-#define SHARE_VM_RUNTIME_OBJECTMONITOR_HPP
+#ifndef SHARE_RUNTIME_OBJECTMONITOR_HPP
+#define SHARE_RUNTIME_OBJECTMONITOR_HPP
 
 #include "memory/allocation.hpp"
 #include "memory/padded.hpp"
 #include "runtime/os.hpp"
 #include "runtime/park.hpp"
 #include "runtime/perfData.hpp"
+
+class ObjectMonitor;
 
 // ObjectWaiter serves as a "proxy" or surrogate thread.
 // TODO-FIXME: Eliminate ObjectWaiter and use the thread-specific
@@ -56,9 +58,6 @@ class ObjectWaiter : public StackObj {
   void wait_reenter_begin(ObjectMonitor *mon);
   void wait_reenter_end(ObjectMonitor *mon);
 };
-
-// forward declaration to avoid include tracing.hpp
-class EventJavaMonitorWait;
 
 // The ObjectMonitor class implements the heavyweight version of a
 // JavaMonitor. The lightweight BasicLock/stack lock version has been
@@ -104,11 +103,11 @@ class EventJavaMonitorWait;
 //   coherency misses. There is no single optimal layout for both
 //   single-threaded and multi-threaded environments.
 //
-// - See ObjectMonitor::sanity_checks() for how critical restrictions are
-//   enforced and advisory recommendations are reported.
+// - See TEST_VM(ObjectMonitor, sanity) gtest for how critical restrictions are
+//   enforced.
 // - Adjacent ObjectMonitors should be separated by enough space to avoid
 //   false sharing. This is handled by the ObjectMonitor allocation code
-//   in synchronizer.cpp. Also see ObjectSynchronizer::sanity_checks().
+//   in synchronizer.cpp. Also see TEST_VM(SynchronizerTest, sanity) gtest.
 //
 // Futures notes:
 //   - Separating _owner from the <remaining_fields> by enough space to
@@ -140,6 +139,7 @@ class ObjectMonitor {
   friend class ObjectSynchronizer;
   friend class ObjectWaiter;
   friend class VMStructs;
+  JVMCI_ONLY(friend class JVMCIVMStructs;)
 
   volatile markOop   _header;       // displaced object header word - mark
   void*     volatile _object;       // backward object pointer - strong root
@@ -164,9 +164,9 @@ class ObjectMonitor {
   volatile int _Spinner;            // for exit->spinner handoff optimization
   volatile int _SpinDuration;
 
-  volatile jint  _count;            // reference count to prevent reclamation/deflation
-                                    // at stop-the-world time.  See deflate_idle_monitors().
-                                    // _count is approximately |_WaitSet| + |_EntryList|
+  volatile jint  _contentions;      // Number of active contentions in enter(). It is used by is_busy()
+                                    // along with other fields to determine if an ObjectMonitor can be
+                                    // deflated. See ObjectSynchronizer::deflate_monitor().
  protected:
   ObjectWaiter * volatile _WaitSet; // LL of threads wait()ing on the monitor
   volatile jint  _waiters;          // number of waiting threads
@@ -191,26 +191,11 @@ class ObjectMonitor {
   static PerfCounter * _sync_ContendedLockAttempts;
   static PerfCounter * _sync_FutileWakeups;
   static PerfCounter * _sync_Parks;
-  static PerfCounter * _sync_EmptyNotifications;
   static PerfCounter * _sync_Notifications;
-  static PerfCounter * _sync_SlowEnter;
-  static PerfCounter * _sync_SlowExit;
-  static PerfCounter * _sync_SlowNotify;
-  static PerfCounter * _sync_SlowNotifyAll;
-  static PerfCounter * _sync_FailedSpins;
-  static PerfCounter * _sync_SuccessfulSpins;
-  static PerfCounter * _sync_PrivateA;
-  static PerfCounter * _sync_PrivateB;
-  static PerfCounter * _sync_MonInCirculation;
-  static PerfCounter * _sync_MonScavenged;
   static PerfCounter * _sync_Inflations;
   static PerfCounter * _sync_Deflations;
   static PerfLongVariable * _sync_MonExtant;
 
-  static int Knob_ExitRelease;
-  static int Knob_Verbose;
-  static int Knob_VerifyInUse;
-  static int Knob_VerifyMatch;
   static int Knob_SpinLimit;
 
   void* operator new (size_t size) throw();
@@ -223,7 +208,6 @@ class ObjectMonitor {
   static int header_offset_in_bytes()      { return offset_of(ObjectMonitor, _header); }
   static int object_offset_in_bytes()      { return offset_of(ObjectMonitor, _object); }
   static int owner_offset_in_bytes()       { return offset_of(ObjectMonitor, _owner); }
-  static int count_offset_in_bytes()       { return offset_of(ObjectMonitor, _count); }
   static int recursions_offset_in_bytes()  { return offset_of(ObjectMonitor, _recursions); }
   static int cxq_offset_in_bytes()         { return offset_of(ObjectMonitor, _cxq); }
   static int succ_offset_in_bytes()        { return offset_of(ObjectMonitor, _succ); }
@@ -248,11 +232,10 @@ class ObjectMonitor {
   void      set_header(markOop hdr);
 
   intptr_t is_busy() const {
-    // TODO-FIXME: merge _count and _waiters.
     // TODO-FIXME: assert _owner == null implies _recursions = 0
-    // TODO-FIXME: assert _WaitSet != null implies _count > 0
-    return _count|_waiters|intptr_t(_owner)|intptr_t(_cxq)|intptr_t(_EntryList);
+    return _contentions|_waiters|intptr_t(_owner)|intptr_t(_cxq)|intptr_t(_EntryList);
   }
+  const char* is_busy_to_string(stringStream* ss);
 
   intptr_t  is_entered(Thread* current) const;
 
@@ -261,8 +244,6 @@ class ObjectMonitor {
 
   jint      waiters() const;
 
-  jint      count() const;
-  void      set_count(jint count);
   jint      contentions() const;
   intptr_t  recursions() const                                         { return _recursions; }
 
@@ -279,16 +260,18 @@ class ObjectMonitor {
   ~ObjectMonitor() {
     // TODO: Add asserts ...
     // _cxq == 0 _succ == NULL _owner == NULL _waiters == 0
-    // _count == 0 _EntryList  == NULL etc
+    // _contentions == 0 _EntryList  == NULL etc
   }
 
  private:
   void Recycle() {
     // TODO: add stronger asserts ...
     // _cxq == 0 _succ == NULL _owner == NULL _waiters == 0
-    // _count == 0 EntryList  == NULL
+    // _contentions == 0 EntryList  == NULL
     // _recursions == 0 _WaitSet == NULL
-    assert(((is_busy()|_recursions) == 0), "freeing inuse monitor");
+    DEBUG_ONLY(stringStream ss;)
+    assert((is_busy() | _recursions) == 0, "freeing in-use monitor: %s, "
+           "recursions=" INTPTR_FORMAT, is_busy_to_string(&ss), _recursions);
     _succ          = NULL;
     _EntryList     = NULL;
     _cxq           = NULL;
@@ -305,8 +288,6 @@ class ObjectMonitor {
   bool      check(TRAPS);       // true if the thread owns the monitor.
   void      check_slow(TRAPS);
   void      clear();
-  static void sanity_checks();  // public for -XX:+ExecuteInternalVMTests
-                                // in PRODUCT for -XX:SyncKnobs=Verbose=1
 
   void      enter(TRAPS);
   void      exit(bool not_suspended, TRAPS);
@@ -314,13 +295,15 @@ class ObjectMonitor {
   void      notify(TRAPS);
   void      notifyAll(TRAPS);
 
+  void      print() const;
+  void      print_on(outputStream* st) const;
+
 // Use the following at your own risk
   intptr_t  complete_exit(TRAPS);
   void      reenter(intptr_t recursions, TRAPS);
 
  private:
   void      AddWaiter(ObjectWaiter * waiter);
-  static    void DeferredInitialize();
   void      INotify(Thread * Self);
   ObjectWaiter * DequeueWaiter();
   void      DequeueSpecificWaiter(ObjectWaiter * waiter);
@@ -332,28 +315,6 @@ class ObjectMonitor {
   int       TrySpin(Thread * Self);
   void      ExitEpilog(Thread * Self, ObjectWaiter * Wakee);
   bool      ExitSuspendEquivalent(JavaThread * Self);
-  void      post_monitor_wait_event(EventJavaMonitorWait * event,
-                                    jlong notifier_tid,
-                                    jlong timeout,
-                                    bool timedout);
-
 };
 
-#undef TEVENT
-#define TEVENT(nom) { if (SyncVerbose) FEVENT(nom); }
-
-#define FEVENT(nom)                             \
-  {                                             \
-    static volatile int ctr = 0;                \
-    int v = ++ctr;                              \
-    if ((v & (v - 1)) == 0) {                   \
-      tty->print_cr("INFO: " #nom " : %d", v);  \
-      tty->flush();                             \
-    }                                           \
-  }
-
-#undef  TEVENT
-#define TEVENT(nom) {;}
-
-
-#endif // SHARE_VM_RUNTIME_OBJECTMONITOR_HPP
+#endif // SHARE_RUNTIME_OBJECTMONITOR_HPP

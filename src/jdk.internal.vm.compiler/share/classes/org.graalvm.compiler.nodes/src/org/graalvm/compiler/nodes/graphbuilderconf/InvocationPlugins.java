@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,9 +20,13 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes.graphbuilderconf;
 
 import static java.lang.String.format;
+import static jdk.vm.ci.services.Services.IS_BUILDING_NATIVE_IMAGE;
+import static jdk.vm.ci.services.Services.IS_IN_NATIVE_IMAGE;
 import static org.graalvm.compiler.nodes.graphbuilderconf.InvocationPlugins.LateClassPlugins.CLOSED_LATE_CLASS_PLUGIN;
 
 import java.lang.reflect.Constructor;
@@ -35,15 +39,16 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import org.graalvm.collections.EconomicMap;
-import org.graalvm.collections.Equivalence;
-import org.graalvm.collections.MapCursor;
-import org.graalvm.collections.Pair;
-import org.graalvm.collections.UnmodifiableEconomicMap;
-import org.graalvm.collections.UnmodifiableMapCursor;
+import jdk.internal.vm.compiler.collections.EconomicMap;
+import jdk.internal.vm.compiler.collections.Equivalence;
+import jdk.internal.vm.compiler.collections.MapCursor;
+import jdk.internal.vm.compiler.collections.Pair;
+import jdk.internal.vm.compiler.collections.UnmodifiableEconomicMap;
+import jdk.internal.vm.compiler.collections.UnmodifiableMapCursor;
 import org.graalvm.compiler.api.replacements.MethodSubstitution;
 import org.graalvm.compiler.api.replacements.MethodSubstitutionRegistry;
 import org.graalvm.compiler.bytecode.BytecodeProvider;
+import org.graalvm.compiler.core.common.SuppressFBWarnings;
 import org.graalvm.compiler.debug.Assertions;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.graph.Node;
@@ -141,6 +146,9 @@ public class InvocationPlugins {
 
         OptionalLazySymbol(String name) {
             this.name = name;
+            if (IS_BUILDING_NATIVE_IMAGE) {
+                resolve();
+            }
         }
 
         @Override
@@ -153,7 +161,7 @@ public class InvocationPlugins {
          * resolution fails.
          */
         public Class<?> resolve() {
-            if (resolved == null) {
+            if (!IS_IN_NATIVE_IMAGE && resolved == null) {
                 Class<?> resolvedOrNull = resolveClass(name, true);
                 resolved = resolvedOrNull == null ? MASK_NULL : resolvedOrNull;
             }
@@ -210,6 +218,20 @@ public class InvocationPlugins {
             this.plugins = plugins;
             this.declaringType = declaringType;
             this.methodSubstitutionBytecodeProvider = methodSubstitutionBytecodeProvider;
+        }
+
+        /**
+         * Creates an object for registering {@link InvocationPlugin}s for methods declared by a
+         * given class.
+         *
+         * @param plugins where to register the plugins
+         * @param declaringClassName the name of the class class declaring the methods for which
+         *            plugins will be registered via this object
+         */
+        public Registration(InvocationPlugins plugins, String declaringClassName) {
+            this.plugins = plugins;
+            this.declaringType = new OptionalLazySymbol(declaringClassName);
+            this.methodSubstitutionBytecodeProvider = null;
         }
 
         /**
@@ -439,6 +461,7 @@ public class InvocationPlugins {
          *            {@code declaringClass}
          */
         public void register(InvocationPlugin plugin, String name, Type... argumentTypes) {
+            assert plugins != null : String.format("Late registrations of invocation plugins for %s is already closed", declaringType);
             boolean isStatic = argumentTypes.length == 0 || argumentTypes[0] != InvocationPlugin.Receiver.class;
             if (!isStatic) {
                 argumentTypes[0] = declaringType;
@@ -448,8 +471,8 @@ public class InvocationPlugins {
             Binding binding = new Binding(plugin, isStatic, name, argumentTypes);
             bindings.add(binding);
 
-            assert Checks.check(this.plugins, declaringType, binding);
-            assert Checks.checkResolvable(false, declaringType, binding);
+            assert IS_IN_NATIVE_IMAGE || Checks.check(this.plugins, declaringType, binding);
+            assert IS_IN_NATIVE_IMAGE || Checks.checkResolvable(false, declaringType, binding);
         }
 
         @Override
@@ -564,7 +587,7 @@ public class InvocationPlugins {
         /**
          * Maps method names to binding lists.
          */
-        private final EconomicMap<String, Binding> bindings = EconomicMap.create(Equivalence.DEFAULT);
+        final EconomicMap<String, Binding> bindings = EconomicMap.create(Equivalence.DEFAULT);
 
         /**
          * Gets the invocation plugin for a given method.
@@ -678,7 +701,9 @@ public class InvocationPlugins {
                     }
                 }
                 if (res != null) {
-                    if (canBeIntrinsified(declaringClass)) {
+                    // A decorator plugin is trusted since it does not replace
+                    // the method it intrinsifies.
+                    if (res.isDecorator() || canBeIntrinsified(declaringClass)) {
                         return res;
                     }
                 }
@@ -730,8 +755,8 @@ public class InvocationPlugins {
     }
 
     @SuppressWarnings("serial")
-    static class InvocationPlugRegistrationError extends GraalError {
-        InvocationPlugRegistrationError(Throwable cause) {
+    static class InvocationPluginRegistrationError extends GraalError {
+        InvocationPluginRegistrationError(Throwable cause) {
             super(cause);
         }
     }
@@ -745,7 +770,7 @@ public class InvocationPlugins {
                             deferrable.run();
                         }
                         deferredRegistrations = null;
-                    } catch (InvocationPlugRegistrationError t) {
+                    } catch (InvocationPluginRegistrationError t) {
                         throw t;
                     } catch (Throwable t) {
                         /*
@@ -759,7 +784,7 @@ public class InvocationPlugins {
                         Runnable rethrow = new Runnable() {
                             @Override
                             public void run() {
-                                throw new InvocationPlugRegistrationError(t);
+                                throw new InvocationPluginRegistrationError(t);
                             }
                         };
                         deferredRegistrations.add(rethrow);
@@ -862,6 +887,7 @@ public class InvocationPlugins {
         lateRegistrations = lateClassPlugins;
     }
 
+    @SuppressFBWarnings(value = "ES_COMPARING_STRINGS_WITH_EQ", justification = "string literal object identity used as sentinel")
     private synchronized boolean closeLateRegistrations() {
         if (lateRegistrations == null || lateRegistrations.className != CLOSED_LATE_CLASS_PLUGIN) {
             lateRegistrations = new LateClassPlugins(lateRegistrations, CLOSED_LATE_CLASS_PLUGIN);
@@ -877,11 +903,33 @@ public class InvocationPlugins {
         flushDeferrables();
     }
 
+    /**
+     * Determines if this object currently contains any plugins (in any state of registration). If
+     * this object has any {@link #defer(Runnable) deferred registrations}, it is assumed that
+     * executing them will result in at least one plugin being registered.
+     */
     public boolean isEmpty() {
-        if (resolvedRegistrations != null) {
-            return resolvedRegistrations.isEmpty();
+        if (parent != null && !parent.isEmpty()) {
+            return false;
         }
-        return registrations.size() == 0 && lateRegistrations == null;
+        UnmodifiableEconomicMap<ResolvedJavaMethod, InvocationPlugin> resolvedRegs = resolvedRegistrations;
+        if (resolvedRegs != null) {
+            if (!resolvedRegs.isEmpty()) {
+                return false;
+            }
+        }
+        List<Runnable> deferred = deferredRegistrations;
+        if (deferred != null) {
+            if (!deferred.isEmpty()) {
+                return false;
+            }
+        }
+        for (LateClassPlugins late = lateRegistrations; late != null; late = late.next) {
+            if (!late.bindings.isEmpty()) {
+                return false;
+            }
+        }
+        return registrations.size() == 0;
     }
 
     /**
@@ -931,8 +979,8 @@ public class InvocationPlugins {
             argumentTypes[0] = declaringClass;
         }
         Binding binding = put(plugin, isStatic, allowOverwrite, declaringClass, name, argumentTypes);
-        assert Checks.check(this, declaringClass, binding);
-        assert Checks.checkResolvable(isOptional, declaringClass, binding);
+        assert IS_IN_NATIVE_IMAGE || Checks.check(this, declaringClass, binding);
+        assert IS_IN_NATIVE_IMAGE || Checks.checkResolvable(isOptional, declaringClass, binding);
     }
 
     /**
@@ -944,11 +992,11 @@ public class InvocationPlugins {
      *            non-static. Upon returning, element 0 will have been rewritten to
      *            {@code declaringClass}
      */
-    public void register(InvocationPlugin plugin, Type declaringClass, String name, Type... argumentTypes) {
+    public final void register(InvocationPlugin plugin, Type declaringClass, String name, Type... argumentTypes) {
         register(plugin, false, false, declaringClass, name, argumentTypes);
     }
 
-    public void register(InvocationPlugin plugin, String declaringClass, String name, Type... argumentTypes) {
+    public final void register(InvocationPlugin plugin, String declaringClass, String name, Type... argumentTypes) {
         register(plugin, false, false, new OptionalLazySymbol(declaringClass), name, argumentTypes);
     }
 
@@ -961,7 +1009,7 @@ public class InvocationPlugins {
      *            non-static. Upon returning, element 0 will have been rewritten to
      *            {@code declaringClass}
      */
-    public void registerOptional(InvocationPlugin plugin, Type declaringClass, String name, Type... argumentTypes) {
+    public final void registerOptional(InvocationPlugin plugin, Type declaringClass, String name, Type... argumentTypes) {
         register(plugin, true, false, declaringClass, name, argumentTypes);
     }
 
@@ -978,7 +1026,8 @@ public class InvocationPlugins {
                 return plugin;
             }
         }
-        return get(method);
+        InvocationPlugin invocationPlugin = get(method);
+        return invocationPlugin;
     }
 
     /**
@@ -1112,25 +1161,27 @@ public class InvocationPlugins {
         static final Class<?>[][] SIGS;
 
         static {
-            if (!Assertions.assertionsEnabled()) {
+            if (!Assertions.assertionsEnabled() && !IS_BUILDING_NATIVE_IMAGE) {
                 throw new GraalError("%s must only be used in assertions", Checks.class.getName());
             }
             ArrayList<Class<?>[]> sigs = new ArrayList<>(MAX_ARITY);
-            for (Method method : InvocationPlugin.class.getDeclaredMethods()) {
-                if (!Modifier.isStatic(method.getModifiers()) && method.getName().equals("apply")) {
-                    Class<?>[] sig = method.getParameterTypes();
-                    assert sig[0] == GraphBuilderContext.class;
-                    assert sig[1] == ResolvedJavaMethod.class;
-                    assert sig[2] == InvocationPlugin.Receiver.class;
-                    assert Arrays.asList(sig).subList(3, sig.length).stream().allMatch(c -> c == ValueNode.class);
-                    while (sigs.size() < sig.length - 2) {
-                        sigs.add(null);
+            if (!IS_IN_NATIVE_IMAGE) {
+                for (Method method : InvocationPlugin.class.getDeclaredMethods()) {
+                    if (!Modifier.isStatic(method.getModifiers()) && method.getName().equals("apply")) {
+                        Class<?>[] sig = method.getParameterTypes();
+                        assert sig[0] == GraphBuilderContext.class;
+                        assert sig[1] == ResolvedJavaMethod.class;
+                        assert sig[2] == InvocationPlugin.Receiver.class;
+                        assert Arrays.asList(sig).subList(3, sig.length).stream().allMatch(c -> c == ValueNode.class);
+                        while (sigs.size() < sig.length - 2) {
+                            sigs.add(null);
+                        }
+                        sigs.set(sig.length - 3, sig);
                     }
-                    sigs.set(sig.length - 3, sig);
                 }
+                assert sigs.indexOf(null) == -1 : format("need to add an apply() method to %s that takes %d %s arguments ", InvocationPlugin.class.getName(), sigs.indexOf(null),
+                                ValueNode.class.getSimpleName());
             }
-            assert sigs.indexOf(null) == -1 : format("need to add an apply() method to %s that takes %d %s arguments ", InvocationPlugin.class.getName(), sigs.indexOf(null),
-                            ValueNode.class.getSimpleName());
             SIGS = sigs.toArray(new Class<?>[sigs.size()][]);
         }
 
@@ -1246,6 +1297,9 @@ public class InvocationPlugins {
         }
         if (type instanceof OptionalLazySymbol) {
             return ((OptionalLazySymbol) type).resolve();
+        }
+        if (IS_IN_NATIVE_IMAGE) {
+            throw new GraalError("Unresolved type in native image image:" + type.getTypeName());
         }
         return resolveClass(type.getTypeName(), optional);
     }

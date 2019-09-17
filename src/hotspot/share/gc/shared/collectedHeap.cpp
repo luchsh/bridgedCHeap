@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,29 +25,32 @@
 #include "precompiled.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "gc/shared/allocTracer.hpp"
-#include "gc/shared/barrierSet.inline.hpp"
+#include "gc/shared/barrierSet.hpp"
 #include "gc/shared/collectedHeap.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
+#include "gc/shared/gcLocker.inline.hpp"
 #include "gc/shared/gcHeapSummary.hpp"
 #include "gc/shared/gcTrace.hpp"
 #include "gc/shared/gcTraceTime.inline.hpp"
+#include "gc/shared/gcVMOperations.hpp"
 #include "gc/shared/gcWhen.hpp"
-#include "gc/shared/vmGCOperations.hpp"
+#include "gc/shared/memAllocator.hpp"
 #include "logging/log.hpp"
 #include "memory/metaspace.hpp"
 #include "memory/resourceArea.hpp"
+#include "memory/universe.hpp"
 #include "oops/instanceMirrorKlass.hpp"
 #include "oops/oop.inline.hpp"
+#include "runtime/handles.inline.hpp"
 #include "runtime/init.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/threadSMR.hpp"
+#include "runtime/vmThread.hpp"
 #include "services/heapDumper.hpp"
 #include "utilities/align.hpp"
+#include "utilities/copy.hpp"
 
-
-#ifdef ASSERT
-int CollectedHeap::_fire_out_of_memory_count = 0;
-#endif
+class ClassLoaderData;
 
 size_t CollectedHeap::_filler_array_max_size = 0;
 
@@ -63,7 +66,7 @@ void GCHeapLog::log_heap(CollectedHeap* heap, bool before) {
   }
 
   double timestamp = fetch_timestamp();
-  MutexLockerEx ml(&_mutex, Mutex::_no_safepoint_check_flag);
+  MutexLocker ml(&_mutex, Mutex::_no_safepoint_check_flag);
   int index = compute_log_index();
   _records[index].thread = NULL; // Its the GC thread so it's not that interesting.
   _records[index].timestamp = timestamp;
@@ -77,6 +80,11 @@ void GCHeapLog::log_heap(CollectedHeap* heap, bool before) {
 
   heap->print_on(&st);
   st.print_cr("}");
+}
+
+size_t CollectedHeap::unused() const {
+  MutexLocker ml(Heap_lock);
+  return capacity() - used();
 }
 
 VirtualSpaceSummary CollectedHeap::create_heap_space_summary() {
@@ -93,22 +101,22 @@ GCHeapSummary CollectedHeap::create_heap_summary() {
 
 MetaspaceSummary CollectedHeap::create_metaspace_summary() {
   const MetaspaceSizes meta_space(
-      MetaspaceAux::committed_bytes(),
-      MetaspaceAux::used_bytes(),
-      MetaspaceAux::reserved_bytes());
+      MetaspaceUtils::committed_bytes(),
+      MetaspaceUtils::used_bytes(),
+      MetaspaceUtils::reserved_bytes());
   const MetaspaceSizes data_space(
-      MetaspaceAux::committed_bytes(Metaspace::NonClassType),
-      MetaspaceAux::used_bytes(Metaspace::NonClassType),
-      MetaspaceAux::reserved_bytes(Metaspace::NonClassType));
+      MetaspaceUtils::committed_bytes(Metaspace::NonClassType),
+      MetaspaceUtils::used_bytes(Metaspace::NonClassType),
+      MetaspaceUtils::reserved_bytes(Metaspace::NonClassType));
   const MetaspaceSizes class_space(
-      MetaspaceAux::committed_bytes(Metaspace::ClassType),
-      MetaspaceAux::used_bytes(Metaspace::ClassType),
-      MetaspaceAux::reserved_bytes(Metaspace::ClassType));
+      MetaspaceUtils::committed_bytes(Metaspace::ClassType),
+      MetaspaceUtils::used_bytes(Metaspace::ClassType),
+      MetaspaceUtils::reserved_bytes(Metaspace::ClassType));
 
   const MetaspaceChunkFreeListSummary& ms_chunk_free_list_summary =
-    MetaspaceAux::chunk_free_list_summary(Metaspace::NonClassType);
+    MetaspaceUtils::chunk_free_list_summary(Metaspace::NonClassType);
   const MetaspaceChunkFreeListSummary& class_chunk_free_list_summary =
-    MetaspaceAux::chunk_free_list_summary(Metaspace::ClassType);
+    MetaspaceUtils::chunk_free_list_summary(Metaspace::ClassType);
 
   return MetaspaceSummary(MetaspaceGC::capacity_until_GC(), meta_space, data_space, class_space,
                           ms_chunk_free_list_summary, class_chunk_free_list_summary);
@@ -128,12 +136,14 @@ void CollectedHeap::print_heap_after_gc() {
   }
 }
 
+void CollectedHeap::print() const { print_on(tty); }
+
 void CollectedHeap::print_on_error(outputStream* st) const {
   st->print_cr("Heap:");
   print_extended_on(st);
   st->cr();
 
-  _barrier_set->print_on(st);
+  BarrierSet::barrier_set()->print_on(st);
 }
 
 void CollectedHeap::trace_heap(GCWhen::Type when, const GCTracer* gc_tracer) {
@@ -159,26 +169,35 @@ bool CollectedHeap::supports_concurrent_phase_control() const {
   return false;
 }
 
-const char* const* CollectedHeap::concurrent_phases() const {
-  static const char* const result[] = { NULL };
-  return result;
-}
-
 bool CollectedHeap::request_concurrent_phase(const char* phase) {
   return false;
+}
+
+bool CollectedHeap::is_oop(oop object) const {
+  if (!check_obj_alignment(object)) {
+    return false;
+  }
+
+  if (!is_in_reserved(object)) {
+    return false;
+  }
+
+  if (is_in_reserved(object->klass_or_null())) {
+    return false;
+  }
+
+  return true;
 }
 
 // Memory state functions.
 
 
 CollectedHeap::CollectedHeap() :
-  _barrier_set(NULL),
   _is_gc_active(false),
   _total_collections(0),
   _total_full_collections(0),
   _gc_cause(GCCause::_no_gc),
-  _gc_lastcause(GCCause::_no_gc),
-  _defer_initial_card_mark(false) // strengthened by subclass in pre_initialize() below.
+  _gc_lastcause(GCCause::_no_gc)
 {
   const size_t max_len = size_t(arrayOopDesc::max_array_length(T_INT));
   const size_t elements_per_word = HeapWordSize / sizeof(jint);
@@ -234,32 +253,86 @@ void CollectedHeap::collect_as_vm_thread(GCCause::Cause cause) {
   }
 }
 
-void CollectedHeap::set_barrier_set(BarrierSet* barrier_set) {
-  _barrier_set = barrier_set;
-  BarrierSet::set_bs(barrier_set);
+MetaWord* CollectedHeap::satisfy_failed_metadata_allocation(ClassLoaderData* loader_data,
+                                                            size_t word_size,
+                                                            Metaspace::MetadataType mdtype) {
+  uint loop_count = 0;
+  uint gc_count = 0;
+  uint full_gc_count = 0;
+
+  assert(!Heap_lock->owned_by_self(), "Should not be holding the Heap_lock");
+
+  do {
+    MetaWord* result = loader_data->metaspace_non_null()->allocate(word_size, mdtype);
+    if (result != NULL) {
+      return result;
+    }
+
+    if (GCLocker::is_active_and_needs_gc()) {
+      // If the GCLocker is active, just expand and allocate.
+      // If that does not succeed, wait if this thread is not
+      // in a critical section itself.
+      result = loader_data->metaspace_non_null()->expand_and_allocate(word_size, mdtype);
+      if (result != NULL) {
+        return result;
+      }
+      JavaThread* jthr = JavaThread::current();
+      if (!jthr->in_critical()) {
+        // Wait for JNI critical section to be exited
+        GCLocker::stall_until_clear();
+        // The GC invoked by the last thread leaving the critical
+        // section will be a young collection and a full collection
+        // is (currently) needed for unloading classes so continue
+        // to the next iteration to get a full GC.
+        continue;
+      } else {
+        if (CheckJNICalls) {
+          fatal("Possible deadlock due to allocating while"
+                " in jni critical section");
+        }
+        return NULL;
+      }
+    }
+
+    {  // Need lock to get self consistent gc_count's
+      MutexLocker ml(Heap_lock);
+      gc_count      = Universe::heap()->total_collections();
+      full_gc_count = Universe::heap()->total_full_collections();
+    }
+
+    // Generate a VM operation
+    VM_CollectForMetadataAllocation op(loader_data,
+                                       word_size,
+                                       mdtype,
+                                       gc_count,
+                                       full_gc_count,
+                                       GCCause::_metadata_GC_threshold);
+    VMThread::execute(&op);
+
+    // If GC was locked out, try again. Check before checking success because the
+    // prologue could have succeeded and the GC still have been locked out.
+    if (op.gc_locked()) {
+      continue;
+    }
+
+    if (op.prologue_succeeded()) {
+      return op.result();
+    }
+    loop_count++;
+    if ((QueuedAllocationWarningCount > 0) &&
+        (loop_count % QueuedAllocationWarningCount == 0)) {
+      log_warning(gc, ergo)("satisfy_failed_metadata_allocation() retries %d times,"
+                            " size=" SIZE_FORMAT, loop_count, word_size);
+    }
+  } while (true);  // Until a GC is done
 }
 
-void CollectedHeap::pre_initialize() {
-  // Used for ReduceInitialCardMarks (when COMPILER2 is used);
-  // otherwise remains unused.
-#if COMPILER2_OR_JVMCI
-  _defer_initial_card_mark = is_server_compilation_mode_vm() &&  ReduceInitialCardMarks && can_elide_tlab_store_barriers()
-                             && (DeferInitialCardMark || card_mark_must_follow_store());
-#else
-  assert(_defer_initial_card_mark == false, "Who would set it?");
-#endif
+MemoryUsage CollectedHeap::memory_usage() {
+  return MemoryUsage(InitialHeapSize, used(), capacity(), max_capacity());
 }
+
 
 #ifndef PRODUCT
-void CollectedHeap::check_for_bad_heap_word_value(HeapWord* addr, size_t size) {
-  if (CheckMemoryInitialization && ZapUnusedHeapArea) {
-    for (size_t slot = 0; slot < size; slot += 1) {
-      assert((*(intptr_t*) (addr + slot)) != ((intptr_t) badHeapWordVal),
-             "Found badHeapWordValue in post-allocation check");
-    }
-  }
-}
-
 void CollectedHeap::check_for_non_bad_heap_word_value(HeapWord* addr, size_t size) {
   if (CheckMemoryInitialization && ZapUnusedHeapArea) {
     for (size_t slot = 0; slot < size; slot += 1) {
@@ -269,91 +342,6 @@ void CollectedHeap::check_for_non_bad_heap_word_value(HeapWord* addr, size_t siz
   }
 }
 #endif // PRODUCT
-
-#ifdef ASSERT
-void CollectedHeap::check_for_valid_allocation_state() {
-  Thread *thread = Thread::current();
-  // How to choose between a pending exception and a potential
-  // OutOfMemoryError?  Don't allow pending exceptions.
-  // This is a VM policy failure, so how do we exhaustively test it?
-  assert(!thread->has_pending_exception(),
-         "shouldn't be allocating with pending exception");
-  if (StrictSafepointChecks) {
-    assert(thread->allow_allocation(),
-           "Allocation done by thread for which allocation is blocked "
-           "by No_Allocation_Verifier!");
-    // Allocation of an oop can always invoke a safepoint,
-    // hence, the true argument
-    thread->check_for_valid_safepoint_state(true);
-  }
-}
-#endif
-
-HeapWord* CollectedHeap::allocate_from_tlab_slow(Klass* klass, Thread* thread, size_t size) {
-
-  // Retain tlab and allocate object in shared space if
-  // the amount free in the tlab is too large to discard.
-  if (thread->tlab().free() > thread->tlab().refill_waste_limit()) {
-    thread->tlab().record_slow_allocation(size);
-    return NULL;
-  }
-
-  // Discard tlab and allocate a new one.
-  // To minimize fragmentation, the last TLAB may be smaller than the rest.
-  size_t new_tlab_size = thread->tlab().compute_size(size);
-
-  thread->tlab().clear_before_allocation();
-
-  if (new_tlab_size == 0) {
-    return NULL;
-  }
-
-  // Allocate a new TLAB...
-  HeapWord* obj = Universe::heap()->allocate_new_tlab(new_tlab_size);
-  if (obj == NULL) {
-    return NULL;
-  }
-
-  AllocTracer::send_allocation_in_new_tlab(klass, obj, new_tlab_size * HeapWordSize, size * HeapWordSize, thread);
-
-  if (ZeroTLAB) {
-    // ..and clear it.
-    Copy::zero_to_words(obj, new_tlab_size);
-  } else {
-    // ...and zap just allocated object.
-#ifdef ASSERT
-    // Skip mangling the space corresponding to the object header to
-    // ensure that the returned space is not considered parsable by
-    // any concurrent GC thread.
-    size_t hdr_size = oopDesc::header_size();
-    Copy::fill_to_words(obj + hdr_size, new_tlab_size - hdr_size, badHeapWordVal);
-#endif // ASSERT
-  }
-  thread->tlab().fill(obj, obj + size, new_tlab_size);
-  return obj;
-}
-
-void CollectedHeap::flush_deferred_store_barrier(JavaThread* thread) {
-  MemRegion deferred = thread->deferred_card_mark();
-  if (!deferred.is_empty()) {
-    assert(_defer_initial_card_mark, "Otherwise should be empty");
-    {
-      // Verify that the storage points to a parsable object in heap
-      DEBUG_ONLY(oop old_obj = oop(deferred.start());)
-      assert(is_in(old_obj), "Not in allocated heap");
-      assert(!can_elide_initializing_store_barrier(old_obj),
-             "Else should have been filtered in new_store_pre_barrier()");
-      assert(oopDesc::is_oop(old_obj, true), "Not an oop");
-      assert(deferred.word_size() == (size_t)(old_obj->size()),
-             "Mismatch: multiple objects?");
-    }
-    BarrierSet* bs = barrier_set();
-    bs->write_region(deferred);
-    // "Clear" the deferred_card_mark field
-    thread->set_deferred_card_mark(MemRegion());
-  }
-  assert(thread->deferred_card_mark().is_empty(), "invariant");
-}
 
 size_t CollectedHeap::max_tlab_size() const {
   // TLABs can't be bigger than we can fill with a int[Integer.MAX_VALUE].
@@ -368,72 +356,6 @@ size_t CollectedHeap::max_tlab_size() const {
               sizeof(jint) *
               ((juint) max_jint / (size_t) HeapWordSize);
   return align_down(max_int_size, MinObjAlignment);
-}
-
-// Helper for ReduceInitialCardMarks. For performance,
-// compiled code may elide card-marks for initializing stores
-// to a newly allocated object along the fast-path. We
-// compensate for such elided card-marks as follows:
-// (a) Generational, non-concurrent collectors, such as
-//     GenCollectedHeap(ParNew,DefNew,Tenured) and
-//     ParallelScavengeHeap(ParallelGC, ParallelOldGC)
-//     need the card-mark if and only if the region is
-//     in the old gen, and do not care if the card-mark
-//     succeeds or precedes the initializing stores themselves,
-//     so long as the card-mark is completed before the next
-//     scavenge. For all these cases, we can do a card mark
-//     at the point at which we do a slow path allocation
-//     in the old gen, i.e. in this call.
-// (b) GenCollectedHeap(ConcurrentMarkSweepGeneration) requires
-//     in addition that the card-mark for an old gen allocated
-//     object strictly follow any associated initializing stores.
-//     In these cases, the memRegion remembered below is
-//     used to card-mark the entire region either just before the next
-//     slow-path allocation by this thread or just before the next scavenge or
-//     CMS-associated safepoint, whichever of these events happens first.
-//     (The implicit assumption is that the object has been fully
-//     initialized by this point, a fact that we assert when doing the
-//     card-mark.)
-// (c) G1CollectedHeap(G1) uses two kinds of write barriers. When a
-//     G1 concurrent marking is in progress an SATB (pre-write-)barrier
-//     is used to remember the pre-value of any store. Initializing
-//     stores will not need this barrier, so we need not worry about
-//     compensating for the missing pre-barrier here. Turning now
-//     to the post-barrier, we note that G1 needs a RS update barrier
-//     which simply enqueues a (sequence of) dirty cards which may
-//     optionally be refined by the concurrent update threads. Note
-//     that this barrier need only be applied to a non-young write,
-//     but, like in CMS, because of the presence of concurrent refinement
-//     (much like CMS' precleaning), must strictly follow the oop-store.
-//     Thus, using the same protocol for maintaining the intended
-//     invariants turns out, serendepitously, to be the same for both
-//     G1 and CMS.
-//
-// For any future collector, this code should be reexamined with
-// that specific collector in mind, and the documentation above suitably
-// extended and updated.
-oop CollectedHeap::new_store_pre_barrier(JavaThread* thread, oop new_obj) {
-  // If a previous card-mark was deferred, flush it now.
-  flush_deferred_store_barrier(thread);
-  if (can_elide_initializing_store_barrier(new_obj) ||
-      new_obj->is_typeArray()) {
-    // Arrays of non-references don't need a pre-barrier.
-    // The deferred_card_mark region should be empty
-    // following the flush above.
-    assert(thread->deferred_card_mark().is_empty(), "Error");
-  } else {
-    MemRegion mr((HeapWord*)new_obj, new_obj->size());
-    assert(!mr.is_empty(), "Error");
-    if (_defer_initial_card_mark) {
-      // Defer the card mark
-      thread->set_deferred_card_mark(mr);
-    } else {
-      // Do the card mark
-      BarrierSet* bs = barrier_set();
-      bs->write_region(mr);
-    }
-  }
-  return new_obj;
 }
 
 size_t CollectedHeap::filler_array_hdr_size() {
@@ -472,9 +394,8 @@ CollectedHeap::fill_with_array(HeapWord* start, size_t words, bool zap)
   const size_t len = payload_size * HeapWordSize / sizeof(jint);
   assert((int)len >= 0, "size too large " SIZE_FORMAT " becomes %d", words, (int)len);
 
-  // Set the length first for concurrent GC.
-  ((arrayOop)start)->set_length((int)len);
-  post_allocation_setup_common(Universe::intArrayKlassObj(), start);
+  ObjArrayAllocator allocator(Universe::intArrayKlassObj(), words, (int)len, /* do_zero */ false);
+  allocator.initialize(start);
   DEBUG_ONLY(zap_filler_array(start, words, zap);)
 }
 
@@ -487,7 +408,8 @@ CollectedHeap::fill_with_object_impl(HeapWord* start, size_t words, bool zap)
     fill_with_array(start, words, zap);
   } else if (words > 0) {
     assert(words == min_fill_size(), "unaligned size");
-    post_allocation_setup_common(SystemDictionary::Object_klass(), start);
+    ObjAllocator allocator(SystemDictionary::Object_klass(), words);
+    allocator.initialize(start);
   }
 }
 
@@ -518,64 +440,54 @@ void CollectedHeap::fill_with_objects(HeapWord* start, size_t words, bool zap)
   fill_with_object_impl(start, words, zap);
 }
 
-HeapWord* CollectedHeap::allocate_new_tlab(size_t size) {
+void CollectedHeap::fill_with_dummy_object(HeapWord* start, HeapWord* end, bool zap) {
+  CollectedHeap::fill_with_object(start, end, zap);
+}
+
+size_t CollectedHeap::min_dummy_object_size() const {
+  return oopDesc::header_size();
+}
+
+size_t CollectedHeap::tlab_alloc_reserve() const {
+  size_t min_size = min_dummy_object_size();
+  return min_size > (size_t)MinObjAlignment ? align_object_size(min_size) : 0;
+}
+
+HeapWord* CollectedHeap::allocate_new_tlab(size_t min_size,
+                                           size_t requested_size,
+                                           size_t* actual_size) {
   guarantee(false, "thread-local allocation buffers not supported");
   return NULL;
 }
 
 void CollectedHeap::ensure_parsability(bool retire_tlabs) {
-  // The second disjunct in the assertion below makes a concession
-  // for the start-up verification done while the VM is being
-  // created. Callers be careful that you know that mutators
-  // aren't going to interfere -- for instance, this is permissible
-  // if we are still single-threaded and have either not yet
-  // started allocating (nothing much to verify) or we have
-  // started allocating but are now a full-fledged JavaThread
-  // (and have thus made our TLAB's) available for filling.
-  assert(SafepointSynchronize::is_at_safepoint() ||
-         !is_init_completed(),
-         "Should only be called at a safepoint or at start-up"
-         " otherwise concurrent mutator activity may make heap "
-         " unparsable again");
-  const bool use_tlab = UseTLAB;
-  const bool deferred = _defer_initial_card_mark;
-  // The main thread starts allocating via a TLAB even before it
-  // has added itself to the threads list at vm boot-up.
-  JavaThreadIteratorWithHandle jtiwh;
-  assert(!use_tlab || jtiwh.length() > 0,
-         "Attempt to fill tlabs before main thread has been added"
-         " to threads list is doomed to failure!");
-  for (; JavaThread *thread = jtiwh.next(); ) {
-     if (use_tlab) thread->tlab().make_parsable(retire_tlabs);
-#if COMPILER2_OR_JVMCI
-     // The deferred store barriers must all have been flushed to the
-     // card-table (or other remembered set structure) before GC starts
-     // processing the card-table (or other remembered set).
-     if (deferred) flush_deferred_store_barrier(thread);
-#else
-     assert(!deferred, "Should be false");
-     assert(thread->deferred_card_mark().is_empty(), "Should be empty");
-#endif
-  }
-}
+  assert(SafepointSynchronize::is_at_safepoint() || !is_init_completed(),
+         "Should only be called at a safepoint or at start-up");
 
-void CollectedHeap::accumulate_statistics_all_tlabs() {
-  if (UseTLAB) {
-    assert(SafepointSynchronize::is_at_safepoint() ||
-         !is_init_completed(),
-         "should only accumulate statistics on tlabs at safepoint");
+  ThreadLocalAllocStats stats;
 
-    ThreadLocalAllocBuffer::accumulate_statistics_before_gc();
+  for (JavaThreadIteratorWithHandle jtiwh; JavaThread *thread = jtiwh.next();) {
+    BarrierSet::barrier_set()->make_parsable(thread);
+    if (UseTLAB) {
+      if (retire_tlabs) {
+        thread->tlab().retire(&stats);
+      } else {
+        thread->tlab().make_parsable();
+      }
+    }
   }
+
+  stats.publish();
 }
 
 void CollectedHeap::resize_all_tlabs() {
-  if (UseTLAB) {
-    assert(SafepointSynchronize::is_at_safepoint() ||
-         !is_init_completed(),
-         "should only resize tlabs at safepoint");
+  assert(SafepointSynchronize::is_at_safepoint() || !is_init_completed(),
+         "Should only resize tlabs at safepoint");
 
-    ThreadLocalAllocBuffer::resize_all_tlabs();
+  if (UseTLAB && ResizeTLAB) {
+    for (JavaThreadIteratorWithHandle jtiwh; JavaThread *thread = jtiwh.next(); ) {
+      thread->tlab().resize();
+    }
   }
 }
 
@@ -614,4 +526,65 @@ void CollectedHeap::initialize_reserved_region(HeapWord *start, HeapWord *end) {
 
 void CollectedHeap::post_initialize() {
   initialize_serviceability();
+}
+
+#ifndef PRODUCT
+
+bool CollectedHeap::promotion_should_fail(volatile size_t* count) {
+  // Access to count is not atomic; the value does not have to be exact.
+  if (PromotionFailureALot) {
+    const size_t gc_num = total_collections();
+    const size_t elapsed_gcs = gc_num - _promotion_failure_alot_gc_number;
+    if (elapsed_gcs >= PromotionFailureALotInterval) {
+      // Test for unsigned arithmetic wrap-around.
+      if (++*count >= PromotionFailureALotCount) {
+        *count = 0;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool CollectedHeap::promotion_should_fail() {
+  return promotion_should_fail(&_promotion_failure_alot_count);
+}
+
+void CollectedHeap::reset_promotion_should_fail(volatile size_t* count) {
+  if (PromotionFailureALot) {
+    _promotion_failure_alot_gc_number = total_collections();
+    *count = 0;
+  }
+}
+
+void CollectedHeap::reset_promotion_should_fail() {
+  reset_promotion_should_fail(&_promotion_failure_alot_count);
+}
+
+#endif  // #ifndef PRODUCT
+
+bool CollectedHeap::supports_object_pinning() const {
+  return false;
+}
+
+oop CollectedHeap::pin_object(JavaThread* thread, oop obj) {
+  ShouldNotReachHere();
+  return NULL;
+}
+
+void CollectedHeap::unpin_object(JavaThread* thread, oop obj) {
+  ShouldNotReachHere();
+}
+
+void CollectedHeap::deduplicate_string(oop str) {
+  // Do nothing, unless overridden in subclass.
+}
+
+size_t CollectedHeap::obj_size(oop obj) const {
+  return obj->size();
+}
+
+uint32_t CollectedHeap::hash_oop(oop obj) const {
+  const uintptr_t addr = cast_from_oop<uintptr_t>(obj);
+  return static_cast<uint32_t>(addr >> LogMinObjAlignment);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.aarch64;
 
 import static java.lang.reflect.Modifier.isStatic;
@@ -29,10 +31,12 @@ import static jdk.vm.ci.aarch64.AArch64.sp;
 import static jdk.vm.ci.aarch64.AArch64.zr;
 import static jdk.vm.ci.code.ValueUtil.asRegister;
 import static jdk.vm.ci.hotspot.aarch64.AArch64HotSpotRegisterConfig.fp;
+import static org.graalvm.compiler.core.common.GraalOptions.GeneratePIC;
 import static org.graalvm.compiler.core.common.GraalOptions.ZapStackOnMethodEntry;
 
-import org.graalvm.collections.EconomicSet;
+import jdk.internal.vm.compiler.collections.EconomicSet;
 import org.graalvm.compiler.asm.Assembler;
+import org.graalvm.compiler.asm.BranchTargetOutOfBoundsException;
 import org.graalvm.compiler.asm.Label;
 import org.graalvm.compiler.asm.aarch64.AArch64Address;
 import org.graalvm.compiler.asm.aarch64.AArch64Assembler;
@@ -41,13 +45,16 @@ import org.graalvm.compiler.asm.aarch64.AArch64MacroAssembler.ScratchRegister;
 import org.graalvm.compiler.code.CompilationResult;
 import org.graalvm.compiler.core.aarch64.AArch64NodeMatchRules;
 import org.graalvm.compiler.core.common.CompilationIdentifier;
+import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
 import org.graalvm.compiler.core.common.spi.ForeignCallLinkage;
+import org.graalvm.compiler.core.gen.LIRGenerationProvider;
 import org.graalvm.compiler.hotspot.GraalHotSpotVMConfig;
 import org.graalvm.compiler.hotspot.HotSpotDataBuilder;
 import org.graalvm.compiler.hotspot.HotSpotGraalRuntimeProvider;
 import org.graalvm.compiler.hotspot.HotSpotHostBackend;
 import org.graalvm.compiler.hotspot.HotSpotLIRGenerationResult;
+import org.graalvm.compiler.hotspot.meta.HotSpotConstantLoadAction;
 import org.graalvm.compiler.hotspot.meta.HotSpotForeignCallsProvider;
 import org.graalvm.compiler.hotspot.meta.HotSpotProviders;
 import org.graalvm.compiler.hotspot.stubs.Stub;
@@ -66,33 +73,31 @@ import org.graalvm.compiler.lir.gen.LIRGeneratorTool;
 import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.spi.NodeLIRBuilderTool;
 
+import jdk.vm.ci.aarch64.AArch64Kind;
 import jdk.vm.ci.code.CallingConvention;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterConfig;
 import jdk.vm.ci.code.StackSlot;
 import jdk.vm.ci.hotspot.HotSpotCallingConventionType;
+import jdk.vm.ci.hotspot.HotSpotSentinelConstant;
 import jdk.vm.ci.hotspot.aarch64.AArch64HotSpotRegisterConfig;
+import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 /**
  * HotSpot AArch64 specific backend.
  */
-public class AArch64HotSpotBackend extends HotSpotHostBackend {
+public class AArch64HotSpotBackend extends HotSpotHostBackend implements LIRGenerationProvider {
 
     public AArch64HotSpotBackend(GraalHotSpotVMConfig config, HotSpotGraalRuntimeProvider runtime, HotSpotProviders providers) {
         super(config, runtime, providers);
     }
 
-    @Override
-    public FrameMapBuilder newFrameMapBuilder(RegisterConfig registerConfig) {
+    private FrameMapBuilder newFrameMapBuilder(RegisterConfig registerConfig) {
         RegisterConfig registerConfigNonNull = registerConfig == null ? getCodeCache().getRegisterConfig() : registerConfig;
-        return new AArch64FrameMapBuilder(newFrameMap(registerConfigNonNull), getCodeCache(), registerConfigNonNull);
-    }
-
-    @Override
-    public FrameMap newFrameMap(RegisterConfig registerConfig) {
-        return new AArch64FrameMap(getCodeCache(), registerConfig, this);
+        FrameMap frameMap = new AArch64FrameMap(getCodeCache(), registerConfigNonNull, this);
+        return new AArch64FrameMapBuilder(frameMap, getCodeCache(), registerConfigNonNull);
     }
 
     @Override
@@ -101,8 +106,9 @@ public class AArch64HotSpotBackend extends HotSpotHostBackend {
     }
 
     @Override
-    public LIRGenerationResult newLIRGenerationResult(CompilationIdentifier compilationId, LIR lir, FrameMapBuilder frameMapBuilder, StructuredGraph graph, Object stub) {
-        return new HotSpotLIRGenerationResult(compilationId, lir, frameMapBuilder, makeCallingConvention(graph, (Stub) stub), stub);
+    public LIRGenerationResult newLIRGenerationResult(CompilationIdentifier compilationId, LIR lir, RegisterConfig registerConfig, StructuredGraph graph, Object stub) {
+        return new HotSpotLIRGenerationResult(compilationId, lir, newFrameMapBuilder(registerConfig), makeCallingConvention(graph, (Stub) stub), stub,
+                        config.requiresReservedStackCheck(graph.getMethods()));
     }
 
     @Override
@@ -211,22 +217,18 @@ public class AArch64HotSpotBackend extends HotSpotHostBackend {
     }
 
     @Override
-    protected Assembler createAssembler(FrameMap frameMap) {
-        return new AArch64MacroAssembler(getTarget());
-    }
-
-    @Override
     public CompilationResultBuilder newCompilationResultBuilder(LIRGenerationResult lirGenRen, FrameMap frameMap, CompilationResult compilationResult, CompilationResultBuilderFactory factory) {
         HotSpotLIRGenerationResult gen = (HotSpotLIRGenerationResult) lirGenRen;
         LIR lir = gen.getLIR();
         assert gen.getDeoptimizationRescueSlot() == null || frameMap.frameNeedsAllocating() : "method that can deoptimize must have a frame";
 
         Stub stub = gen.getStub();
-        Assembler masm = createAssembler(frameMap);
+        Assembler masm = new AArch64MacroAssembler(getTarget());
         HotSpotFrameContext frameContext = new HotSpotFrameContext(stub != null);
 
         DataBuilder dataBuilder = new HotSpotDataBuilder(getCodeCache().getTarget());
-        CompilationResultBuilder crb = factory.createBuilder(getCodeCache(), getForeignCalls(), frameMap, masm, dataBuilder, frameContext, lir.getOptions(), lir.getDebug(), compilationResult);
+        CompilationResultBuilder crb = factory.createBuilder(getCodeCache(), getForeignCalls(), frameMap, masm, dataBuilder, frameContext, lir.getOptions(), lir.getDebug(), compilationResult,
+                        Register.None);
         crb.setTotalFrameSize(frameMap.totalFrameSize());
         crb.setMaxInterpreterFrameSize(gen.getMaxInterpreterFrameSize());
         StackSlot deoptimizationRescueSlot = gen.getDeoptimizationRescueSlot();
@@ -243,11 +245,25 @@ public class AArch64HotSpotBackend extends HotSpotHostBackend {
 
     @Override
     public void emitCode(CompilationResultBuilder crb, LIR lir, ResolvedJavaMethod installedCodeOwner) {
+        Label verifiedStub = new Label();
+        crb.buildLabelOffsets(lir);
+        try {
+            emitCode(crb, lir, installedCodeOwner, verifiedStub);
+        } catch (BranchTargetOutOfBoundsException e) {
+            // A branch estimation was wrong, now retry with conservative label ranges, this
+            // should always work
+            crb.setConservativeLabelRanges();
+            crb.resetForEmittingCode();
+            lir.resetLabels();
+            verifiedStub.reset();
+            emitCode(crb, lir, installedCodeOwner, verifiedStub);
+        }
+    }
+
+    private void emitCode(CompilationResultBuilder crb, LIR lir, ResolvedJavaMethod installedCodeOwner, Label verifiedStub) {
         AArch64MacroAssembler masm = (AArch64MacroAssembler) crb.asm;
         FrameMap frameMap = crb.frameMap;
         RegisterConfig regConfig = frameMap.getRegisterConfig();
-        Label verifiedStub = new Label();
-
         emitCodePrefix(crb, installedCodeOwner, masm, regConfig, verifiedStub);
         emitCodeBody(crb, lir, masm);
         emitCodeSuffix(crb, masm, frameMap);
@@ -269,7 +285,7 @@ public class AArch64HotSpotBackend extends HotSpotHostBackend {
             Register klass = r10;
             if (config.useCompressedClassPointers) {
                 masm.ldr(32, klass, klassAddress);
-                AArch64HotSpotMove.decodeKlassPointer(masm, klass, klass, providers.getRegisters().getHeapBaseRegister(), config.getKlassEncoding());
+                AArch64HotSpotMove.decodeKlassPointer(crb, masm, klass, klass, config.getKlassEncoding(), config);
             } else {
                 masm.ldr(64, klass, klassAddress);
             }
@@ -285,36 +301,59 @@ public class AArch64HotSpotBackend extends HotSpotHostBackend {
         crb.recordMark(config.MARKID_OSR_ENTRY);
         masm.bind(verifiedStub);
         crb.recordMark(config.MARKID_VERIFIED_ENTRY);
+
+        if (GeneratePIC.getValue(crb.getOptions())) {
+            // Check for method state
+            HotSpotFrameContext frameContext = (HotSpotFrameContext) crb.frameContext;
+            if (!frameContext.isStub) {
+                crb.recordInlineDataInCodeWithNote(new HotSpotSentinelConstant(LIRKind.value(AArch64Kind.QWORD), JavaKind.Long), HotSpotConstantLoadAction.MAKE_NOT_ENTRANT);
+                try (ScratchRegister sc = masm.getScratchRegister()) {
+                    Register scratch = sc.getRegister();
+                    masm.addressOf(scratch);
+                    masm.ldr(64, scratch, AArch64Address.createBaseRegisterOnlyAddress(scratch));
+                    Label noCall = new Label();
+                    masm.cbz(64, scratch, noCall);
+                    AArch64Call.directJmp(crb, masm, getForeignCalls().lookupForeignCall(WRONG_METHOD_HANDLER));
+                    masm.bind(noCall);
+                }
+            }
+        }
     }
 
     private static void emitCodeBody(CompilationResultBuilder crb, LIR lir, AArch64MacroAssembler masm) {
-        /*
-         * Insert a nop at the start of the prolog so we can patch in a branch if we need to
-         * invalidate the method later.
-         */
-        crb.blockComment("[nop for method invalidation]");
-        masm.nop();
-
+        emitInvalidatePlaceholder(crb, masm);
         crb.emit(lir);
+    }
+
+    /**
+     * Insert a nop at the start of the prolog so we can patch in a branch if we need to invalidate
+     * the method later.
+     *
+     * @see "http://mail.openjdk.java.net/pipermail/aarch64-port-dev/2013-September/000273.html"
+     */
+    public static void emitInvalidatePlaceholder(CompilationResultBuilder crb, AArch64MacroAssembler masm) {
+        if (!GeneratePIC.getValue(crb.getOptions())) {
+            crb.blockComment("[nop for method invalidation]");
+            masm.nop();
+        }
     }
 
     private void emitCodeSuffix(CompilationResultBuilder crb, AArch64MacroAssembler masm, FrameMap frameMap) {
         HotSpotProviders providers = getProviders();
         HotSpotFrameContext frameContext = (HotSpotFrameContext) crb.frameContext;
         if (!frameContext.isStub) {
+            HotSpotForeignCallsProvider foreignCalls = providers.getForeignCalls();
             try (ScratchRegister sc = masm.getScratchRegister()) {
                 Register scratch = sc.getRegister();
-                HotSpotForeignCallsProvider foreignCalls = providers.getForeignCalls();
                 crb.recordMark(config.MARKID_EXCEPTION_HANDLER_ENTRY);
                 ForeignCallLinkage linkage = foreignCalls.lookupForeignCall(EXCEPTION_HANDLER);
                 Register helper = AArch64Call.isNearCall(linkage) ? null : scratch;
                 AArch64Call.directCall(crb, masm, linkage, helper, null);
-
-                crb.recordMark(config.MARKID_DEOPT_HANDLER_ENTRY);
-                linkage = foreignCalls.lookupForeignCall(DEOPTIMIZATION_HANDLER);
-                helper = AArch64Call.isNearCall(linkage) ? null : scratch;
-                AArch64Call.directCall(crb, masm, linkage, helper, null);
             }
+            crb.recordMark(config.MARKID_DEOPT_HANDLER_ENTRY);
+            ForeignCallLinkage linkage = foreignCalls.lookupForeignCall(DEOPTIMIZATION_HANDLER);
+            masm.adr(lr, 0); // Warning: the argument is an offset from the instruction!
+            AArch64Call.directJmp(crb, masm, linkage);
         } else {
             // No need to emit the stubs for entries back into the method since
             // it has no calls that can cause such "return" entries

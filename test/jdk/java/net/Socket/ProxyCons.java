@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,11 +24,15 @@
 /*
  * @test
  * @bug 4097826
+ * @library /test/lib
  * @summary SOCKS support inadequate
  * @run main/timeout=40/othervm -DsocksProxyHost=nonexistant ProxyCons
+ * @run main/timeout=40/othervm -DsocksProxyHost=nonexistant -Djava.net.preferIPv4Stack=true ProxyCons
  */
 
 import java.net.*;
+import jdk.test.lib.net.IPSupport;
+
 public class ProxyCons {
     class Server extends Thread {
         ServerSocket server;
@@ -76,6 +80,8 @@ public class ProxyCons {
     }
 
     public static void main(String[] args) throws Exception {
+        IPSupport.throwSkippedExceptionIfNonOperational();
+
         ProxyCons c = new ProxyCons();
         c.test();
     }

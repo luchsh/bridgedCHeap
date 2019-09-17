@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,11 +20,15 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.phases.common.inlining.policy;
 
+import org.graalvm.compiler.core.common.GraalOptions;
 import org.graalvm.compiler.nodes.CallTargetNode;
 import org.graalvm.compiler.nodes.java.MethodCallTargetNode;
 import org.graalvm.compiler.nodes.spi.Replacements;
+import org.graalvm.compiler.phases.common.inlining.info.InlineInfo;
 import org.graalvm.compiler.phases.common.inlining.walker.MethodInvocation;
 
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -35,14 +39,15 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 public final class InlineMethodSubstitutionsPolicy extends InlineEverythingPolicy {
 
     @Override
-    public boolean isWorthInlining(Replacements replacements, MethodInvocation invocation, int inliningDepth, boolean fullyProcessed) {
+    public Decision isWorthInlining(Replacements replacements, MethodInvocation invocation, InlineInfo calleeInfo, int inliningDepth, boolean fullyProcessed) {
+        final boolean isTracing = GraalOptions.TraceInlining.getValue(calleeInfo.graph().getOptions());
         CallTargetNode callTarget = invocation.callee().invoke().callTarget();
         if (callTarget instanceof MethodCallTargetNode) {
-            ResolvedJavaMethod calleeMethod = ((MethodCallTargetNode) callTarget).targetMethod();
-            if (replacements.getSubstitution(calleeMethod, invocation.callee().invoke().bci()) != null) {
-                return true;
+            ResolvedJavaMethod calleeMethod = callTarget.targetMethod();
+            if (replacements.hasSubstitution(calleeMethod, invocation.callee().invoke().bci())) {
+                return Decision.YES.withReason(isTracing, "has a method subtitution");
             }
         }
-        return false;
+        return Decision.NO.withReason(isTracing, "does not have a method substitution");
     }
 }

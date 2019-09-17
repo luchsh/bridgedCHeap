@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,7 @@
 #include "gc/g1/g1CollectedHeap.inline.hpp"
 #include "gc/g1/g1ConcurrentRefine.hpp"
 #include "gc/g1/g1ConcurrentRefineThread.hpp"
+#include "gc/g1/g1DirtyCardQueue.hpp"
 #include "gc/g1/g1RemSet.hpp"
 #include "gc/g1/g1RemSetSummary.hpp"
 #include "gc/g1/g1YoungRemSetSamplingThread.hpp"
@@ -53,7 +54,7 @@ public:
 
 void G1RemSetSummary::update() {
   _num_conc_refined_cards = _rem_set->num_conc_refined_cards();
-  DirtyCardQueueSet& dcqs = JavaThread::dirty_card_queue_set();
+  G1DirtyCardQueueSet& dcqs = G1BarrierSet::dirty_card_queue_set();
   _num_processed_buf_mutator = dcqs.processed_buffers_mut();
   _num_processed_buf_rs_threads = dcqs.processed_buffers_rs_thread();
 
@@ -145,7 +146,7 @@ void G1RemSetSummary::subtract_from(G1RemSetSummary* other) {
   _sampling_thread_vtime = other->sampling_thread_vtime() - _sampling_thread_vtime;
 }
 
-class RegionTypeCounter VALUE_OBJ_CLASS_SPEC {
+class RegionTypeCounter {
 private:
   const char* _name;
 
@@ -226,6 +227,7 @@ private:
   RegionTypeCounter _humongous;
   RegionTypeCounter _free;
   RegionTypeCounter _old;
+  RegionTypeCounter _archive;
   RegionTypeCounter _all;
 
   size_t _max_rs_mem_sz;
@@ -247,12 +249,13 @@ private:
   HeapRegion* max_code_root_mem_sz_region() const { return _max_code_root_mem_sz_region; }
 
 public:
-  HRRSStatsIter() : _all("All"), _young("Young"), _humongous("Humongous"),
-    _free("Free"), _old("Old"), _max_code_root_mem_sz_region(NULL), _max_rs_mem_sz_region(NULL),
-    _max_rs_mem_sz(0), _max_code_root_mem_sz(0)
+  HRRSStatsIter() : _young("Young"), _humongous("Humongous"),
+    _free("Free"), _old("Old"), _archive("Archive"), _all("All"),
+    _max_rs_mem_sz(0), _max_rs_mem_sz_region(NULL),
+    _max_code_root_mem_sz(0), _max_code_root_mem_sz_region(NULL)
   {}
 
-  bool doHeapRegion(HeapRegion* r) {
+  bool do_heap_region(HeapRegion* r) {
     HeapRegionRemSet* hrrs = r->rem_set();
 
     // HeapRegionRemSet::mem_size() includes the
@@ -279,6 +282,8 @@ public:
       current = &_humongous;
     } else if (r->is_old()) {
       current = &_old;
+    } else if (r->is_archive()) {
+      current = &_archive;
     } else {
       ShouldNotReachHere();
     }
@@ -289,7 +294,7 @@ public:
   }
 
   void print_summary_on(outputStream* out) {
-    RegionTypeCounter* counters[] = { &_young, &_humongous, &_free, &_old, NULL };
+    RegionTypeCounter* counters[] = { &_young, &_humongous, &_free, &_old, &_archive, NULL };
 
     out->print_cr(" Current rem set statistics");
     out->print_cr("  Total per region rem sets sizes = " SIZE_FORMAT "%s."

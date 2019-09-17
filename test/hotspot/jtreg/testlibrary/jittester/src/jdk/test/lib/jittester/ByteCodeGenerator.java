@@ -23,14 +23,14 @@
 
 package jdk.test.lib.jittester;
 
-import java.io.FileOutputStream;
+import jdk.test.lib.jittester.visitors.ByteCodeVisitor;
+
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.function.Function;
-import jdk.test.lib.jittester.visitors.ByteCodeVisitor;
 
 /**
  * Generates class files from IRTree
@@ -39,7 +39,7 @@ class ByteCodeGenerator extends TestsGenerator {
     private static final String DEFAULT_SUFFIX = "bytecode_tests";
 
     ByteCodeGenerator() {
-        super(DEFAULT_SUFFIX);
+        super(DEFAULT_SUFFIX, s -> new String[0], "-Xcomp");
     }
 
     ByteCodeGenerator(String suffix, Function<String, String[]> preRunActions, String jtDriverOptions) {
@@ -88,8 +88,8 @@ class ByteCodeGenerator extends TestsGenerator {
     }
 
     private void writeFile(String fileName, byte[] bytecode) {
-        try (FileOutputStream file = new FileOutputStream(generatorDir.resolve(fileName).toFile())) {
-            file.write(bytecode);
+        try {
+            Files.write(generatorDir.resolve(fileName), bytecode);
         } catch (IOException ex) {
             ex.printStackTrace();
         }

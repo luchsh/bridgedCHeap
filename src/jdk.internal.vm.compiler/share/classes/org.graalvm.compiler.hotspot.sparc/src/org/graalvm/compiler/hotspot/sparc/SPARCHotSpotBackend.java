@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.sparc;
 
 import static jdk.vm.ci.code.ValueUtil.asRegister;
@@ -46,9 +48,9 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.graalvm.collections.EconomicMap;
-import org.graalvm.collections.EconomicSet;
-import org.graalvm.collections.Equivalence;
+import jdk.internal.vm.compiler.collections.EconomicMap;
+import jdk.internal.vm.compiler.collections.EconomicSet;
+import jdk.internal.vm.compiler.collections.Equivalence;
 import org.graalvm.compiler.asm.Assembler;
 import org.graalvm.compiler.asm.Label;
 import org.graalvm.compiler.asm.sparc.SPARCAddress;
@@ -61,6 +63,7 @@ import org.graalvm.compiler.code.DataSection.Data;
 import org.graalvm.compiler.core.common.CompilationIdentifier;
 import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
 import org.graalvm.compiler.core.common.cfg.AbstractBlockBase;
+import org.graalvm.compiler.core.gen.LIRGenerationProvider;
 import org.graalvm.compiler.core.sparc.SPARCNodeMatchRules;
 import org.graalvm.compiler.debug.CounterKey;
 import org.graalvm.compiler.debug.DebugContext;
@@ -107,7 +110,7 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 /**
  * HotSpot SPARC specific backend.
  */
-public class SPARCHotSpotBackend extends HotSpotHostBackend {
+public class SPARCHotSpotBackend extends HotSpotHostBackend implements LIRGenerationProvider {
 
     private static final SizeEstimateStatistics CONSTANT_ESTIMATED_STATS = new SizeEstimateStatistics("ESTIMATE");
     private static final SizeEstimateStatistics CONSTANT_ACTUAL_STATS = new SizeEstimateStatistics("ACTUAL");
@@ -132,15 +135,10 @@ public class SPARCHotSpotBackend extends HotSpotHostBackend {
         }
     }
 
-    @Override
-    public FrameMapBuilder newFrameMapBuilder(RegisterConfig registerConfig) {
+    private FrameMapBuilder newFrameMapBuilder(RegisterConfig registerConfig) {
         RegisterConfig registerConfigNonNull = registerConfig == null ? getCodeCache().getRegisterConfig() : registerConfig;
-        return new SPARCFrameMapBuilder(newFrameMap(registerConfigNonNull), getCodeCache(), registerConfigNonNull);
-    }
-
-    @Override
-    public FrameMap newFrameMap(RegisterConfig registerConfig) {
-        return new SPARCFrameMap(getCodeCache(), registerConfig, this);
+        FrameMap frameMap = new SPARCFrameMap(getCodeCache(), registerConfigNonNull, this);
+        return new SPARCFrameMapBuilder(frameMap, getCodeCache(), registerConfigNonNull);
     }
 
     @Override
@@ -149,8 +147,9 @@ public class SPARCHotSpotBackend extends HotSpotHostBackend {
     }
 
     @Override
-    public LIRGenerationResult newLIRGenerationResult(CompilationIdentifier compilationId, LIR lir, FrameMapBuilder frameMapBuilder, StructuredGraph graph, Object stub) {
-        return new HotSpotLIRGenerationResult(compilationId, lir, frameMapBuilder, makeCallingConvention(graph, (Stub) stub), stub);
+    public LIRGenerationResult newLIRGenerationResult(CompilationIdentifier compilationId, LIR lir, RegisterConfig registerConfig, StructuredGraph graph, Object stub) {
+        return new HotSpotLIRGenerationResult(compilationId, lir, newFrameMapBuilder(registerConfig), makeCallingConvention(graph, (Stub) stub), stub,
+                        config.requiresReservedStackCheck(graph.getMethods()));
     }
 
     @Override
@@ -191,17 +190,19 @@ public class SPARCHotSpotBackend extends HotSpotHostBackend {
         @Override
         public void enter(CompilationResultBuilder crb) {
             final int frameSize = crb.frameMap.totalFrameSize();
-            final int stackpoinerChange = -frameSize;
+            final int stackpointerChange = -frameSize;
             SPARCMacroAssembler masm = (SPARCMacroAssembler) crb.asm;
-            emitStackOverflowCheck(crb);
+            if (!isStub) {
+                emitStackOverflowCheck(crb);
+            }
 
-            if (SPARCAssembler.isSimm13(stackpoinerChange)) {
-                masm.save(sp, stackpoinerChange, sp);
+            if (SPARCAssembler.isSimm13(stackpointerChange)) {
+                masm.save(sp, stackpointerChange, sp);
             } else {
                 try (ScratchRegister sc = masm.getScratchRegister()) {
                     Register scratch = sc.getRegister();
                     assert isGlobalRegister(scratch) : "Only global registers are allowed before save. Got register " + scratch;
-                    masm.setx(stackpoinerChange, scratch, false);
+                    masm.setx(stackpointerChange, scratch, false);
                     masm.save(sp, scratch, sp);
                 }
             }
@@ -223,25 +224,20 @@ public class SPARCHotSpotBackend extends HotSpotHostBackend {
     }
 
     @Override
-    protected Assembler createAssembler(FrameMap frameMap) {
-        return new SPARCMacroAssembler(getTarget());
-    }
-
-    @Override
     public CompilationResultBuilder newCompilationResultBuilder(LIRGenerationResult lirGenRes, FrameMap frameMap, CompilationResult compilationResult, CompilationResultBuilderFactory factory) {
         HotSpotLIRGenerationResult gen = (HotSpotLIRGenerationResult) lirGenRes;
         LIR lir = gen.getLIR();
         assert gen.getDeoptimizationRescueSlot() == null || frameMap.frameNeedsAllocating() : "method that can deoptimize must have a frame";
 
         Stub stub = gen.getStub();
-        Assembler masm = createAssembler(frameMap);
+        Assembler masm = new SPARCMacroAssembler(getTarget());
         // On SPARC we always use stack frames.
         HotSpotFrameContext frameContext = new HotSpotFrameContext(stub != null);
         DataBuilder dataBuilder = new HotSpotDataBuilder(getCodeCache().getTarget());
         OptionValues options = lir.getOptions();
         DebugContext debug = lir.getDebug();
         CompilationResultBuilder crb = factory.createBuilder(getProviders().getCodeCache(), getProviders().getForeignCalls(), frameMap, masm, dataBuilder, frameContext, options, debug,
-                        compilationResult);
+                        compilationResult, Register.None);
         crb.setTotalFrameSize(frameMap.totalFrameSize());
         crb.setMaxInterpreterFrameSize(gen.getMaxInterpreterFrameSize());
         StackSlot deoptimizationRescueSlot = gen.getDeoptimizationRescueSlot();

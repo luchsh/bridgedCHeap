@@ -8,7 +8,7 @@
 
 // Abstract interface to delegate memory requests
 // we have several back-ends
-class CHeapAllocator {
+class CHeapAllocator : public CHeapObj<mtGC> {
 public:
   virtual void* malloc(size_t size) = 0;
   virtual void free(void* buf) = 0;

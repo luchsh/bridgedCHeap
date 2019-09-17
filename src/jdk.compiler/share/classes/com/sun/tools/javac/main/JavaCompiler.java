@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -275,6 +275,10 @@ public class JavaCompiler {
      */
     protected Source source;
 
+    /** The preview language version.
+     */
+    protected Preview preview;
+
     /** The module for code generation.
      */
     protected Gen gen;
@@ -310,6 +314,8 @@ public class JavaCompiler {
     /** The diagnostics factory
      */
     protected JCDiagnostic.Factory diags;
+
+    protected DeferredCompletionFailureHandler dcfh;
 
     /** The type eraser.
      */
@@ -403,6 +409,7 @@ public class JavaCompiler {
             log.error(Errors.CantAccess(ex.sym, ex.getDetailValue()));
         }
         source = Source.instance(context);
+        preview = Preview.instance(context);
         attr = Attr.instance(context);
         analyzer = Analyzer.instance(context);
         chk = Check.instance(context);
@@ -416,6 +423,7 @@ public class JavaCompiler {
         modules = Modules.instance(context);
         moduleFinder = ModuleFinder.instance(context);
         diags = Factory.instance(context);
+        dcfh = DeferredCompletionFailureHandler.instance(context);
 
         finder.sourceCompleter = sourceCompleter;
         modules.findPackageInFile = this::findPackageInFile;
@@ -776,7 +784,7 @@ public class JavaCompiler {
             try (BufferedWriter out = new BufferedWriter(outFile.openWriter())) {
                 new Pretty(out, true).printUnit(env.toplevel, cdef);
                 if (verbose)
-                    log.printVerbose("wrote.file", outFile);
+                    log.printVerbose("wrote.file", outFile.getName());
             }
             return outFile;
         }
@@ -797,9 +805,8 @@ public class JavaCompiler {
      */
     public void readSourceFile(JCCompilationUnit tree, ClassSymbol c) throws CompletionFailure {
         if (completionFailureName == c.fullname) {
-            JCDiagnostic msg =
-                    diagFactory.fragment(Fragments.UserSelectedCompletionFailure);
-            throw new CompletionFailure(c, msg);
+            throw new CompletionFailure(
+                c, () -> diagFactory.fragment(Fragments.UserSelectedCompletionFailure), dcfh);
         }
         JavaFileObject filename = c.classfile;
         JavaFileObject prev = log.useSource(filename);
@@ -827,7 +834,7 @@ public class JavaCompiler {
         // have enough modules available to access java.lang, and
         // so risk getting FatalError("no.java.lang") from MemberEnter.
         if (!modules.enter(List.of(tree), c)) {
-            throw new CompletionFailure(c, diags.fragment(Fragments.CantResolveModules));
+            throw new CompletionFailure(c, () -> diags.fragment(Fragments.CantResolveModules), dcfh);
         }
 
         enter.complete(List.of(tree), c);
@@ -848,18 +855,18 @@ public class JavaCompiler {
                 if (enter.getEnv(tree.modle) == null) {
                     JCDiagnostic diag =
                         diagFactory.fragment(Fragments.FileDoesNotContainModule);
-                    throw new ClassFinder.BadClassFile(c, filename, diag, diagFactory);
+                    throw new ClassFinder.BadClassFile(c, filename, diag, diagFactory, dcfh);
                 }
             } else if (isPkgInfo) {
                 if (enter.getEnv(tree.packge) == null) {
                     JCDiagnostic diag =
                         diagFactory.fragment(Fragments.FileDoesNotContainPackage(c.location()));
-                    throw new ClassFinder.BadClassFile(c, filename, diag, diagFactory);
+                    throw new ClassFinder.BadClassFile(c, filename, diag, diagFactory, dcfh);
                 }
             } else {
                 JCDiagnostic diag =
                         diagFactory.fragment(Fragments.FileDoesntContainClass(c.getQualifiedName()));
-                throw new ClassFinder.BadClassFile(c, filename, diag, diagFactory);
+                throw new ClassFinder.BadClassFile(c, filename, diag, diagFactory, dcfh);
             }
         }
 
@@ -982,6 +989,8 @@ public class JavaCompiler {
             if (!log.hasDiagnosticListener()) {
                 printCount("error", errorCount());
                 printCount("warn", warningCount());
+                printSuppressedCount(errorCount(), log.nsuppressederrors, "count.error.recompile");
+                printSuppressedCount(warningCount(), log.nsuppressedwarns, "count.warn.recompile");
             }
             if (!taskListener.isEmpty()) {
                 taskListener.finished(new TaskEvent(TaskEvent.Kind.COMPILATION));
@@ -1006,7 +1015,11 @@ public class JavaCompiler {
      * Parses a list of files.
      */
    public List<JCCompilationUnit> parseFiles(Iterable<JavaFileObject> fileObjects) {
-       if (shouldStop(CompileState.PARSE))
+       return parseFiles(fileObjects, false);
+   }
+
+   public List<JCCompilationUnit> parseFiles(Iterable<JavaFileObject> fileObjects, boolean force) {
+       if (!force && shouldStop(CompileState.PARSE))
            return List.nil();
 
         //parse all files
@@ -1722,6 +1735,7 @@ public class JavaCompiler {
                 log.warning(Warnings.ProcUseProcOrImplicit);
         }
         chk.reportDeferredDiagnostics();
+        preview.reportDeferredDiagnostics();
         if (log.compressedOutput) {
             log.mandatoryNote(null, Notes.CompressedDiags);
         }
@@ -1752,6 +1766,7 @@ public class JavaCompiler {
     private Name parseAndGetName(JavaFileObject fo,
                                  Function<JCTree.JCCompilationUnit, Name> tree2Name) {
         DiagnosticHandler dh = new DiscardDiagnosticHandler(log);
+        JavaFileObject prevSource = log.useSource(fo);
         try {
             JCTree.JCCompilationUnit t = parse(fo, fo.getCharContent(false));
             return tree2Name.apply(t);
@@ -1759,6 +1774,7 @@ public class JavaCompiler {
             return null;
         } finally {
             log.popDiagnosticHandler(dh);
+            log.useSource(prevSource);
         }
     }
 
@@ -1826,6 +1842,15 @@ public class JavaCompiler {
             else
                 key = "count." + kind + ".plural";
             log.printLines(WriterKind.ERROR, key, String.valueOf(count));
+            log.flush(Log.WriterKind.ERROR);
+        }
+    }
+
+    private void printSuppressedCount(int shown, int suppressed, String diagKey) {
+        if (suppressed > 0) {
+            int total = shown + suppressed;
+            log.printLines(WriterKind.ERROR, diagKey,
+                    String.valueOf(shown), String.valueOf(total));
             log.flush(Log.WriterKind.ERROR);
         }
     }

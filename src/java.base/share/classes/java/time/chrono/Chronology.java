@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -133,7 +133,7 @@ import java.util.Set;
  * <li> {@link #date(TemporalAccessor) date(TemporalAccessor)}
  * </ul>
  *
- * <h3 id="addcalendars">Adding New Calendars</h3>
+ * <h2 id="addcalendars">Adding New Calendars</h2>
  * The set of available chronologies can be extended by applications.
  * Adding a new calendar system requires the writing of an implementation of
  * {@code Chronology}, {@code ChronoLocalDate} and {@code Era}.
@@ -736,8 +736,8 @@ public interface Chronology extends Comparable<Chronology> {
      * @throws DateTimeException if any of the values are out of range
      * @since 9
      */
-     public default long epochSecond(int prolepticYear, int month, int dayOfMonth,
-                                     int hour, int minute, int second, ZoneOffset zoneOffset) {
+    public default long epochSecond(int prolepticYear, int month, int dayOfMonth,
+                                    int hour, int minute, int second, ZoneOffset zoneOffset) {
         Objects.requireNonNull(zoneOffset, "zoneOffset");
         HOUR_OF_DAY.checkValidValue(hour);
         MINUTE_OF_HOUR.checkValidValue(minute);
@@ -765,8 +765,8 @@ public interface Chronology extends Comparable<Chronology> {
      * @throws DateTimeException if any of the values are out of range
      * @since 9
      */
-     public default long epochSecond(Era era, int yearOfEra, int month, int dayOfMonth,
-                                     int hour, int minute, int second, ZoneOffset zoneOffset) {
+    public default long epochSecond(Era era, int yearOfEra, int month, int dayOfMonth,
+                                    int hour, int minute, int second, ZoneOffset zoneOffset) {
         Objects.requireNonNull(era, "era");
         return epochSecond(prolepticYear(era, yearOfEra), month, dayOfMonth, hour, minute, second, zoneOffset);
     }

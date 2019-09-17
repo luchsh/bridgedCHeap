@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,13 +27,20 @@
  *      5026830 5023243 5070673 4052517 4811767 6192449 6397034 6413313
  *      6464154 6523983 6206031 4960438 6631352 6631966 6850957 6850958
  *      4947220 7018606 7034570 4244896 5049299 8003488 8054494 8058464
- *      8067796
+ *      8067796 8224905
  * @key intermittent
  * @summary Basic tests for Process and Environment Variable code
  * @modules java.base/java.lang:open
  * @run main/othervm/timeout=300 Basic
  * @run main/othervm/timeout=300 -Djdk.lang.Process.launchMechanism=fork Basic
  * @author Martin Buchholz
+ */
+
+/*
+ * @test
+ * @modules java.base/java.lang:open
+ * @requires (os.family == "linux")
+ * @run main/othervm/timeout=300 -Djdk.lang.Process.launchMechanism=posix_spawn Basic
  */
 
 import java.lang.ProcessBuilder.Redirect;
@@ -2077,7 +2084,7 @@ public class Basic {
 
         //----------------------------------------------------------------
         // Check that reads which are pending when Process.destroy is
-        // called, get EOF, not IOException("Stream closed").
+        // called, get EOF, or IOException("Stream closed").
         //----------------------------------------------------------------
         try {
             final int cases = 4;
@@ -2105,6 +2112,11 @@ public class Basic {
                                 default: throw new Error();
                             }
                             equal(-1, r);
+                        } catch (IOException ioe) {
+                            if (!ioe.getMessage().equals("Stream closed")) {
+                                // BufferedInputStream may throw IOE("Stream closed").
+                                unexpected(ioe);
+                            }
                         } catch (Throwable t) { unexpected(t); }}};
 
                 thread.start();
@@ -2175,8 +2187,10 @@ public class Basic {
                             // Check that reader failed because stream was
                             // asynchronously closed.
                             // e.printStackTrace();
+                            String msg = e.getMessage();
                             if (EnglishUnix.is() &&
-                                ! (e.getMessage().matches(".*Bad file.*")))
+                                ! (msg.matches(".*Bad file.*") ||
+                                        msg.matches(".*Stream closed.*")))
                                 unexpected(e);
                         }
                         catch (Throwable t) { unexpected(t); }}};
@@ -2421,6 +2435,7 @@ public class Basic {
                 public void run() {
                     try {
                         aboutToWaitFor.countDown();
+                        Thread.currentThread().interrupt();
                         boolean result = p.waitFor(30L * 1000L, TimeUnit.MILLISECONDS);
                         fail("waitFor() wasn't interrupted, its return value was: " + result);
                     } catch (InterruptedException success) {
@@ -2430,7 +2445,38 @@ public class Basic {
 
             thread.start();
             aboutToWaitFor.await();
-            Thread.sleep(1000);
+            thread.interrupt();
+            thread.join(10L * 1000L);
+            check(millisElapsedSince(start) < 10L * 1000L);
+            check(!thread.isAlive());
+            p.destroy();
+        } catch (Throwable t) { unexpected(t); }
+
+        //----------------------------------------------------------------
+        // Check that Process.waitFor(Long.MAX_VALUE, TimeUnit.MILLISECONDS)
+        // interrupt works as expected, if interrupted while waiting.
+        //----------------------------------------------------------------
+        try {
+            List<String> childArgs = new ArrayList<String>(javaChildArgs);
+            childArgs.add("sleep");
+            final Process p = new ProcessBuilder(childArgs).start();
+            final long start = System.nanoTime();
+            final CountDownLatch aboutToWaitFor = new CountDownLatch(1);
+
+            final Thread thread = new Thread() {
+                public void run() {
+                    try {
+                        aboutToWaitFor.countDown();
+                        Thread.currentThread().interrupt();
+                        boolean result = p.waitFor(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
+                        fail("waitFor() wasn't interrupted, its return value was: " + result);
+                    } catch (InterruptedException success) {
+                    } catch (Throwable t) { unexpected(t); }
+                }
+            };
+
+            thread.start();
+            aboutToWaitFor.await();
             thread.interrupt();
             thread.join(10L * 1000L);
             check(millisElapsedSince(start) < 10L * 1000L);

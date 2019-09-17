@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002, 2017, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2017, SAP SE. All rights reserved.
+ * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,10 +23,11 @@
  *
  */
 
-#ifndef CPU_PPC_VM_MACROASSEMBLER_PPC_HPP
-#define CPU_PPC_VM_MACROASSEMBLER_PPC_HPP
+#ifndef CPU_PPC_MACROASSEMBLER_PPC_HPP
+#define CPU_PPC_MACROASSEMBLER_PPC_HPP
 
 #include "asm/assembler.hpp"
+#include "oops/accessDecorators.hpp"
 #include "runtime/rtmLocking.hpp"
 #include "utilities/macros.hpp"
 
@@ -161,7 +162,7 @@ class MacroAssembler: public Assembler {
   // branch, jump
   //
 
-  inline void pd_patch_instruction(address branch, address target);
+  inline void pd_patch_instruction(address branch, address target, const char* file, int line);
   NOT_PRODUCT(static void pd_print_patched_instruction(address branch);)
 
   // Conditional far branch for destinations encodable in 24+2 bits.
@@ -394,11 +395,6 @@ class MacroAssembler: public Assembler {
   static bool is_load_from_polling_page(int instruction, void* ucontext/*may be NULL*/,
                                         address* polling_address_ptr = NULL);
 
-  // Check whether instruction is a write access to the memory
-  // serialization page realized by one of the instructions stw, stwu,
-  // stwx, or stwux.
-  static bool is_memory_serialization(int instruction, JavaThread* thread, void* ucontext);
-
   // Support for NULL-checks
   //
   // Generates code that causes a NULL OS exception if the content of reg is NULL.
@@ -563,6 +559,11 @@ class MacroAssembler: public Assembler {
                            Register temp2_reg,
                            Label& L_success);
 
+  void clinit_barrier(Register klass,
+                      Register thread,
+                      Label* L_fast_path = NULL,
+                      Label* L_slow_path = NULL);
+
   // Method handle support (JSR 292).
   void check_method_handle_type(Register mtype_reg, Register mh_reg, Register temp_reg, Label& wrong_method_type);
 
@@ -602,7 +603,6 @@ class MacroAssembler: public Assembler {
     Register t1,                       // temp register
     Label&   slow_case                 // continuation point if fast allocation fails
   );
-  void tlab_refill(Label& retry_tlab, Label& try_eden, Label& slow_case);
   void incr_allocated_bytes(RegisterOrConstant size_in_bytes, Register t1, Register t2);
 
   enum { trampoline_stub_size = 6 * 4 };
@@ -645,26 +645,10 @@ class MacroAssembler: public Assembler {
                                    Register tmp1, Register tmp2, Register tmp3,
                                    bool try_bias = UseBiasedLocking, bool use_rtm = false);
 
-  // Support for serializing memory accesses between threads
-  void serialize_memory(Register thread, Register tmp1, Register tmp2);
-
   // Check if safepoint requested and if so branch
   void safepoint_poll(Label& slow_path, Register temp_reg);
 
-  // GC barrier support.
-  void card_write_barrier_post(Register Rstore_addr, Register Rnew_val, Register Rtmp);
-  void card_table_write(jbyte* byte_map_base, Register Rtmp, Register Robj);
-
   void resolve_jobject(Register value, Register tmp1, Register tmp2, bool needs_frame);
-
-#if INCLUDE_ALL_GCS
-  // General G1 pre-barrier generator.
-  void g1_write_barrier_pre(Register Robj, RegisterOrConstant offset, Register Rpre_val,
-                            Register Rtmp1, Register Rtmp2, bool needs_frame = false);
-  // General G1 post-barrier generator
-  void g1_write_barrier_post(Register Rstore_addr, Register Rnew_val, Register Rtmp1,
-                             Register Rtmp2, Register Rtmp3, Label *filtered_ext = NULL);
-#endif
 
   // Support for managing the JavaThread pointer (i.e.; the reference to
   // thread-local information).
@@ -680,6 +664,7 @@ class MacroAssembler: public Assembler {
   void get_vm_result_2(Register metadata_result);
 
   static bool needs_explicit_null_check(intptr_t offset);
+  static bool uses_implicit_null_check(void* address);
 
   // Trap-instruction-based checks.
   // Range checks can be distinguished from zero checks as they check 32 bit,
@@ -705,17 +690,26 @@ class MacroAssembler: public Assembler {
   inline void null_check_throw(Register a, int offset, Register temp_reg, address exception_entry);
   inline void null_check(Register a, int offset, Label *Lis_null); // implicit only if Lis_null not provided
 
-  // Load heap oop and decompress. Loaded oop may not be null.
-  // Specify tmp to save one cycle.
-  inline void load_heap_oop_not_null(Register d, RegisterOrConstant offs, Register s1 = noreg,
-                                     Register tmp = noreg);
-  // Store heap oop and decompress.  Decompressed oop may not be null.
-  // Specify tmp register if d should not be changed.
-  inline void store_heap_oop_not_null(Register d, RegisterOrConstant offs, Register s1,
-                                      Register tmp = noreg);
+  // Access heap oop, handle encoding and GC barriers.
+  // Some GC barriers call C so use needs_frame = true if an extra frame is needed at the current call site.
+ private:
+  inline void access_store_at(BasicType type, DecoratorSet decorators,
+                              Register base, RegisterOrConstant ind_or_offs, Register val,
+                              Register tmp1, Register tmp2, Register tmp3, bool needs_frame);
+  inline void access_load_at(BasicType type, DecoratorSet decorators,
+                             Register base, RegisterOrConstant ind_or_offs, Register dst,
+                             Register tmp1, Register tmp2, bool needs_frame, Label *L_handle_null = NULL);
 
-  // Null allowed.
-  inline void load_heap_oop(Register d, RegisterOrConstant offs, Register s1 = noreg, Label *is_null = NULL);
+ public:
+  // Specify tmp1 for better code in certain compressed oops cases. Specify Label to bail out on null oop.
+  // tmp1, tmp2 and needs_frame are used with decorators ON_PHANTOM_OOP_REF or ON_WEAK_OOP_REF.
+  inline void load_heap_oop(Register d, RegisterOrConstant offs, Register s1,
+                            Register tmp1, Register tmp2, bool needs_frame,
+                            DecoratorSet decorators = 0, Label *L_handle_null = NULL);
+
+  inline void store_heap_oop(Register d, RegisterOrConstant offs, Register s1,
+                             Register tmp1, Register tmp2, Register tmp3, bool needs_frame,
+                             DecoratorSet decorators = 0);
 
   // Encode/decode heap oop. Oop may not be null, else en/decoding goes wrong.
   // src == d allowed.
@@ -733,6 +727,7 @@ class MacroAssembler: public Assembler {
 
   void resolve_oop_handle(Register result);
   void load_mirror_from_const_method(Register mirror, Register const_method);
+  void load_method_holder(Register holder, Register method);
 
   static int instr_size_for_decode_klass_not_null();
   void decode_klass_not_null(Register dst, Register src = noreg);
@@ -839,34 +834,26 @@ class MacroAssembler: public Assembler {
   void load_reverse_32(Register dst, Register src);
   int  crc32_table_columns(Register table, Register tc0, Register tc1, Register tc2, Register tc3);
   void fold_byte_crc32(Register crc, Register val, Register table, Register tmp);
-  void fold_8bit_crc32(Register crc, Register table, Register tmp);
   void update_byte_crc32(Register crc, Register val, Register table);
   void update_byteLoop_crc32(Register crc, Register buf, Register len, Register table,
                              Register data, bool loopAlignment);
   void update_1word_crc32(Register crc, Register buf, Register table, int bufDisp, int bufInc,
                           Register t0,  Register t1,  Register t2,  Register t3,
                           Register tc0, Register tc1, Register tc2, Register tc3);
-  void kernel_crc32_2word(Register crc, Register buf, Register len, Register table,
-                          Register t0,  Register t1,  Register t2,  Register t3,
-                          Register tc0, Register tc1, Register tc2, Register tc3,
-                          bool invertCRC);
   void kernel_crc32_1word(Register crc, Register buf, Register len, Register table,
                           Register t0,  Register t1,  Register t2,  Register t3,
                           Register tc0, Register tc1, Register tc2, Register tc3,
                           bool invertCRC);
-  void kernel_crc32_1byte(Register crc, Register buf, Register len, Register table,
-                          Register t0,  Register t1,  Register t2,  Register t3,
-                          bool invertCRC);
-  void kernel_crc32_1word_vpmsumd(Register crc, Register buf, Register len, Register table,
-                          Register constants, Register barretConstants,
-                          Register t0,  Register t1, Register t2, Register t3, Register t4,
-                          bool invertCRC);
-  void kernel_crc32_1word_aligned(Register crc, Register buf, Register len,
-                          Register constants, Register barretConstants,
-                          Register t0, Register t1, Register t2);
+  void kernel_crc32_vpmsum(Register crc, Register buf, Register len, Register constants,
+                           Register t0, Register t1, Register t2, Register t3, Register t4,
+                           Register t5, Register t6, bool invertCRC);
+  void kernel_crc32_vpmsum_aligned(Register crc, Register buf, Register len, Register constants,
+                                   Register t0, Register t1, Register t2, Register t3, Register t4,
+                                   Register t5, Register t6);
+  // Version which internally decides what to use.
+  void crc32(Register crc, Register buf, Register len, Register t0, Register t1, Register t2,
+             Register t3, Register t4, Register t5, Register t6, Register t7, bool is_crc32c);
 
-  void kernel_crc32_singleByte(Register crc, Register buf, Register len, Register table, Register tmp,
-                               bool invertCRC);
   void kernel_crc32_singleByteReg(Register crc, Register val, Register table,
                                   bool invertCRC);
 
@@ -985,4 +972,4 @@ class SkipIfEqualZero : public StackObj {
    ~SkipIfEqualZero();
 };
 
-#endif // CPU_PPC_VM_MACROASSEMBLER_PPC_HPP
+#endif // CPU_PPC_MACROASSEMBLER_PPC_HPP

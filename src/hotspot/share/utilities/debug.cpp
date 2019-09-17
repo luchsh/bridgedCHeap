@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,13 +34,15 @@
 #include "gc/shared/collectedHeap.hpp"
 #include "interpreter/bytecodeHistogram.hpp"
 #include "interpreter/interpreter.hpp"
+#include "memory/allocation.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
-#include "prims/privilegedStack.hpp"
 #include "runtime/arguments.hpp"
 #include "runtime/atomic.hpp"
-#include "runtime/frame.hpp"
+#include "runtime/flags/flagSetting.hpp"
+#include "runtime/frame.inline.hpp"
+#include "runtime/handles.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/os.hpp"
 #include "runtime/sharedRuntime.hpp"
@@ -50,13 +52,24 @@
 #include "runtime/vframe.hpp"
 #include "runtime/vm_version.hpp"
 #include "services/heapDumper.hpp"
+#include "services/memTracker.hpp"
 #include "utilities/defaultStream.hpp"
 #include "utilities/events.hpp"
 #include "utilities/formatBuffer.hpp"
+#include "utilities/globalDefinitions.hpp"
 #include "utilities/macros.hpp"
 #include "utilities/vmError.hpp"
 
 #include <stdio.h>
+#include <stdarg.h>
+
+// Support for showing register content on asserts/guarantees.
+#ifdef CAN_SHOW_REGISTERS_ON_ASSERT
+static char g_dummy;
+char* g_assert_poison = &g_dummy;
+static intx g_asserting_thread = 0;
+static void* g_assertion_context = NULL;
+#endif // CAN_SHOW_REGISTERS_ON_ASSERT
 
 #ifndef ASSERT
 #  ifdef _DEBUG
@@ -81,6 +94,21 @@
      configuration error: ASSERT et al. must not be defined in PRODUCT version
 #  endif
 #endif // PRODUCT
+
+#ifdef ASSERT
+// This is to test that error reporting works if we assert during dynamic
+// initialization of the hotspot. See JDK-8214975.
+struct Crasher {
+  Crasher() {
+    // Using getenv - no other mechanism would work yet.
+    const char* s = ::getenv("HOTSPOT_FATAL_ERROR_DURING_DYNAMIC_INITIALIZATION");
+    if (s != NULL && ::strcmp(s, "1") == 0) {
+      fatal("HOTSPOT_FATAL_ERROR_DURING_DYNAMIC_INITIALIZATION");
+    }
+  }
+};
+static Crasher g_crasher;
+#endif // ASSERT
 
 ATTRIBUTE_PRINTF(1, 2)
 void warning(const char* format, ...) {
@@ -211,7 +239,29 @@ void report_vm_error(const char* file, int line, const char* error_msg, const ch
   if (Debugging || error_is_suppressed(file, line)) return;
   va_list detail_args;
   va_start(detail_args, detail_fmt);
-  VMError::report_and_die(Thread::current_or_null(), file, line, error_msg, detail_fmt, detail_args);
+  void* context = NULL;
+#ifdef CAN_SHOW_REGISTERS_ON_ASSERT
+  if (g_assertion_context != NULL && os::current_thread_id() == g_asserting_thread) {
+    context = g_assertion_context;
+  }
+#endif // CAN_SHOW_REGISTERS_ON_ASSERT
+
+#ifdef ASSERT
+  if (detail_fmt != NULL && ExecutingUnitTests) {
+    // Special handling for the sake of gtest death tests which expect the assert
+    // message to be printed in one short line to stderr (see TEST_VM_ASSERT_MSG) and
+    // cannot be tweaked to accept our normal assert message.
+    va_list detail_args_copy;
+    va_copy(detail_args_copy, detail_args);
+    ::fputs("assert failed: ", stderr);
+    ::vfprintf(stderr, detail_fmt, detail_args_copy);
+    ::fputs("\n", stderr);
+    ::fflush(stderr);
+    va_end(detail_args_copy);
+  }
+#endif
+
+  VMError::report_and_die(Thread::current_or_null(), context, file, line, error_msg, detail_fmt, detail_args);
   va_end(detail_args);
 }
 
@@ -225,7 +275,13 @@ void report_fatal(const char* file, int line, const char* detail_fmt, ...)
   if (Debugging || error_is_suppressed(file, line)) return;
   va_list detail_args;
   va_start(detail_args, detail_fmt);
-  VMError::report_and_die(Thread::current_or_null(), file, line, "fatal error", detail_fmt, detail_args);
+  void* context = NULL;
+#ifdef CAN_SHOW_REGISTERS_ON_ASSERT
+  if (g_assertion_context != NULL && os::current_thread_id() == g_asserting_thread) {
+    context = g_assertion_context;
+  }
+#endif // CAN_SHOW_REGISTERS_ON_ASSERT
+  VMError::report_and_die(Thread::current_or_null(), context, file, line, "fatal error", detail_fmt, detail_args);
   va_end(detail_args);
 }
 
@@ -253,21 +309,6 @@ void report_should_not_reach_here(const char* file, int line) {
 void report_unimplemented(const char* file, int line) {
   report_vm_error(file, line, "Unimplemented()");
 }
-
-#ifdef ASSERT
-bool is_executing_unit_tests() {
-  return ExecutingUnitTests;
-}
-
-void report_assert_msg(const char* msg, ...) {
-  va_list ap;
-  va_start(ap, msg);
-
-  fprintf(stderr, "assert failed: %s\n", err_msg(FormatBufferDummy(), msg, ap).buffer());
-
-  va_end(ap);
-}
-#endif // ASSERT
 
 void report_untested(const char* file, int line, const char* message) {
 #ifndef PRODUCT
@@ -503,12 +544,6 @@ extern "C" void psd() {
   SystemDictionary::print();
 }
 
-
-extern "C" void safepoints() {
-  Command c("safepoints");
-  SafepointSynchronize::print_state();
-}
-
 #endif // !PRODUCT
 
 extern "C" void pss() { // print all stacks
@@ -608,6 +643,7 @@ void help() {
   tty->print_cr("                   pns($sp, $rbp, $pc) on Linux/amd64 and Solaris/amd64 or");
   tty->print_cr("                   pns($sp, $ebp, $pc) on Linux/x86 or");
   tty->print_cr("                   pns($sp, 0, $pc)    on Linux/ppc64 or");
+  tty->print_cr("                   pns($sp, $s8, $pc)  on Linux/mips or");
   tty->print_cr("                   pns($sp + 0x7ff, 0, $pc) on Solaris/SPARC");
   tty->print_cr("                 - in gdb do 'set overload-resolution off' before calling pns()");
   tty->print_cr("                 - in dbx do 'frame 1' before calling pns()");
@@ -681,3 +717,47 @@ struct TestMultipleStaticAssertFormsInClassScope {
 };
 
 #endif // !PRODUCT
+
+// Support for showing register content on asserts/guarantees.
+#ifdef CAN_SHOW_REGISTERS_ON_ASSERT
+
+static ucontext_t g_stored_assertion_context;
+
+void initialize_assert_poison() {
+  char* page = os::reserve_memory(os::vm_page_size());
+  if (page) {
+    MemTracker::record_virtual_memory_type(page, mtInternal);
+    if (os::commit_memory(page, os::vm_page_size(), false) &&
+        os::protect_memory(page, os::vm_page_size(), os::MEM_PROT_NONE)) {
+      g_assert_poison = page;
+    }
+  }
+}
+
+static void store_context(const void* context) {
+  memcpy(&g_stored_assertion_context, context, sizeof(ucontext_t));
+#if defined(__linux) && defined(PPC64)
+  // on Linux ppc64, ucontext_t contains pointers into itself which have to be patched up
+  //  after copying the context (see comment in sys/ucontext.h):
+  *((void**) &g_stored_assertion_context.uc_mcontext.regs) = &(g_stored_assertion_context.uc_mcontext.gp_regs);
+#endif
+}
+
+bool handle_assert_poison_fault(const void* ucVoid, const void* faulting_address) {
+  if (faulting_address == g_assert_poison) {
+    // Disarm poison page.
+    os::protect_memory((char*)g_assert_poison, os::vm_page_size(), os::MEM_PROT_RWX);
+    // Store Context away.
+    if (ucVoid) {
+      const intx my_tid = os::current_thread_id();
+      if (Atomic::cmpxchg(my_tid, &g_asserting_thread, (intx)0) == 0) {
+        store_context(ucVoid);
+        g_assertion_context = &g_stored_assertion_context;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+#endif // CAN_SHOW_REGISTERS_ON_ASSERT
+

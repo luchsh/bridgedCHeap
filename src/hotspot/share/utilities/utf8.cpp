@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -228,7 +228,9 @@ void UTF8::as_quoted_ascii(const char* utf8_str, int utf8_length, char* buf, int
   *p = '\0';
 }
 
-
+#ifndef PRODUCT
+// converts a quoted ascii string back to utf8
+// no longer used, but could be useful to test output of UTF8::as_quoted_ascii
 const char* UTF8::from_quoted_ascii(const char* quoted_ascii_str) {
   const char *ptr = quoted_ascii_str;
   char* result = NULL;
@@ -302,7 +304,7 @@ const char* UTF8::from_quoted_ascii(const char* quoted_ascii_str) {
   }
   return buffer;
 }
-
+#endif // !PRODUCT
 
 // Returns NULL if 'c' it not found. This only works as long
 // as 'c' is an ASCII character
@@ -401,7 +403,7 @@ bool UNICODE::is_latin1(jchar c) {
   return (c <= 0x00FF);
 }
 
-bool UNICODE::is_latin1(jchar* base, int length) {
+bool UNICODE::is_latin1(const jchar* base, int length) {
   for (int index = 0; index < length; index++) {
     if (base[index] > 0x00FF) {
       return false;
@@ -434,7 +436,7 @@ int UNICODE::utf8_size(jbyte c) {
 }
 
 template<typename T>
-int UNICODE::utf8_length(T* base, int length) {
+int UNICODE::utf8_length(const T* base, int length) {
   int result = 0;
   for (int index = 0; index < length; index++) {
     T c = base[index];
@@ -444,7 +446,7 @@ int UNICODE::utf8_length(T* base, int length) {
 }
 
 template<typename T>
-char* UNICODE::as_utf8(T* base, int& length) {
+char* UNICODE::as_utf8(const T* base, int& length) {
   int utf8_len = utf8_length(base, length);
   u_char* buf = NEW_RESOURCE_ARRAY(u_char, utf8_len + 1);
   char* result = as_utf8(base, length, (char*) buf, utf8_len + 1);
@@ -454,7 +456,7 @@ char* UNICODE::as_utf8(T* base, int& length) {
   return (char*) result;
 }
 
-char* UNICODE::as_utf8(jchar* base, int length, char* buf, int buflen) {
+char* UNICODE::as_utf8(const jchar* base, int length, char* buf, int buflen) {
   u_char* p = (u_char*)buf;
   for (int index = 0; index < length; index++) {
     jchar c = base[index];
@@ -466,9 +468,8 @@ char* UNICODE::as_utf8(jchar* base, int length, char* buf, int buflen) {
   return buf;
 }
 
-char* UNICODE::as_utf8(jbyte* base, int length, char* buf, int buflen) {
+char* UNICODE::as_utf8(const jbyte* base, int length, char* buf, int buflen) {
   u_char* p = (u_char*)buf;
-  u_char* end = (u_char*)buf + buflen;
   for (int index = 0; index < length; index++) {
     jbyte c = base[index];
     int sz = utf8_size(c);
@@ -496,7 +497,7 @@ void UNICODE::convert_to_utf8(const jchar* base, int length, char* utf8_buffer) 
 
 // returns the quoted ascii length of a unicode string
 template<typename T>
-int UNICODE::quoted_ascii_length(T* base, int length) {
+int UNICODE::quoted_ascii_length(const T* base, int length) {
   int result = 0;
   for (int i = 0; i < length; i++) {
     T c = base[i];
@@ -529,11 +530,11 @@ void UNICODE::as_quoted_ascii(const T* base, int length, char* buf, int buflen) 
 }
 
 // Explicit instantiation for all supported types.
-template int UNICODE::utf8_length(jbyte* base, int length);
-template int UNICODE::utf8_length(jchar* base, int length);
-template char* UNICODE::as_utf8(jbyte* base, int& length);
-template char* UNICODE::as_utf8(jchar* base, int& length);
-template int UNICODE::quoted_ascii_length<jbyte>(jbyte* base, int length);
-template int UNICODE::quoted_ascii_length<jchar>(jchar* base, int length);
+template int UNICODE::utf8_length(const jbyte* base, int length);
+template int UNICODE::utf8_length(const jchar* base, int length);
+template char* UNICODE::as_utf8(const jbyte* base, int& length);
+template char* UNICODE::as_utf8(const jchar* base, int& length);
+template int UNICODE::quoted_ascii_length<jbyte>(const jbyte* base, int length);
+template int UNICODE::quoted_ascii_length<jchar>(const jchar* base, int length);
 template void UNICODE::as_quoted_ascii<jbyte>(const jbyte* base, int length, char* buf, int buflen);
 template void UNICODE::as_quoted_ascii<jchar>(const jchar* base, int length, char* buf, int buflen);

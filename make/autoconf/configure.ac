@@ -31,7 +31,7 @@ SRC#
 
 
 AC_PREREQ([2.69])
-AC_INIT(OpenJDK, jdk9, build-dev@openjdk.java.net,,http://openjdk.java.net)
+AC_INIT(OpenJDK, openjdk, build-dev@openjdk.java.net,,http://openjdk.java.net)
 
 AC_CONFIG_AUX_DIR([$TOPDIR/make/autoconf/build-aux])
 m4_include([build-aux/pkg.m4])
@@ -91,7 +91,6 @@ BASIC_SETUP_PATHS
 JDKOPT_SETUP_OPEN_OR_CUSTOM
 
 # These are needed to be able to create a configuration name (and thus the output directory)
-JDKOPT_SETUP_JDK_VARIANT
 JDKOPT_SETUP_DEBUG_LEVEL
 HOTSPOT_SETUP_JVM_VARIANTS
 
@@ -120,6 +119,7 @@ PLATFORM_SETUP_OPENJDK_BUILD_OS_VERSION
 
 # Misc basic settings
 BASIC_SETUP_DEFAULT_MAKE_TARGET
+BASIC_SETUP_DEFAULT_LOG
 
 ###############################################################################
 #
@@ -163,10 +163,9 @@ JDKOPT_SETUP_STATIC_BUILD
 # First determine the toolchain type (compiler family)
 TOOLCHAIN_DETERMINE_TOOLCHAIN_TYPE
 
-# User supplied flags should be used when configure detects compilers
-FLAGS_SETUP_USER_SUPPLIED_FLAGS
-# The sysroot cflags are needed for configure to be able to run the compilers
-FLAGS_SETUP_SYSROOT_FLAGS
+# The global flags are needed for configure to be able to run the compilers
+# correctly.
+FLAGS_PRE_TOOLCHAIN
 
 # Then detect the actual binaries needed
 TOOLCHAIN_PRE_DETECTION
@@ -181,20 +180,21 @@ TOOLCHAIN_MISC_CHECKS
 # Setup the JTReg Regression Test Harness.
 TOOLCHAIN_SETUP_JTREG
 
+# Setup the Java Microbenchmark Harness (JMH)
+LIB_TESTS_SETUP_JMH
+
 # Setup Jib dependency tool
 TOOLCHAIN_SETUP_JIB
 
-FLAGS_SETUP_INIT_FLAGS
+# After toolchain setup, we need to process some flags to be able to continue.
+FLAGS_POST_TOOLCHAIN
 
 # Now we can test some aspects on the target using configure macros.
 PLATFORM_SETUP_OPENJDK_TARGET_BITS
 PLATFORM_SETUP_OPENJDK_TARGET_ENDIANNESS
 
 # Configure flags for the tools
-FLAGS_SETUP_COMPILER_FLAGS_FOR_LIBS
-FLAGS_SETUP_COMPILER_FLAGS_FOR_OPTIMIZATION
-FLAGS_SETUP_COMPILER_FLAGS_FOR_JDK
-FLAGS_SETUP_COMPILER_FLAGS_MISC
+FLAGS_SETUP_FLAGS
 
 # Setup debug symbols (need objcopy from the toolchain for that)
 JDKOPT_SETUP_DEBUG_SYMBOLS
@@ -234,6 +234,9 @@ HOTSPOT_SETUP_JVM_FEATURES
 JDKOPT_DETECT_INTREE_EC
 JDKOPT_ENABLE_DISABLE_FAILURE_HANDLER
 JDKOPT_ENABLE_DISABLE_GENERATE_CLASSLIST
+JDKOPT_EXCLUDE_TRANSLATIONS
+JDKOPT_ENABLE_DISABLE_MANPAGES
+JDKOPT_ENABLE_DISABLE_CDS_ARCHIVE
 
 ###############################################################################
 #
@@ -275,7 +278,7 @@ BASIC_TEST_USABILITY_ISSUES
 CUSTOM_LATE_HOOK
 
 # This needs to be done after CUSTOM_LATE_HOOK since we can setup custom features.
-HOTSPOT_VALIDATE_JVM_FEATURES
+HOTSPOT_FINALIZE_JVM_FEATURES
 
 # Did user specify any unknown variables?
 BASIC_CHECK_LEFTOVER_OVERRIDDEN

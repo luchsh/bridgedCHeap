@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -53,12 +53,12 @@
  * </li>
  * </ul>
  *
- * <h1><a id="jvm_mods"></a>Dynamic resolution of call sites and constants</h1>
+ * <h2><a id="jvm_mods"></a>Dynamic resolution of call sites and constants</h2>
  * The following low-level information summarizes relevant parts of the
  * Java Virtual Machine specification.  For full details, please see the
  * current version of that specification.
  *
- * <h2><a id="indyinsn"></a>Dynamically-computed call sites</h2>
+ * <h3><a id="indyinsn"></a>Dynamically-computed call sites</h3>
  * An {@code invokedynamic} instruction is originally in an unlinked state.
  * In this state, there is no target method for the instruction to invoke.
  * <p>
@@ -74,7 +74,7 @@
  * The constant pool reference also specifies the invocation's name and method type descriptor,
  * just like {@code invokestatic} and the other invoke instructions.
  *
- * <h2><a id="condycon"></a>Dynamically-computed constants</h2>
+ * <h3><a id="condycon"></a>Dynamically-computed constants</h3>
  * The constant pool may contain constants tagged {@code CONSTANT_Dynamic},
  * equipped with bootstrap methods which perform their resolution.
  * Such a <em>dynamic constant</em> is originally in an unresolved state.
@@ -90,7 +90,7 @@
  * (Roughly speaking, a dynamically-computed constant is to a dynamically-computed call site
  * as a {@code CONSTANT_Fieldref} is to a {@code CONSTANT_Methodref}.)
  *
- * <h2><a id="bsm"></a>Execution of bootstrap methods</h2>
+ * <h3><a id="bsm"></a>Execution of bootstrap methods</h3>
  * Resolving a dynamically-computed call site or constant
  * starts with resolving constants from the constant pool for the
  * following items:
@@ -122,8 +122,11 @@
  * On success the call site then becomes permanently linked to the {@code invokedynamic}
  * instruction.
  * <p>
- * For a dynamically-computed constant, the result of the bootstrap method is cached
- * as the resolved constant value.
+ * For a dynamically-computed constant, the first parameter of the bootstrap
+ * method must be assignable to {@code MethodHandles.Lookup}. If this condition
+ * is not met, a {@code BootstrapMethodError} is thrown.
+ * On success the result of the bootstrap method is cached as the resolved
+ * constant value.
  * <p>
  * If an exception, {@code E} say, occurs during execution of the bootstrap method, then
  * resolution fails and terminates abnormally. {@code E} is rethrown if the type of
@@ -133,7 +136,7 @@
  * subsequent attempts to execute the {@code invokedynamic} instruction or load the
  * dynamically-computed constant.
  *
- * <h2>Timing of resolution</h2>
+ * <h3>Timing of resolution</h3>
  * An {@code invokedynamic} instruction is linked just before its first execution.
  * A dynamically-computed constant is resolved just before the first time it is used
  * (by pushing it on the stack or linking it as a bootstrap method parameter).
@@ -168,19 +171,28 @@
  * just before its first invocation.
  * There is no way to undo the effect of a completed bootstrap method call.
  *
- * <h2>Types of bootstrap methods</h2>
+ * <h3>Types of bootstrap methods</h3>
  * For a dynamically-computed call site, the bootstrap method is invoked with parameter
  * types {@code MethodHandles.Lookup}, {@code String}, {@code MethodType}, and the types
- * of any static arguments; the return type is {@code CallSite}. For a
- * dynamically-computed constant, the bootstrap method is invoked with parameter types
+ * of any static arguments; the return type is {@code CallSite}.
+ * <p>
+ * For a dynamically-computed constant, the bootstrap method is invoked with parameter types
  * {@code MethodHandles.Lookup}, {@code String}, {@code Class}, and the types of any
  * static arguments; the return type is the type represented by the {@code Class}.
- *
+ * <p>
  * Because {@link java.lang.invoke.MethodHandle#invoke MethodHandle.invoke} allows for
- * adaptations between the invoked method type and the method handle's method type,
+ * adaptations between the invoked method type and the bootstrap method handle's method type,
  * there is flexibility in the declaration of the bootstrap method.
- * For example, the first argument could be {@code Object}
- * instead of {@code MethodHandles.Lookup}, and the return type
+ * For a dynamically-computed constant the first parameter type of the bootstrap method handle
+ * must be assignable to {@code MethodHandles.Lookup}, other than that constraint the same degree
+ * of flexibility applies to bootstrap methods of dynamically-computed call sites and
+ * dynamically-computed constants.
+ * Note: this constraint allows for the future possibility where the bootstrap method is
+ * invoked with just the parameter types of static arguments, thereby supporting a wider
+ * range of methods compatible with the static arguments (such as methods that don't declare
+ * or require the lookup, name, and type meta-data parameters).
+ * <p> For example, for dynamically-computed call site, a the first argument
+ * could be {@code Object} instead of {@code MethodHandles.Lookup}, and the return type
  * could also be {@code Object} instead of {@code CallSite}.
  * (Note that the types and number of the stacked arguments limit
  * the legal kinds of bootstrap methods to appropriately typed
@@ -227,7 +239,10 @@
  * {@code String} and {@code Integer} (or {@code int}), respectively.
  * The second-to-last example assumes that all extra arguments are of type
  * {@code String}.
- * The other examples work with all types of extra arguments.
+ * The other examples work with all types of extra arguments.  Note that all
+ * the examples except the second and third also work with dynamically-computed
+ * constants if the return type is changed to be compatible with the
+ * constant's declared type (such as {@code Object}, which is always compatible).
  * <p>
  * Since dynamically-computed constants can be provided as static arguments to bootstrap
  * methods, there are no limitations on the types of bootstrap arguments.

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -97,11 +97,8 @@ import com.sun.tools.javac.util.StringUtils;
 import static javax.tools.StandardLocation.PLATFORM_CLASS_PATH;
 
 import static com.sun.tools.javac.main.Option.BOOT_CLASS_PATH;
-import static com.sun.tools.javac.main.Option.DJAVA_ENDORSED_DIRS;
-import static com.sun.tools.javac.main.Option.DJAVA_EXT_DIRS;
 import static com.sun.tools.javac.main.Option.ENDORSEDDIRS;
 import static com.sun.tools.javac.main.Option.EXTDIRS;
-import static com.sun.tools.javac.main.Option.XBOOTCLASSPATH;
 import static com.sun.tools.javac.main.Option.XBOOTCLASSPATH_APPEND;
 import static com.sun.tools.javac.main.Option.XBOOTCLASSPATH_PREPEND;
 
@@ -382,7 +379,7 @@ public class Locations {
                         /* Not a recognized extension; open it to see if
                          it looks like a valid zip file. */
                         try {
-                            FileSystems.newFileSystem(file, null).close();
+                            FileSystems.newFileSystem(file, (ClassLoader)null).close();
                             if (warn) {
                                 log.warning(Lint.LintCategory.PATH,
                                             Warnings.UnexpectedArchiveFile(file));
@@ -1533,7 +1530,62 @@ public class Locations {
             return true;
         }
 
+        /**
+         * Initializes the module table, based on a string containing the composition
+         * of a series of command-line options.
+         * At most one pattern to initialize a series of modules can be given.
+         * At most one module-specific search path per module can be given.
+         *
+         * @param value a series of values, separated by NUL.
+         */
         void init(String value) {
+            Pattern moduleSpecificForm = Pattern.compile("([\\p{Alnum}$_.]+)=(.*)");
+            List<String> pathsForModules = new ArrayList<>();
+            String modulePattern = null;
+            for (String v : value.split("\0")) {
+                if (moduleSpecificForm.matcher(v).matches()) {
+                    pathsForModules.add(v);
+                } else {
+                    modulePattern = v;
+                }
+            }
+            // set the general module pattern first, if given
+            if (modulePattern != null) {
+                initFromPattern(modulePattern);
+            }
+            pathsForModules.forEach(this::initForModule);
+        }
+
+        /**
+         * Initializes a module-specific override, using {@code setPathsForModule}.
+         *
+         * @param value a string of the form: module-name=search-path
+         */
+        void initForModule(String value) {
+            int eq = value.indexOf('=');
+            String name = value.substring(0, eq);
+            List<Path> paths = new ArrayList<>();
+            for (String v : value.substring(eq + 1).split(File.pathSeparator)) {
+                try {
+                    paths.add(Paths.get(v));
+                } catch (InvalidPathException e) {
+                    throw new IllegalArgumentException("invalid path: " + v, e);
+                }
+            }
+            try {
+                setPathsForModule(name, paths);
+            } catch (IOException e) {
+                e.printStackTrace();
+                throw new IllegalArgumentException("cannot set path for module " + name, e);
+            }
+        }
+
+        /**
+         * Initializes the module table based on a custom option syntax.
+         *
+         * @param value the value such as may be given to a --module-source-path option
+         */
+        void initFromPattern(String value) {
             Collection<String> segments = new ArrayList<>();
             for (String s: value.split(File.pathSeparator)) {
                 expandBraces(s, segments);

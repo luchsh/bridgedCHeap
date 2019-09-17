@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,10 @@
  */
 package requires;
 
+import java.io.BufferedInputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -31,25 +34,47 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import sun.hotspot.code.Compiler;
 import sun.hotspot.cpuinfo.CPUInfo;
 import sun.hotspot.gc.GC;
 import sun.hotspot.WhiteBox;
 import jdk.test.lib.Platform;
+import jdk.test.lib.Container;
 
 /**
  * The Class to be invoked by jtreg prior Test Suite execution to
  * collect information about VM.
- * Do not use any API's that may not be available in all target VMs.
+ * Do not use any APIs that may not be available in all target VMs.
  * Properties set by this Class will be available in the @requires expressions.
  */
 public class VMProps implements Callable<Map<String, String>> {
+    // value known to jtreg as an indicator of error state
+    private static final String ERROR_STATE = "__ERROR__";
 
     private static final WhiteBox WB = WhiteBox.getWhiteBox();
+
+    private static class SafeMap {
+        private final Map<String, String> map = new HashMap<>();
+
+        public void put(String key, Supplier<String> s) {
+            String value;
+            try {
+                value = s.get();
+            } catch (Throwable t) {
+                System.err.println("failed to get value for " + key);
+                t.printStackTrace(System.err);
+                value = ERROR_STATE + t;
+            }
+            map.put(key, value);
+        }
+    }
 
     /**
      * Collects information about VM properties.
@@ -59,42 +84,58 @@ public class VMProps implements Callable<Map<String, String>> {
      */
     @Override
     public Map<String, String> call() {
-        Map<String, String> map = new HashMap<>();
-        map.put("vm.flavor", vmFlavor());
-        map.put("vm.compMode", vmCompMode());
-        map.put("vm.bits", vmBits());
-        map.put("vm.flightRecorder", vmFlightRecorder());
-        map.put("vm.simpleArch", vmArch());
-        map.put("vm.debug", vmDebug());
-        map.put("vm.jvmci", vmJvmci());
-        map.put("vm.emulatedClient", vmEmulatedClient());
-        map.put("vm.cpu.features", cpuFeatures());
-        map.put("vm.rtm.cpu", vmRTMCPU());
-        map.put("vm.rtm.os", vmRTMOS());
-        map.put("vm.aot", vmAOT());
+        SafeMap map = new SafeMap();
+        map.put("vm.flavor", this::vmFlavor);
+        map.put("vm.compMode", this::vmCompMode);
+        map.put("vm.bits", this::vmBits);
+        map.put("vm.flightRecorder", this::vmFlightRecorder);
+        map.put("vm.simpleArch", this::vmArch);
+        map.put("vm.debug", this::vmDebug);
+        map.put("vm.jvmci", this::vmJvmci);
+        map.put("vm.emulatedClient", this::vmEmulatedClient);
+        // vm.hasSA is "true" if the VM contains the serviceability agent
+        // and jhsdb.
+        map.put("vm.hasSA", this::vmHasSA);
+        // vm.hasSAandCanAttach is "true" if the VM contains the serviceability agent
+        // and jhsdb and it can attach to the VM.
+        map.put("vm.hasSAandCanAttach", this::vmHasSAandCanAttach);
+        // vm.hasJFR is "true" if JFR is included in the build of the VM and
+        // so tests can be executed.
+        map.put("vm.hasJFR", this::vmHasJFR);
+        map.put("vm.cpu.features", this::cpuFeatures);
+        map.put("vm.rtm.cpu", this::vmRTMCPU);
+        map.put("vm.rtm.compiler", this::vmRTMCompiler);
+        map.put("vm.aot", this::vmAOT);
+        map.put("vm.aot.enabled", this::vmAotEnabled);
         // vm.cds is true if the VM is compiled with cds support.
-        map.put("vm.cds", vmCDS());
-        map.put("vm.cds.custom.loaders", vmCDSForCustomLoaders());
+        map.put("vm.cds", this::vmCDS);
+        map.put("vm.cds.custom.loaders", this::vmCDSForCustomLoaders);
+        map.put("vm.cds.archived.java.heap", this::vmCDSForArchivedJavaHeap);
         // vm.graal.enabled is true if Graal is used as JIT
-        map.put("vm.graal.enabled", isGraalEnabled());
-        map.put("docker.support", dockerSupport());
+        map.put("vm.graal.enabled", this::isGraalEnabled);
+        map.put("vm.compiler1.enabled", this::isCompiler1Enabled);
+        map.put("vm.compiler2.enabled", this::isCompiler2Enabled);
+        map.put("docker.support", this::dockerSupport);
+        map.put("release.implementor", this::implementor);
+        map.put("test.vm.gc.nvdimm", this::isNvdimmTestEnabled);
         vmGC(map); // vm.gc.X = true/false
+        vmOptFinalFlags(map);
 
-        VMProps.dump(map);
-        return map;
+        dump(map.map);
+        return map.map;
     }
 
     /**
-     * Prints a stack trace before returning null.
+     * Print a stack trace before returning error state;
      * Used by the various helper functions which parse information from
      * VM properties in the case where they don't find an expected property
-     * or a propoerty doesn't conform to an expected format.
+     * or a property doesn't conform to an expected format.
      *
-     * @return null
+     * @return {@link #ERROR_STATE}
      */
-    private String nullWithException(String message) {
+    private String errorWithMessage(String message) {
         new Exception(message).printStackTrace();
-        return null;
+        return ERROR_STATE + message;
     }
 
     /**
@@ -104,15 +145,12 @@ public class VMProps implements Callable<Map<String, String>> {
         String arch = System.getProperty("os.arch");
         if (arch.equals("x86_64") || arch.equals("amd64")) {
             return "x64";
-        }
-        else if (arch.contains("86")) {
+        } else if (arch.contains("86")) {
             return "x86";
         } else {
             return arch;
         }
     }
-
-
 
     /**
      * @return VM type value extracted from the "java.vm.name" property.
@@ -121,7 +159,7 @@ public class VMProps implements Callable<Map<String, String>> {
         // E.g. "Java HotSpot(TM) 64-Bit Server VM"
         String vmName = System.getProperty("java.vm.name");
         if (vmName == null) {
-            return nullWithException("Can't get 'java.vm.name' property");
+            return errorWithMessage("Can't get 'java.vm.name' property");
         }
 
         Pattern startP = Pattern.compile(".* (\\S+) VM");
@@ -129,7 +167,7 @@ public class VMProps implements Callable<Map<String, String>> {
         if (m.matches()) {
             return m.group(1).toLowerCase();
         }
-        return nullWithException("Can't get VM flavor from 'java.vm.name'");
+        return errorWithMessage("Can't get VM flavor from 'java.vm.name'");
     }
 
     /**
@@ -139,16 +177,17 @@ public class VMProps implements Callable<Map<String, String>> {
         // E.g. "mixed mode"
         String vmInfo = System.getProperty("java.vm.info");
         if (vmInfo == null) {
-            return nullWithException("Can't get 'java.vm.info' property");
+            return errorWithMessage("Can't get 'java.vm.info' property");
         }
-        if (vmInfo.toLowerCase().indexOf("mixed mode") != -1) {
+        vmInfo = vmInfo.toLowerCase();
+        if (vmInfo.contains("mixed mode")) {
             return "Xmixed";
-        } else if (vmInfo.toLowerCase().indexOf("compiled mode") != -1) {
+        } else if (vmInfo.contains("compiled mode")) {
             return "Xcomp";
-        } else if (vmInfo.toLowerCase().indexOf("interpreted mode") != -1) {
+        } else if (vmInfo.contains("interpreted mode")) {
             return "Xint";
         } else {
-            return nullWithException("Can't get compilation mode from 'java.vm.info'");
+            return errorWithMessage("Can't get compilation mode from 'java.vm.info'");
         }
     }
 
@@ -160,7 +199,7 @@ public class VMProps implements Callable<Map<String, String>> {
         if (dataModel != null) {
             return dataModel;
         } else {
-            return nullWithException("Can't get 'sun.arch.data.model' property");
+            return errorWithMessage("Can't get 'sun.arch.data.model' property");
         }
     }
 
@@ -168,16 +207,13 @@ public class VMProps implements Callable<Map<String, String>> {
      * @return "true" if Flight Recorder is enabled, "false" if is disabled.
      */
     protected String vmFlightRecorder() {
-        Boolean isUnlockedCommercialFatures = WB.getBooleanVMFlag("UnlockCommercialFeatures");
         Boolean isFlightRecorder = WB.getBooleanVMFlag("FlightRecorder");
         String startFROptions = WB.getStringVMFlag("StartFlightRecording");
-        if (isUnlockedCommercialFatures != null && isUnlockedCommercialFatures) {
-            if (isFlightRecorder != null && isFlightRecorder) {
-                return "true";
-            }
-            if (startFROptions != null && !startFROptions.isEmpty()) {
-                return "true";
-            }
+        if (isFlightRecorder != null && isFlightRecorder) {
+            return "true";
+        }
+        if (startFROptions != null && !startFROptions.isEmpty()) {
+            return "true";
         }
         return "false";
     }
@@ -190,7 +226,7 @@ public class VMProps implements Callable<Map<String, String>> {
         if (debug != null) {
             return "" + debug.contains("debug");
         } else {
-            return nullWithException("Can't get 'jdk.debug' property");
+            return errorWithMessage("Can't get 'jdk.debug' property");
         }
     }
 
@@ -208,7 +244,7 @@ public class VMProps implements Callable<Map<String, String>> {
     protected String vmEmulatedClient() {
         String vmInfo = System.getProperty("java.vm.info");
         if (vmInfo == null) {
-            return "false";
+            return errorWithMessage("Can't get 'java.vm.info' property");
         }
         return "" + vmInfo.contains(" emulated-client");
     }
@@ -225,47 +261,86 @@ public class VMProps implements Callable<Map<String, String>> {
      * Example vm.gc.G1=true means:
      *    VM supports G1
      *    User either set G1 explicitely (-XX:+UseG1GC) or did not set any GC
+     *
      * @param map - property-value pairs
      */
-    protected void vmGC(Map<String, String> map){
-        GC currentGC = GC.current();
-        boolean isByErgo = GC.currentSetByErgo();
-        List<GC> supportedGC = GC.allSupported();
+    protected void vmGC(SafeMap map) {
         for (GC gc: GC.values()) {
-            boolean isSupported = supportedGC.contains(gc);
-            boolean isAcceptable = isSupported && (gc == currentGC || isByErgo);
-            map.put("vm.gc." + gc.name(), "" + isAcceptable);
+            map.put("vm.gc." + gc.name(),
+                    () -> "" + (gc.isSupported()
+                            && (gc.isSelected() || GC.isSelectedErgonomically())));
         }
     }
 
     /**
-     * @return true if VM runs RTM supported OS and false otherwise.
+     * Selected final flag.
+     *
+     * @param map - property-value pairs
+     * @param flagName - flag name
      */
-    protected String vmRTMOS() {
-        boolean isRTMOS = true;
+    private void vmOptFinalFlag(SafeMap map, String flagName) {
+        map.put("vm.opt.final." + flagName,
+                () -> String.valueOf(WB.getBooleanVMFlag(flagName)));
+    }
 
-        if (Platform.isAix()) {
-            // Actually, this works since AIX 7.1.3.30, but os.version property
-            // is set to 7.1.
-            isRTMOS = (Platform.getOsVersionMajor()  > 7) ||
-                      (Platform.getOsVersionMajor() == 7 && Platform.getOsVersionMinor() > 1);
+    /**
+     * Selected sets of final flags.
+     *
+     * @param map - property-value pairs
+     */
+    protected void vmOptFinalFlags(SafeMap map) {
+        vmOptFinalFlag(map, "ClassUnloading");
+        vmOptFinalFlag(map, "UseCompressedOops");
+        vmOptFinalFlag(map, "EnableJVMCI");
+        vmOptFinalFlag(map, "EliminateAllocations");
+    }
 
-        } else if (Platform.isLinux()) {
-            if (Platform.isPPC()) {
-                isRTMOS = (Platform.getOsVersionMajor()  > 4) ||
-                          (Platform.getOsVersionMajor() == 4 && Platform.getOsVersionMinor() > 1);
-            }
+    /**
+     * @return "true" if VM has a serviceability agent.
+     */
+    protected String vmHasSA() {
+        return "" + Platform.hasSA();
+    }
+
+    /**
+     * @return "true" if VM has a serviceability agent and it can
+     * attach to the VM.
+     */
+    protected String vmHasSAandCanAttach() {
+        try {
+            return "" + Platform.shouldSAAttach();
+        } catch (IOException e) {
+            e.printStackTrace();
+            return errorWithMessage("Checking whether SA can attach to the VM failed.:" + e);
         }
-        return "" + isRTMOS;
+    }
+
+    /**
+     * @return "true" if the VM is compiled with Java Flight Recorder (JFR)
+     * support.
+     */
+    protected String vmHasJFR() {
+        return "" + WB.isJFRIncludedInVmBuild();
+    }
+
+    /**
+     * @return true if compiler in use supports RTM and false otherwise.
+     */
+    protected String vmRTMCompiler() {
+        boolean isRTMCompiler = false;
+
+        if (Compiler.isC2Enabled() &&
+            (Platform.isX86() || Platform.isX64() || Platform.isPPC())) {
+            isRTMCompiler = true;
+        }
+        return "" + isRTMCompiler;
     }
 
     /**
      * @return true if VM runs RTM supported CPU and false otherwise.
      */
     protected String vmRTMCPU() {
-        boolean vmRTMCPU = (Platform.isPPC() ? CPUInfo.hasFeature("tcheck") : CPUInfo.hasFeature("rtm"));
-
-        return "" + vmRTMCPU;
+        return "" + CPUInfo.hasFeature("rtm");
     }
 
     /**
@@ -284,30 +359,38 @@ public class VMProps implements Callable<Map<String, String>> {
         return "" + Files.exists(jaotc);
     }
 
+    /*
+     * @return true if there is at least one loaded AOT'ed library.
+     */
+    protected String vmAotEnabled() {
+        return "" + (WB.aotLibrariesCount() > 0);
+    }
+
     /**
      * Check for CDS support.
      *
      * @return true if CDS is supported by the VM to be tested.
      */
     protected String vmCDS() {
-        if (WB.isCDSIncludedInVmBuild()) {
-            return "true";
-        } else {
-            return "false";
-        }
+        return "" + WB.isCDSIncludedInVmBuild();
     }
 
     /**
      * Check for CDS support for custom loaders.
      *
-     * @return true if CDS is supported for customer loader by the VM to be tested.
+     * @return true if CDS provides support for customer loader in the VM to be tested.
      */
     protected String vmCDSForCustomLoaders() {
-        if (vmCDS().equals("true") && Platform.areCustomLoadersSupportedForCDS()) {
-            return "true";
-        } else {
-            return "false";
-        }
+        return "" + ("true".equals(vmCDS()) && Platform.areCustomLoadersSupportedForCDS());
+    }
+
+    /**
+     * Check for CDS support for archived Java heap regions.
+     *
+     * @return true if CDS provides support for archive Java heap regions in the VM to be tested.
+     */
+    protected String vmCDSForArchivedJavaHeap() {
+        return "" + ("true".equals(vmCDS()) && WB.isJavaHeapArchiveSupported());
     }
 
     /**
@@ -316,35 +399,26 @@ public class VMProps implements Callable<Map<String, String>> {
      * @return true if Graal is used as JIT compiler.
      */
     protected String isGraalEnabled() {
-        // Graal is enabled if following conditions are true:
-        // - we are not in Interpreter mode
-        // - UseJVMCICompiler flag is true
-        // - jvmci.Compiler variable is equal to 'graal'
-        // - TieredCompilation is not used or TieredStopAtLevel is greater than 3
-
-        Boolean useCompiler = WB.getBooleanVMFlag("UseCompiler");
-        if (useCompiler == null || !useCompiler)
-            return "false";
-
-        Boolean useJvmciComp = WB.getBooleanVMFlag("UseJVMCICompiler");
-        if (useJvmciComp == null || !useJvmciComp)
-            return "false";
-
-        // This check might be redundant but let's keep it for now.
-        String jvmciCompiler = System.getProperty("jvmci.Compiler");
-        if (jvmciCompiler == null || !jvmciCompiler.equals("graal")) {
-            return "false";
-        }
-
-        Boolean tieredCompilation = WB.getBooleanVMFlag("TieredCompilation");
-        Long compLevel = WB.getIntxVMFlag("TieredStopAtLevel");
-        // if TieredCompilation is enabled and compilation level is <= 3 then no Graal is used
-        if (tieredCompilation != null && tieredCompilation && compLevel != null && compLevel <= 3)
-            return "false";
-
-        return "true";
+        return "" + Compiler.isGraalEnabled();
     }
 
+    /**
+     * Check if Compiler1 is present.
+     *
+     * @return true if Compiler1 is used as JIT compiler, either alone or as part of the tiered system.
+     */
+    protected String isCompiler1Enabled() {
+        return "" + Compiler.isC1Enabled();
+    }
+
+    /**
+     * Check if Compiler2 is present.
+     *
+     * @return true if Compiler2 is used as JIT compiler, either alone or as part of the tiered system.
+     */
+    protected String isCompiler2Enabled() {
+        return "" + Compiler.isC2Enabled();
+    }
 
    /**
      * A simple check for docker support
@@ -352,31 +426,63 @@ public class VMProps implements Callable<Map<String, String>> {
      * @return true if docker is supported in a given environment
      */
     protected String dockerSupport() {
-        // currently docker testing is only supported for Linux-x64 and Linux-ppc64le
-        String arch = System.getProperty("os.arch");
-        if (! (Platform.isLinux() && (Platform.isX64() || arch.equals("ppc64le")))) {
-            return "false";
+        boolean isSupported = false;
+        if (Platform.isLinux()) {
+           // currently docker testing is only supported for Linux,
+           // on certain platforms
+
+           String arch = System.getProperty("os.arch");
+
+           if (Platform.isX64()) {
+              isSupported = true;
+           } else if (Platform.isAArch64()) {
+              isSupported = true;
+           } else if (Platform.isS390x()) {
+              isSupported = true;
+           } else if (arch.equals("ppc64le")) {
+              isSupported = true;
+           }
         }
 
-        boolean isSupported;
-        try {
-            isSupported = checkDockerSupport();
-        } catch (Exception e) {
-            isSupported = false;
-        }
+        if (isSupported) {
+           try {
+              isSupported = checkDockerSupport();
+           } catch (Exception e) {
+              isSupported = false;
+           }
+         }
 
-        return (isSupported) ? "true" : "false";
+        return "" + isSupported;
     }
 
     private boolean checkDockerSupport() throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder("docker", "ps");
+        ProcessBuilder pb = new ProcessBuilder(Container.ENGINE_COMMAND, "ps");
         Process p = pb.start();
         p.waitFor(10, TimeUnit.SECONDS);
 
         return (p.exitValue() == 0);
     }
 
+    private String implementor() {
+        try (InputStream in = new BufferedInputStream(new FileInputStream(
+                System.getProperty("java.home") + "/release"))) {
+            Properties properties = new Properties();
+            properties.load(in);
+            String implementorProperty = properties.getProperty("IMPLEMENTOR");
+            if (implementorProperty != null) {
+                return implementorProperty.replace("\"", "");
+            }
+            return errorWithMessage("Can't get 'IMPLEMENTOR' property from 'release' file");
+        } catch (IOException e) {
+            e.printStackTrace();
+            return errorWithMessage("Failed to read 'release' file " + e);
+        }
+    }
 
+    private String isNvdimmTestEnabled() {
+        String isEnabled = System.getenv("TEST_VM_GC_NVDIMM");
+        return "" + "true".equalsIgnoreCase(isEnabled);
+    }
 
     /**
      * Dumps the map to the file if the file name is given as the property.
@@ -393,7 +499,8 @@ public class VMProps implements Callable<Map<String, String>> {
         List<String> lines = new ArrayList<>();
         map.forEach((k, v) -> lines.add(k + ":" + v));
         try {
-            Files.write(Paths.get(dumpFileName), lines, StandardOpenOption.APPEND);
+            Files.write(Paths.get(dumpFileName), lines,
+                    StandardOpenOption.APPEND, StandardOpenOption.CREATE);
         } catch (IOException e) {
             throw new RuntimeException("Failed to dump properties into '"
                     + dumpFileName + "'", e);
@@ -402,6 +509,7 @@ public class VMProps implements Callable<Map<String, String>> {
 
     /**
      * This method is for the testing purpose only.
+     *
      * @param args
      */
     public static void main(String args[]) {

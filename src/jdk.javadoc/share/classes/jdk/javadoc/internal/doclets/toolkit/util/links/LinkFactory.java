@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,6 @@
 
 package jdk.javadoc.internal.doclets.toolkit.util.links;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import javax.lang.model.element.Element;
@@ -82,7 +81,7 @@ public abstract class LinkFactory {
                 // handles primitives, no types and error types
                 @Override
                 protected Content defaultAction(TypeMirror type, LinkInfo linkInfo) {
-                    link.addContent(utils.getTypeName(type, false));
+                    link.add(utils.getTypeName(type, false));
                     return link;
                 }
 
@@ -97,14 +96,14 @@ public abstract class LinkFactory {
                     currentDepth--;
                     if (utils.isAnnotated(type)) {
                         linkInfo.type = type;
-                        link.addContent(" ");
-                        link.addContent(getTypeAnnotationLinks(linkInfo));
+                        link.add(" ");
+                        link.add(getTypeAnnotationLinks(linkInfo));
                     }
                     // use vararg if required
                     if (linkInfo.isVarArg && currentDepth == 0) {
-                        link.addContent("...");
+                        link.add("...");
                     } else {
-                        link.addContent("[]");
+                        link.add("[]");
                     }
                     return link;
                 }
@@ -112,25 +111,25 @@ public abstract class LinkFactory {
                 @Override
                 public Content visitWildcard(WildcardType type, LinkInfo linkInfo) {
                     linkInfo.isTypeBound = true;
-                    link.addContent("?");
+                    link.add("?");
                     TypeMirror extendsBound = type.getExtendsBound();
                     if (extendsBound != null) {
-                        link.addContent(" extends ");
+                        link.add(" extends ");
                         setBoundsLinkInfo(linkInfo, extendsBound);
-                        link.addContent(getLink(linkInfo));
+                        link.add(getLink(linkInfo));
                     }
                     TypeMirror superBound = type.getSuperBound();
                     if (superBound != null) {
-                        link.addContent(" super ");
+                        link.add(" super ");
                         setBoundsLinkInfo(linkInfo, superBound);
-                        link.addContent(getLink(linkInfo));
+                        link.add(getLink(linkInfo));
                     }
                     return link;
                 }
 
                 @Override
                 public Content visitTypeVariable(TypeVariable type, LinkInfo linkInfo) {
-                    link.addContent(getTypeAnnotationLinks(linkInfo));
+                    link.add(getTypeAnnotationLinks(linkInfo));
                     linkInfo.isTypeBound = true;
                     TypeVariable typevariable = (utils.isArrayType(type))
                             ? (TypeVariable) componentType
@@ -139,12 +138,12 @@ public abstract class LinkFactory {
                     if ((!linkInfo.excludeTypeParameterLinks) && utils.isTypeElement(owner)) {
                         linkInfo.typeElement = (TypeElement) owner;
                         Content label = newContent();
-                        label.addContent(utils.getTypeName(type, false));
+                        label.add(utils.getTypeName(type, false));
                         linkInfo.label = label;
-                        link.addContent(getClassLink(linkInfo));
+                        link.add(getClassLink(linkInfo));
                     } else {
                         // No need to link method type parameters.
-                        link.addContent(utils.getTypeName(typevariable, false));
+                        link.add(utils.getTypeName(typevariable, false));
                     }
 
                     if (!linkInfo.excludeTypeBounds) {
@@ -160,9 +159,9 @@ public abstract class LinkFactory {
                                     !utils.isAnnotated(bound)) {
                                 continue;
                             }
-                            link.addContent(more ? " & " : " extends ");
+                            link.add(more ? " & " : " extends ");
                             setBoundsLinkInfo(linkInfo, bound);
-                            link.addContent(getLink(linkInfo));
+                            link.add(getLink(linkInfo));
                             more = true;
                         }
                     }
@@ -174,16 +173,16 @@ public abstract class LinkFactory {
                     if (linkInfo.isTypeBound && linkInfo.excludeTypeBoundsLinks) {
                         // Since we are excluding type parameter links, we should not
                         // be linking to the type bound.
-                        link.addContent(utils.getTypeName(type, false));
-                        link.addContent(getTypeParameterLinks(linkInfo));
+                        link.add(utils.getTypeName(type, false));
+                        link.add(getTypeParameterLinks(linkInfo));
                         return link;
                     } else {
                         link = newContent();
-                        link.addContent(getTypeAnnotationLinks(linkInfo));
+                        link.add(getTypeAnnotationLinks(linkInfo));
                         linkInfo.typeElement = utils.asTypeElement(type);
-                        link.addContent(getClassLink(linkInfo));
+                        link.add(getClassLink(linkInfo));
                         if (linkInfo.includeTypeAsSepLink) {
-                            link.addContent(getTypeParameterLinks(linkInfo, false));
+                            link.add(getTypeParameterLinks(linkInfo, false));
                         }
                     }
                     return link;
@@ -192,9 +191,9 @@ public abstract class LinkFactory {
             return linkVisitor.visit(linkInfo.type, linkInfo);
         } else if (linkInfo.typeElement != null) {
             Content link = newContent();
-            link.addContent(getClassLink(linkInfo));
+            link.add(getClassLink(linkInfo));
             if (linkInfo.includeTypeAsSepLink) {
-                link.addContent(getTypeParameterLinks(linkInfo, false));
+                link.add(getTypeParameterLinks(linkInfo, false));
             }
             return link;
         } else {
@@ -218,13 +217,14 @@ public abstract class LinkFactory {
     protected abstract Content getClassLink(LinkInfo linkInfo);
 
     /**
-     * Returns a link to the given type parameter.
+     * Returns links to the type parameters.
      *
      * @param linkInfo     the information about the link to construct
-     * @param typeParam the type parameter to link to
-     * @return the link
+     * @param isClassLabel true if this is a class label, or false if it is
+     *                     the type parameters portion of the link
+     * @return the links to the type parameters
      */
-    protected abstract Content getTypeParameterLink(LinkInfo linkInfo, TypeMirror typeParam);
+    protected abstract Content getTypeParameterLinks(LinkInfo linkInfo, boolean isClassLabel);
 
     /**
      * Returns links to the type parameters.
@@ -234,52 +234,6 @@ public abstract class LinkFactory {
      */
     public Content getTypeParameterLinks(LinkInfo linkInfo) {
         return getTypeParameterLinks(linkInfo, true);
-    }
-
-    /**
-     * Returns links to the type parameters.
-     *
-     * @param linkInfo     the information about the link to construct
-     * @param isClassLabel true if this is a class label, or false if it is
-     *                     the type parameters portion of the link
-     * @return the links to the type parameters
-     */
-    public Content getTypeParameterLinks(LinkInfo linkInfo, boolean isClassLabel) {
-        Content links = newContent();
-        List<TypeMirror> vars = new ArrayList<>();
-        TypeMirror ctype = linkInfo.type != null
-                ? utils.getComponentType(linkInfo.type)
-                : null;
-        if (linkInfo.executableElement != null) {
-            linkInfo.executableElement.getTypeParameters().stream().forEach((t) -> {
-                vars.add(t.asType());
-            });
-        } else if (linkInfo.type != null && utils.isDeclaredType(linkInfo.type)) {
-            ((DeclaredType)linkInfo.type).getTypeArguments().stream().forEach(vars::add);
-        } else if (ctype != null && utils.isDeclaredType(ctype)) {
-            ((DeclaredType)ctype).getTypeArguments().stream().forEach(vars::add);
-        } else if (linkInfo.typeElement != null) {
-            linkInfo.typeElement.getTypeParameters().stream().forEach((t) -> {
-                vars.add(t.asType());
-            });
-        } else {
-            // Nothing to document.
-            return links;
-        }
-        if (((linkInfo.includeTypeInClassLinkLabel && isClassLabel)
-                || (linkInfo.includeTypeAsSepLink && !isClassLabel)) && !vars.isEmpty()) {
-            links.addContent("<");
-            boolean many = false;
-            for (TypeMirror t : vars) {
-                if (many) {
-                    links.addContent(",");
-                }
-                links.addContent(getTypeParameterLink(linkInfo, t));
-                many = true;
-            }
-            links.addContent(">");
-        }
-        return links;
     }
 
     public abstract Content getTypeAnnotationLinks(LinkInfo linkInfo);

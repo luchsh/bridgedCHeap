@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_UTILITIES_GLOBALDEFINITIONS_GCC_HPP
-#define SHARE_VM_UTILITIES_GLOBALDEFINITIONS_GCC_HPP
+#ifndef SHARE_UTILITIES_GLOBALDEFINITIONS_GCC_HPP
+#define SHARE_UTILITIES_GLOBALDEFINITIONS_GCC_HPP
 
 #include "jni.h"
 
@@ -218,26 +218,14 @@ inline int g_isnan(double f) { return isnan(f); }
 
 // Checking for finiteness
 
-inline int g_isfinite(jfloat  f)                 { return finite(f); }
-inline int g_isfinite(jdouble f)                 { return finite(f); }
+inline int g_isfinite(jfloat  f)                 { return isfinite(f); }
+inline int g_isfinite(jdouble f)                 { return isfinite(f); }
 
 
 // Wide characters
 
 inline int wcslen(const jchar* x) { return wcslen((const wchar_t*)x); }
 
-
-// Portability macros
-#define PRAGMA_INTERFACE             #pragma interface
-#define PRAGMA_IMPLEMENTATION        #pragma implementation
-#define VALUE_OBJ_CLASS_SPEC
-
-#if (__GNUC__ == 2) && (__GNUC_MINOR__ < 95)
-#define TEMPLATE_TABLE_BUG
-#endif
-#if (__GNUC__ == 2) && (__GNUC_MINOR__ >= 96)
-#define CONST_SDM_BUG
-#endif
 
 // Formatting.
 #ifdef _LP64
@@ -262,7 +250,8 @@ inline int wcslen(const jchar* x) { return wcslen((const wchar_t*)x); }
 #define offsetof(klass,field) offset_of(klass,field)
 
 #if defined(_LP64) && defined(__APPLE__)
-#define JLONG_FORMAT           "%ld"
+#define JLONG_FORMAT          "%ld"
+#define JLONG_FORMAT_W(width) "%" #width "ld"
 #endif // _LP64 && __APPLE__
 
 #ifndef USE_LIBRARY_BASED_TLS_ONLY
@@ -273,4 +262,17 @@ inline int wcslen(const jchar* x) { return wcslen((const wchar_t*)x); }
 #define NOINLINE     __attribute__ ((noinline))
 #define ALWAYSINLINE inline __attribute__ ((always_inline))
 
-#endif // SHARE_VM_UTILITIES_GLOBALDEFINITIONS_GCC_HPP
+// Alignment
+//
+// NOTE! The "+0" below is a workaround for a known bug in older GCC versions
+// (known to fail with 4.6.0, fixed in 4.9.0). This bug affects systems such as
+// RedHat/Oracle Linux 7.5, which ships with GCC 4.8.5. For more details, see
+// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=55382 and
+// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=53017
+//
+// GCC versions older than 4.6.4 would fail even with "+0", and needs additional
+// cast to __typeof__(x) to work around the similar bug.
+//
+#define ATTRIBUTE_ALIGNED(x) __attribute__((aligned((__typeof__(x))x+0)))
+
+#endif // SHARE_UTILITIES_GLOBALDEFINITIONS_GCC_HPP

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -66,12 +66,12 @@ isAsciiDigit(char c)
   /* AIX does not understand '/proc/self' - it requires the real process ID */
   #define FD_DIR aix_fd_dir
   #define DIR DIR64
+  #define dirent dirent64
   #define opendir opendir64
+  #define readdir readdir64
   #define closedir closedir64
 #elif defined(_ALLBSD_SOURCE)
   #define FD_DIR "/dev/fd"
-  #define dirent64 dirent
-  #define readdir64 readdir
 #else
   #define FD_DIR "/proc/self/fd"
 #endif
@@ -80,7 +80,7 @@ int
 closeDescriptors(void)
 {
     DIR *dp;
-    struct dirent64 *dirp;
+    struct dirent *dirp;
     int from_fd = FAIL_FILENO + 1;
 
     /* We're trying to close all file descriptors, but opendir() might
@@ -102,10 +102,7 @@ closeDescriptors(void)
     if ((dp = opendir(FD_DIR)) == NULL)
         return 0;
 
-    /* We use readdir64 instead of readdir to work around Solaris bug
-     * 6395699: /proc/self/fd fails to report file descriptors >= 1024 on Solaris 9
-     */
-    while ((dirp = readdir64(dp)) != NULL) {
+    while ((dirp = readdir(dp)) != NULL) {
         int fd;
         if (isAsciiDigit(dirp->d_name[0]) &&
             (fd = strtol(dirp->d_name, NULL, 10)) >= from_fd + 2)
@@ -316,6 +313,14 @@ int
 childProcess(void *arg)
 {
     const ChildStuff* p = (const ChildStuff*) arg;
+    int fail_pipe_fd = p->fail[1];
+
+    if (p->sendAlivePing) {
+        /* Child shall signal aliveness to parent at the very first
+         * moment. */
+        int code = CHILD_IS_ALIVE;
+        restartableWrite(fail_pipe_fd, &code, sizeof(code));
+    }
 
     /* Close the parent sides of the pipes.
        Closing pipe fds here is redundant, since closeDescriptors()
@@ -346,8 +351,11 @@ childProcess(void *arg)
             goto WhyCantJohnnyExec;
     }
 
-    if (moveDescriptor(p->fail[1], FAIL_FILENO) == -1)
+    if (moveDescriptor(fail_pipe_fd, FAIL_FILENO) == -1)
         goto WhyCantJohnnyExec;
+
+    /* We moved the fail pipe fd */
+    fail_pipe_fd = FAIL_FILENO;
 
     /* close everything */
     if (closeDescriptors() == 0) { /* failed,  close the old way */
@@ -380,9 +388,9 @@ childProcess(void *arg)
      */
     {
         int errnum = errno;
-        restartableWrite(FAIL_FILENO, &errnum, sizeof(errnum));
+        restartableWrite(fail_pipe_fd, &errnum, sizeof(errnum));
     }
-    close(FAIL_FILENO);
+    close(fail_pipe_fd);
     _exit(-1);
     return 0;  /* Suppress warning "no return value from function" */
 }

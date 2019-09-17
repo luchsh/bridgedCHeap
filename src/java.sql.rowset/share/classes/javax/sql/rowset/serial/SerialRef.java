@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,7 +37,7 @@ import java.util.*;
  * creating a <code>SerialRef</code> instance from a <code>Ref</code>
  * object and provides methods for getting and setting the <code>Ref</code> object.
  *
- * <h3> Thread safety </h3>
+ * <h2> Thread safety </h2>
  *
  * A SerialRef is not safe for use by multiple concurrent threads.  If a
  * SerialRef is to be used by more than one thread then access to the SerialRef
@@ -237,7 +237,7 @@ public class SerialRef implements Ref, Serializable, Cloneable {
      * to a stream.
      */
     private void writeObject(ObjectOutputStream s)
-            throws IOException, ClassNotFoundException {
+            throws IOException {
 
         ObjectOutputStream.PutField fields = s.putFields();
         fields.put("baseTypeName", baseTypeName);

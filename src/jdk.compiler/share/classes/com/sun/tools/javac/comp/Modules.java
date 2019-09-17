@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -81,6 +81,7 @@ import com.sun.tools.javac.code.Type;
 import com.sun.tools.javac.code.Types;
 import com.sun.tools.javac.jvm.ClassWriter;
 import com.sun.tools.javac.jvm.JNIWriter;
+import com.sun.tools.javac.jvm.Target;
 import com.sun.tools.javac.main.Option;
 import com.sun.tools.javac.resources.CompilerProperties.Errors;
 import com.sun.tools.javac.resources.CompilerProperties.Warnings;
@@ -144,6 +145,7 @@ public class Modules extends JCTree.Visitor {
     private final JavaFileManager fileManager;
     private final ModuleFinder moduleFinder;
     private final Source source;
+    private final Target target;
     private final boolean allowModules;
     private final boolean allowAccessIntoSystem;
 
@@ -191,6 +193,7 @@ public class Modules extends JCTree.Visitor {
         types = Types.instance(context);
         fileManager = context.get(JavaFileManager.class);
         source = Source.instance(context);
+        target = Target.instance(context);
         allowModules = Feature.MODULES.allowedInSource(source);
         Options options = Options.instance(context);
 
@@ -352,7 +355,7 @@ public class Modules extends JCTree.Visitor {
     private void setCompilationUnitModules(List<JCCompilationUnit> trees, Set<ModuleSymbol> rootModules, ClassSymbol c) {
         // update the module for each compilation unit
         if (multiModuleMode) {
-            checkNoAllModulePath();
+            boolean patchesAutomaticModules = false;
             for (JCCompilationUnit tree: trees) {
                 if (tree.defs.isEmpty()) {
                     tree.modle = syms.unnamedModule;
@@ -372,6 +375,7 @@ public class Modules extends JCTree.Visitor {
                         ModuleSymbol msym = moduleFinder.findModule(name);
                         tree.modle = msym;
                         rootModules.add(msym);
+                        patchesAutomaticModules |= (msym.flags_field & Flags.AUTOMATIC_MODULE) != 0;
 
                         if (msplocn != null) {
                             Name mspname = names.fromString(fileManager.inferModuleName(msplocn));
@@ -435,6 +439,9 @@ public class Modules extends JCTree.Visitor {
                     log.useSource(prev);
                 }
             }
+            if (!patchesAutomaticModules) {
+                checkNoAllModulePath();
+            }
             if (syms.unnamedModule.sourceLocation == null) {
                 syms.unnamedModule.completer = getUnnamedModuleCompleter();
                 syms.unnamedModule.sourceLocation = StandardLocation.SOURCE_PATH;
@@ -447,12 +454,19 @@ public class Modules extends JCTree.Visitor {
                 String moduleOverride = singleModuleOverride(trees);
                 switch (rootModules.size()) {
                     case 0:
-                        defaultModule = moduleFinder.findSingleModule();
+                        try {
+                            defaultModule = moduleFinder.findSingleModule();
+                        } catch (CompletionFailure cf) {
+                            chk.completionError(null, cf);
+                            defaultModule = syms.unnamedModule;
+                        }
                         if (defaultModule == syms.unnamedModule) {
                             if (moduleOverride != null) {
-                                checkNoAllModulePath();
                                 defaultModule = moduleFinder.findModule(names.fromString(moduleOverride));
                                 defaultModule.patchOutputLocation = StandardLocation.CLASS_OUTPUT;
+                                if ((defaultModule.flags_field & Flags.AUTOMATIC_MODULE) == 0) {
+                                    checkNoAllModulePath();
+                                }
                             } else {
                                 // Question: why not do findAllModules and initVisiblePackages here?
                                 // i.e. body of unnamedModuleCompleter
@@ -496,12 +510,8 @@ public class Modules extends JCTree.Visitor {
                 module.completer = sym -> completeModule((ModuleSymbol) sym);
             } else {
                 Assert.check(rootModules.isEmpty());
-                String moduleOverride = singleModuleOverride(trees);
-                if (moduleOverride != null) {
-                    module = moduleFinder.findModule(names.fromString(moduleOverride));
-                } else {
-                    module = defaultModule;
-                }
+                Assert.checkNonNull(c);
+                module = c.packge().modle;
                 rootModules.add(module);
             }
 
@@ -673,7 +683,6 @@ public class Modules extends JCTree.Visitor {
             msym.requires = List.nil();
             msym.uses = List.nil();
             msym.directives = directives.toList();
-            msym.flags_field |= Flags.ACYCLIC;
         } catch (IOException ex) {
             throw new IllegalStateException(ex);
         }
@@ -1235,18 +1244,24 @@ public class Modules extends JCTree.Visitor {
         Set<ModuleSymbol> enabledRoot = new LinkedHashSet<>();
 
         if (rootModules.contains(syms.unnamedModule)) {
-            ModuleSymbol javaSE = syms.getModule(java_se);
             Predicate<ModuleSymbol> jdkModulePred;
-
-            if (javaSE != null && (observable == null || observable.contains(javaSE))) {
+            if (target.allApiModulesAreRoots()) {
                 jdkModulePred = sym -> {
                     sym.complete();
-                    return   !sym.name.startsWith(java_)
-                           && sym.exports.stream().anyMatch(e -> e.modules == null);
+                    return sym.exports.stream().anyMatch(e -> e.modules == null);
                 };
-                enabledRoot.add(javaSE);
             } else {
-                jdkModulePred = sym -> true;
+                ModuleSymbol javaSE = syms.getModule(java_se);
+                if (javaSE != null && (observable == null || observable.contains(javaSE))) {
+                    jdkModulePred = sym -> {
+                        sym.complete();
+                        return !sym.name.startsWith(java_)
+                            && sym.exports.stream().anyMatch(e -> e.modules == null);
+                    };
+                    enabledRoot.add(javaSE);
+                } else {
+                    jdkModulePred = sym -> true;
+                }
             }
 
             Predicate<ModuleSymbol> noIncubatorPred = sym -> {
@@ -1544,7 +1559,9 @@ public class Modules extends JCTree.Visitor {
         }
 
         addExports.forEach((exportsFrom, exports) -> {
-            addVisiblePackages(msym, seen, exportsFrom, exports);
+            if (msym.readModules.contains(exportsFrom)) {
+                addVisiblePackages(msym, seen, exportsFrom, exports);
+            }
         });
     }
 
@@ -1739,7 +1756,7 @@ public class Modules extends JCTree.Visitor {
                 if (!nonSyntheticDeps.add(current))
                     continue;
                 current.complete();
-                if ((current.flags() & Flags.ACYCLIC) != 0)
+                if ((current.flags() & Flags.AUTOMATIC_MODULE) != 0)
                     continue;
                 Assert.checkNonNull(current.requires, current::toString);
                 for (RequiresDirective dep : current.requires) {
@@ -1750,7 +1767,6 @@ public class Modules extends JCTree.Visitor {
             if (nonSyntheticDeps.contains(mod.sym)) {
                 log.error(rd.moduleName.pos(), Errors.CyclicRequires(rd.directive.module));
             }
-            mod.sym.flags_field |= Flags.ACYCLIC;
         }
     }
 
@@ -1782,6 +1798,7 @@ public class Modules extends JCTree.Visitor {
     public void newRound() {
         allModules = null;
         rootModules = null;
+        defaultModule = null;
         warnedMissing.clear();
     }
 

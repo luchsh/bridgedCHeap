@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,13 +23,20 @@
  */
 
 #include "precompiled.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "classfile/protectionDomainCache.hpp"
+#include "classfile/stringTable.hpp"
+#include "classfile/symbolTable.hpp"
+#include "classfile/systemDictionary.hpp"
+#include "memory/universe.hpp"
+#include "runtime/handles.inline.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/javaCalls.hpp"
+#include "runtime/jniHandles.hpp"
 #include "runtime/serviceThread.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "runtime/os.hpp"
 #include "prims/jvmtiImpl.hpp"
-#include "services/allocationContextService.hpp"
+#include "prims/resolvedMethodTable.hpp"
 #include "services/diagnosticArgument.hpp"
 #include "services/diagnosticFramework.hpp"
 #include "services/gcNotifier.hpp"
@@ -40,19 +47,13 @@ ServiceThread* ServiceThread::_instance = NULL;
 void ServiceThread::initialize() {
   EXCEPTION_MARK;
 
-  InstanceKlass* klass = SystemDictionary::Thread_klass();
-  instanceHandle thread_oop = klass->allocate_instance_handle(CHECK);
-
   const char* name = "Service Thread";
-
   Handle string = java_lang_String::create_from_str(name, CHECK);
 
   // Initialize thread_oop to put it into the system threadGroup
   Handle thread_group (THREAD, Universe::system_thread_group());
-  JavaValue result(T_VOID);
-  JavaCalls::call_special(&result, thread_oop,
-                          klass,
-                          vmSymbols::object_initializer_name(),
+  Handle thread_oop = JavaCalls::construct_new_instance(
+                          SystemDictionary::Thread_klass(),
                           vmSymbols::threadgroup_string_void_signature(),
                           thread_group,
                           string,
@@ -82,13 +83,31 @@ void ServiceThread::initialize() {
   }
 }
 
+static void cleanup_oopstorages(OopStorage* const* storages, size_t size) {
+  for (size_t i = 0; i < size; ++i) {
+    storages[i]->delete_empty_blocks();
+  }
+}
+
 void ServiceThread::service_thread_entry(JavaThread* jt, TRAPS) {
+  OopStorage* const oopstorages[] = {
+    JNIHandles::global_handles(),
+    JNIHandles::weak_global_handles(),
+    StringTable::weak_storage(),
+    SystemDictionary::vm_weak_oop_storage()
+  };
+  const size_t oopstorage_count = ARRAY_SIZE(oopstorages);
+
   while (true) {
     bool sensors_changed = false;
     bool has_jvmti_events = false;
     bool has_gc_notification_event = false;
     bool has_dcmd_notification_event = false;
-    bool acs_notify = false;
+    bool stringtable_work = false;
+    bool symboltable_work = false;
+    bool resolved_method_table_work = false;
+    bool protection_domain_table_work = false;
+    bool oopstorage_work = false;
     JvmtiDeferredEvent jvmti_event;
     {
       // Need state transition ThreadBlockInVM so that this thread
@@ -101,20 +120,36 @@ void ServiceThread::service_thread_entry(JavaThread* jt, TRAPS) {
 
       ThreadBlockInVM tbivm(jt);
 
-      MutexLockerEx ml(Service_lock, Mutex::_no_safepoint_check_flag);
-      while (!(sensors_changed = LowMemoryDetector::has_pending_requests()) &&
-             !(has_jvmti_events = JvmtiDeferredEventQueue::has_events()) &&
-              !(has_gc_notification_event = GCNotifier::has_event()) &&
-              !(has_dcmd_notification_event = DCmdFactory::has_pending_jmx_notification()) &&
-             !(acs_notify = AllocationContextService::should_notify())) {
-        // wait until one of the sensors has pending requests, or there is a
-        // pending JVMTI event or JMX GC notification to post
-        Service_lock->wait(Mutex::_no_safepoint_check_flag);
+      MonitorLocker ml(Service_lock, Mutex::_no_safepoint_check_flag);
+      // Process all available work on each (outer) iteration, rather than
+      // only the first recognized bit of work, to avoid frequently true early
+      // tests from potentially starving later work.  Hence the use of
+      // arithmetic-or to combine results; we don't want short-circuiting.
+      while (((sensors_changed = LowMemoryDetector::has_pending_requests()) |
+              (has_jvmti_events = JvmtiDeferredEventQueue::has_events()) |
+              (has_gc_notification_event = GCNotifier::has_event()) |
+              (has_dcmd_notification_event = DCmdFactory::has_pending_jmx_notification()) |
+              (stringtable_work = StringTable::has_work()) |
+              (symboltable_work = SymbolTable::has_work()) |
+              (resolved_method_table_work = ResolvedMethodTable::has_work()) |
+              (protection_domain_table_work = SystemDictionary::pd_cache_table()->has_work()) |
+              (oopstorage_work = OopStorage::has_cleanup_work_and_reset()))
+             == 0) {
+        // Wait until notified that there is some work to do.
+        ml.wait();
       }
 
       if (has_jvmti_events) {
         jvmti_event = JvmtiDeferredEventQueue::dequeue();
       }
+    }
+
+    if (stringtable_work) {
+      StringTable::do_concurrent_work(jt);
+    }
+
+    if (symboltable_work) {
+      SymbolTable::do_concurrent_work(jt);
     }
 
     if (has_jvmti_events) {
@@ -126,15 +161,23 @@ void ServiceThread::service_thread_entry(JavaThread* jt, TRAPS) {
     }
 
     if(has_gc_notification_event) {
-        GCNotifier::sendNotification(CHECK);
+      GCNotifier::sendNotification(CHECK);
     }
 
     if(has_dcmd_notification_event) {
       DCmdFactory::send_notification(CHECK);
     }
 
-    if (acs_notify) {
-      AllocationContextService::notify(CHECK);
+    if (resolved_method_table_work) {
+      ResolvedMethodTable::do_concurrent_work(jt);
+    }
+
+    if (protection_domain_table_work) {
+      SystemDictionary::pd_cache_table()->unlink();
+    }
+
+    if (oopstorage_work) {
+      cleanup_oopstorages(oopstorages, oopstorage_count);
     }
   }
 }

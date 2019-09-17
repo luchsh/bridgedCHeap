@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,27 +25,26 @@
 /*
  * @test
  * @summary Test locking on shared strings
- * Feature support: G1GC only, compressed oops/kptrs, 64-bit os, not on windows
- * @requires (sun.arch.data.model != "32") & (os.family != "windows")
- * @requires vm.cds
- * @requires vm.gc.G1
+ * @requires vm.cds.archived.java.heap
  * @library /test/hotspot/jtreg/runtime/appcds /test/lib
- * @modules java.base/jdk.internal.misc
- * @modules java.management
- *          jdk.jartool/sun.tools.jar
+ * @modules jdk.jartool/sun.tools.jar
  * @compile LockStringTest.java LockStringValueTest.java
  * @build sun.hotspot.WhiteBox
  * @run driver ClassFileInstaller sun.hotspot.WhiteBox
- * @run main LockSharedStrings
+ * @run driver LockSharedStrings
  */
 
 public class LockSharedStrings {
     public static void main(String[] args) throws Exception {
+        SharedStringsUtils.run(args, LockSharedStrings::test);
+    }
+
+    public static void test(String[] args) throws Exception {
         SharedStringsUtils.buildJarAndWhiteBox("LockStringTest", "LockStringValueTest");
 
         SharedStringsUtils.dumpWithWhiteBox(
             TestCommon.list("LockStringTest", "LockStringValueTest"),
-            "ExtraSharedInput.txt");
+            "ExtraSharedInput.txt", "-Xlog:cds,cds+hashtables");
 
         String[] extraMatch = new String[] {"LockStringTest: PASS"};
         SharedStringsUtils.runWithArchiveAndWhiteBox(extraMatch, "LockStringTest");

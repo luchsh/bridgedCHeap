@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,18 +24,19 @@
 
 #include "precompiled.hpp"
 #include "aot/aotLoader.hpp"
+#include "classfile/classLoaderDataGraph.hpp"
+#include "classfile/javaClasses.inline.hpp"
 #include "classfile/stringTable.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "code/codeCache.hpp"
 #include "gc/parallel/gcTaskManager.hpp"
+#include "gc/parallel/parallelArguments.hpp"
 #include "gc/parallel/parallelScavengeHeap.inline.hpp"
 #include "gc/parallel/parMarkBitMap.inline.hpp"
 #include "gc/parallel/pcTasks.hpp"
 #include "gc/parallel/psAdaptiveSizePolicy.hpp"
 #include "gc/parallel/psCompactionManager.inline.hpp"
-#include "gc/parallel/psMarkSweep.hpp"
-#include "gc/parallel/psMarkSweepDecorator.hpp"
 #include "gc/parallel/psOldGen.hpp"
 #include "gc/parallel/psParallelCompact.inline.hpp"
 #include "gc/parallel/psPromotionManager.inline.hpp"
@@ -44,23 +45,29 @@
 #include "gc/shared/gcCause.hpp"
 #include "gc/shared/gcHeapSummary.hpp"
 #include "gc/shared/gcId.hpp"
-#include "gc/shared/gcLocker.inline.hpp"
+#include "gc/shared/gcLocker.hpp"
 #include "gc/shared/gcTimer.hpp"
 #include "gc/shared/gcTrace.hpp"
 #include "gc/shared/gcTraceTime.inline.hpp"
 #include "gc/shared/isGCActiveMark.hpp"
 #include "gc/shared/referencePolicy.hpp"
 #include "gc/shared/referenceProcessor.hpp"
+#include "gc/shared/referenceProcessorPhaseTimes.hpp"
 #include "gc/shared/spaceDecorator.hpp"
 #include "gc/shared/weakProcessor.hpp"
 #include "logging/log.hpp"
+#include "memory/iterator.inline.hpp"
 #include "memory/resourceArea.hpp"
+#include "memory/universe.hpp"
+#include "oops/access.inline.hpp"
+#include "oops/instanceClassLoaderKlass.inline.hpp"
 #include "oops/instanceKlass.inline.hpp"
 #include "oops/instanceMirrorKlass.inline.hpp"
 #include "oops/methodData.hpp"
 #include "oops/objArrayKlass.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/atomic.hpp"
+#include "runtime/handles.inline.hpp"
 #include "runtime/safepoint.hpp"
 #include "runtime/vmThread.hpp"
 #include "services/management.hpp"
@@ -70,7 +77,11 @@
 #include "utilities/debug.hpp"
 #include "utilities/events.hpp"
 #include "utilities/formatBuffer.hpp"
+#include "utilities/macros.hpp"
 #include "utilities/stack.inline.hpp"
+#if INCLUDE_JVMCI
+#include "jvmci/jvmci.hpp"
+#endif
 
 #include <math.h>
 
@@ -115,6 +126,7 @@ ParallelCompactData::RegionData::dc_completed = 0xcU << dc_shift;
 
 SpaceInfo PSParallelCompact::_space_info[PSParallelCompact::last_space_id];
 
+SpanSubjectToDiscoveryClosure PSParallelCompact::_span_based_discoverer;
 ReferenceProcessor* PSParallelCompact::_ref_processor = NULL;
 
 double PSParallelCompact::_dwl_mean;
@@ -399,19 +411,16 @@ size_t mark_bitmap_count;
 size_t mark_bitmap_size;
 #endif  // #ifdef ASSERT
 
-ParallelCompactData::ParallelCompactData()
-{
-  _region_start = 0;
-
-  _region_vspace = 0;
-  _reserved_byte_size = 0;
-  _region_data = 0;
-  _region_count = 0;
-
-  _block_vspace = 0;
-  _block_data = 0;
-  _block_count = 0;
-}
+ParallelCompactData::ParallelCompactData() :
+  _region_start(NULL),
+  DEBUG_ONLY(_region_end(NULL) COMMA)
+  _region_vspace(NULL),
+  _reserved_byte_size(0),
+  _region_data(NULL),
+  _region_count(0),
+  _block_vspace(NULL),
+  _block_data(NULL),
+  _block_count(0) {}
 
 bool ParallelCompactData::initialize(MemRegion covered_region)
 {
@@ -839,18 +848,44 @@ PSParallelCompact::IsAliveClosure PSParallelCompact::_is_alive_closure;
 
 bool PSParallelCompact::IsAliveClosure::do_object_b(oop p) { return mark_bitmap()->is_marked(p); }
 
+class PCReferenceProcessor: public ReferenceProcessor {
+public:
+  PCReferenceProcessor(
+    BoolObjectClosure* is_subject_to_discovery,
+    BoolObjectClosure* is_alive_non_header) :
+      ReferenceProcessor(is_subject_to_discovery,
+      ParallelRefProcEnabled && (ParallelGCThreads > 1), // mt processing
+      ParallelGCThreads,   // mt processing degree
+      true,                // mt discovery
+      ParallelGCThreads,   // mt discovery degree
+      true,                // atomic_discovery
+      is_alive_non_header) {
+  }
+
+  template<typename T> bool discover(oop obj, ReferenceType type) {
+    T* referent_addr = (T*) java_lang_ref_Reference::referent_addr_raw(obj);
+    T heap_oop = RawAccess<>::oop_load(referent_addr);
+    oop referent = CompressedOops::decode_not_null(heap_oop);
+    return PSParallelCompact::mark_bitmap()->is_unmarked(referent)
+        && ReferenceProcessor::discover_reference(obj, type);
+  }
+  virtual bool discover_reference(oop obj, ReferenceType type) {
+    if (UseCompressedOops) {
+      return discover<narrowOop>(obj, type);
+    } else {
+      return discover<oop>(obj, type);
+    }
+  }
+};
+
 void PSParallelCompact::post_initialize() {
   ParallelScavengeHeap* heap = ParallelScavengeHeap::heap();
-  MemRegion mr = heap->reserved_region();
+  _span_based_discoverer.set_span(heap->reserved_region());
   _ref_processor =
-    new ReferenceProcessor(mr,            // span
-                           ParallelRefProcEnabled && (ParallelGCThreads > 1), // mt processing
-                           ParallelGCThreads, // mt processing degree
-                           true,              // mt discovery
-                           ParallelGCThreads, // mt discovery degree
-                           true,              // atomic_discovery
-                           &_is_alive_closure); // non-header is alive closure
-  _counters = new CollectorCounters("PSParallelCompact", 1);
+    new PCReferenceProcessor(&_span_based_discoverer,
+                             &_is_alive_closure); // non-header is alive closure
+
+  _counters = new CollectorCounters("Parallel full collection pauses", 1);
 
   // Initialize static fields in ParCompactionManager.
   ParCompactionManager::initialize(mark_bitmap());
@@ -965,7 +1000,6 @@ void PSParallelCompact::pre_compact()
   heap->trace_heap_before_gc(&_gc_tracer);
 
   // Fill in TLABs
-  heap->accumulate_statistics_all_tlabs();
   heap->ensure_parsability(true);  // retire TLABs
 
   if (VerifyBeforeGC && heap->total_collections() >= VerifyGCStartAt) {
@@ -1017,30 +1051,24 @@ void PSParallelCompact::post_compact()
   bool young_gen_empty = eden_empty && from_space->is_empty() &&
     to_space->is_empty();
 
-  ModRefBarrierSet* modBS = barrier_set_cast<ModRefBarrierSet>(heap->barrier_set());
+  PSCardTable* ct = heap->card_table();
   MemRegion old_mr = heap->old_gen()->reserved();
   if (young_gen_empty) {
-    modBS->clear(MemRegion(old_mr.start(), old_mr.end()));
+    ct->clear(MemRegion(old_mr.start(), old_mr.end()));
   } else {
-    modBS->invalidate(MemRegion(old_mr.start(), old_mr.end()));
+    ct->invalidate(MemRegion(old_mr.start(), old_mr.end()));
   }
 
   // Delete metaspaces for unloaded class loaders and clean up loader_data graph
   ClassLoaderDataGraph::purge();
-  MetaspaceAux::verify_metrics();
+  MetaspaceUtils::verify_metrics();
 
-  CodeCache::gc_epilogue();
+  heap->prune_scavengable_nmethods();
   JvmtiExport::gc_epilogue();
 
 #if COMPILER2_OR_JVMCI
   DerivedPointerTable::update_pointers();
 #endif
-
-  ReferenceProcessorPhaseTimes pt(&_gc_timer, ref_processor()->num_q());
-
-  ref_processor()->enqueue_discovered_references(NULL, &pt);
-
-  pt.print_enqueue_phase();
 
   if (ZapUnusedHeapArea) {
     heap->gen_mangle_unused_area();
@@ -1686,7 +1714,7 @@ void PSParallelCompact::summary_phase(ParCompactionManager* cm,
 // Note that this method should only be called from the vm_thread while at a
 // safepoint.
 //
-// Note that the all_soft_refs_clear flag in the collector policy
+// Note that the all_soft_refs_clear flag in the soft ref policy
 // may be true because this method can be called without intervening
 // activity.  For example when the heap space is tight and full measure
 // are being taken to free space.
@@ -1707,7 +1735,7 @@ void PSParallelCompact::invoke(bool maximum_heap_compaction) {
   }
 
   const bool clear_all_soft_refs =
-    heap->collector_policy()->should_clear_all_soft_refs();
+    heap->soft_ref_policy()->should_clear_all_soft_refs();
 
   PSParallelCompact::invoke_no_policy(clear_all_soft_refs ||
                                       maximum_heap_compaction);
@@ -1739,9 +1767,9 @@ bool PSParallelCompact::invoke_no_policy(bool maximum_heap_compaction) {
   PSAdaptiveSizePolicy* size_policy = heap->size_policy();
 
   // The scope of casr should end after code that can change
-  // CollectorPolicy::_should_clear_all_soft_refs.
+  // SoftRefPolicy::_should_clear_all_soft_refs.
   ClearedAllSoftRefs casr(maximum_heap_compaction,
-                          heap->collector_policy());
+                          heap->soft_ref_policy());
 
   if (ZapUnusedHeapArea) {
     // Save information needed to minimize mangling
@@ -1780,8 +1808,6 @@ bool PSParallelCompact::invoke_no_policy(bool maximum_heap_compaction) {
 
     // Let the size policy know we're starting
     size_policy->major_collection_begin();
-
-    CodeCache::gc_prologue();
 
 #if COMPILER2_OR_JVMCI
     DerivedPointerTable::clear();
@@ -1863,13 +1889,12 @@ bool PSParallelCompact::invoke_no_policy(bool maximum_heap_compaction) {
                                                     max_eden_size,
                                                     true /* full gc*/);
 
-        size_policy->check_gc_overhead_limit(young_live,
-                                             eden_live,
+        size_policy->check_gc_overhead_limit(eden_live,
                                              max_old_gen_size,
                                              max_eden_size,
                                              true /* full gc*/,
                                              gc_cause,
-                                             heap->collector_policy());
+                                             heap->soft_ref_policy());
 
         size_policy->decay_supplemental_growth(true /* full gc*/);
 
@@ -1901,7 +1926,7 @@ bool PSParallelCompact::invoke_no_policy(bool maximum_heap_compaction) {
 
     young_gen->print_used_change(pre_gc_values.young_gen_used());
     old_gen->print_used_change(pre_gc_values.old_gen_used());
-    MetaspaceAux::print_metaspace_change(pre_gc_values.metadata_used());
+    MetaspaceUtils::print_metaspace_change(pre_gc_values.metadata_used());
 
     // Track memory usage and detect low memory
     MemoryService::track_memory_usage();
@@ -1969,7 +1994,10 @@ bool PSParallelCompact::absorb_live_data_from_eden(PSAdaptiveSizePolicy* size_po
   assert(young_gen->virtual_space()->alignment() ==
          old_gen->virtual_space()->alignment(), "alignments do not match");
 
-  if (!(UseAdaptiveSizePolicy && UseAdaptiveGCBoundary)) {
+  // We also return false when it's a heterogenous heap because old generation cannot absorb data from eden
+  // when it is allocated on different memory (example, nv-dimm) than young.
+  if (!(UseAdaptiveSizePolicy && UseAdaptiveGCBoundary) ||
+      ParallelArguments::is_heterogeneous_heap()) {
     return false;
   }
 
@@ -1999,15 +2027,15 @@ bool PSParallelCompact::absorb_live_data_from_eden(PSAdaptiveSizePolicy* size_po
     return false; // Respect young gen minimum size.
   }
 
-  log_trace(heap, ergo)(" absorbing " SIZE_FORMAT "K:  "
-                        "eden " SIZE_FORMAT "K->" SIZE_FORMAT "K "
-                        "from " SIZE_FORMAT "K, to " SIZE_FORMAT "K "
-                        "young_gen " SIZE_FORMAT "K->" SIZE_FORMAT "K ",
-                        absorb_size / K,
-                        eden_capacity / K, (eden_capacity - absorb_size) / K,
-                        young_gen->from_space()->used_in_bytes() / K,
-                        young_gen->to_space()->used_in_bytes() / K,
-                        young_gen->capacity_in_bytes() / K, new_young_size / K);
+  log_trace(gc, ergo, heap)(" absorbing " SIZE_FORMAT "K:  "
+                            "eden " SIZE_FORMAT "K->" SIZE_FORMAT "K "
+                            "from " SIZE_FORMAT "K, to " SIZE_FORMAT "K "
+                            "young_gen " SIZE_FORMAT "K->" SIZE_FORMAT "K ",
+                            absorb_size / K,
+                            eden_capacity / K, (eden_capacity - absorb_size) / K,
+                            young_gen->from_space()->used_in_bytes() / K,
+                            young_gen->to_space()->used_in_bytes() / K,
+                            young_gen->capacity_in_bytes() / K, new_young_size / K);
 
   // Fill the unused part of the old gen.
   MutableSpace* const old_space = old_gen->object_space();
@@ -2053,6 +2081,17 @@ GCTaskManager* const PSParallelCompact::gc_task_manager() {
   return ParallelScavengeHeap::gc_task_manager();
 }
 
+class PCAddThreadRootsMarkingTaskClosure : public ThreadClosure {
+private:
+  GCTaskQueue* _q;
+
+public:
+  PCAddThreadRootsMarkingTaskClosure(GCTaskQueue* q) : _q(q) { }
+  void do_thread(Thread* t) {
+    _q->enqueue(new ThreadRootsMarkingTask(t));
+  }
+};
+
 void PSParallelCompact::marking_phase(ParCompactionManager* cm,
                                       bool maximum_heap_compaction,
                                       ParallelOldTracer *gc_tracer) {
@@ -2063,9 +2102,9 @@ void PSParallelCompact::marking_phase(ParCompactionManager* cm,
   uint parallel_gc_threads = heap->gc_task_manager()->workers();
   uint active_gc_threads = heap->gc_task_manager()->active_workers();
   TaskQueueSetSuper* qset = ParCompactionManager::stack_array();
-  ParallelTaskTerminator terminator(active_gc_threads, qset);
+  TaskTerminator terminator(active_gc_threads, qset);
 
-  ParCompactionManager::MarkAndPushClosure mark_and_push_closure(cm);
+  PCMarkAndPushClosure mark_and_push_closure(cm);
   ParCompactionManager::FollowStackClosure follow_stack_closure(cm);
 
   // Need new claim bits before marking starts.
@@ -2081,17 +2120,19 @@ void PSParallelCompact::marking_phase(ParCompactionManager* cm,
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::universe));
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::jni_handles));
     // We scan the thread roots in parallel
-    Threads::create_thread_roots_marking_tasks(q);
+    PCAddThreadRootsMarkingTaskClosure cl(q);
+    Threads::java_threads_and_vm_thread_do(&cl);
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::object_synchronizer));
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::management));
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::system_dictionary));
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::class_loader_data));
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::jvmti));
     q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::code_cache));
+    JVMCI_ONLY(q->enqueue(new MarkFromRootsTask(MarkFromRootsTask::jvmci));)
 
     if (active_gc_threads > 1) {
       for (uint j = 0; j < active_gc_threads; j++) {
-        q->enqueue(new StealMarkingTask(&terminator));
+        q->enqueue(new StealMarkingTask(terminator.terminator()));
       }
     }
 
@@ -2103,8 +2144,11 @@ void PSParallelCompact::marking_phase(ParCompactionManager* cm,
     GCTraceTime(Debug, gc, phases) tm("Reference Processing", &_gc_timer);
 
     ReferenceProcessorStats stats;
-    ReferenceProcessorPhaseTimes pt(&_gc_timer, ref_processor()->num_q());
+    ReferenceProcessorPhaseTimes pt(&_gc_timer, ref_processor()->max_num_queues());
+
     if (ref_processor()->processing_is_mt()) {
+      ref_processor()->set_active_mt_degree(active_gc_threads);
+
       RefProcTaskExecutor task_executor;
       stats = ref_processor()->process_discovered_references(
         is_alive_closure(), &mark_and_push_closure, &follow_stack_closure,
@@ -2131,25 +2175,16 @@ void PSParallelCompact::marking_phase(ParCompactionManager* cm,
     GCTraceTime(Debug, gc, phases) tm_m("Class Unloading", &_gc_timer);
 
     // Follow system dictionary roots and unload classes.
-    bool purged_class = SystemDictionary::do_unloading(is_alive_closure(), &_gc_timer);
+    bool purged_class = SystemDictionary::do_unloading(&_gc_timer);
 
     // Unload nmethods.
     CodeCache::do_unloading(is_alive_closure(), purged_class);
 
     // Prune dead klasses from subklass/sibling/implementor lists.
-    Klass::clean_weak_klass_links(is_alive_closure());
-  }
+    Klass::clean_weak_klass_links(purged_class);
 
-  {
-    GCTraceTime(Debug, gc, phases) t("Scrub String Table", &_gc_timer);
-    // Delete entries for dead interned strings.
-    StringTable::unlink(is_alive_closure());
-  }
-
-  {
-    GCTraceTime(Debug, gc, phases) t("Scrub Symbol Table", &_gc_timer);
-    // Clean up unreferenced symbols in symbol table.
-    SymbolTable::unlink();
+    // Clean JVMCI metadata handles.
+    JVMCI_ONLY(JVMCI::do_unloading(purged_class));
   }
 
   _gc_tracer.report_object_count_after_gc(is_alive_closure());
@@ -2162,7 +2197,7 @@ void PSParallelCompact::adjust_roots(ParCompactionManager* cm) {
   // Need new claim bits when tracing through and adjusting pointers.
   ClassLoaderDataGraph::clear_claimed_marks();
 
-  PSParallelCompact::AdjustPointerClosure oop_closure(cm);
+  PCAdjustPointerClosure oop_closure(cm);
 
   // General strong roots.
   Universe::oops_do(&oop_closure);
@@ -2172,7 +2207,8 @@ void PSParallelCompact::adjust_roots(ParCompactionManager* cm) {
   Management::oops_do(&oop_closure);
   JvmtiExport::oops_do(&oop_closure);
   SystemDictionary::oops_do(&oop_closure);
-  ClassLoaderDataGraph::oops_do(&oop_closure, true);
+  CLDToOopClosure cld_closure(&oop_closure, ClassLoaderData::_claim_strong);
+  ClassLoaderDataGraph::cld_do(&cld_closure);
 
   // Now adjust pointers in remaining weak roots.  (All of which should
   // have been cleared if they pointed to non-surviving objects.)
@@ -2180,8 +2216,10 @@ void PSParallelCompact::adjust_roots(ParCompactionManager* cm) {
 
   CodeBlobToOopClosure adjust_from_blobs(&oop_closure, CodeBlobToOopClosure::FixRelocations);
   CodeCache::blobs_do(&adjust_from_blobs);
-  AOTLoader::oops_do(&oop_closure);
-  StringTable::oops_do(&oop_closure);
+  AOT_ONLY(AOTLoader::oops_do(&oop_closure);)
+
+  JVMCI_ONLY(JVMCI::oops_do(&oop_closure);)
+
   ref_processor()->weak_oops_do(&oop_closure);
   // Roots were visited so references into the young gen in roots
   // may have been scanned.  Process them also.
@@ -2200,7 +2238,7 @@ private:
   bool _enabled;
   size_t _total_regions;
 public:
-  FillableRegionLogger() : _next_index(0), _total_regions(0), _enabled(log_develop_is_enabled(Trace, gc, compaction)) { }
+  FillableRegionLogger() : _next_index(0), _enabled(log_develop_is_enabled(Trace, gc, compaction)), _total_regions(0) { }
   ~FillableRegionLogger() {
     log.trace(SIZE_FORMAT " initially fillable regions", _total_regions);
   }
@@ -2417,12 +2455,12 @@ void PSParallelCompact::compact() {
   uint parallel_gc_threads = heap->gc_task_manager()->workers();
   uint active_gc_threads = heap->gc_task_manager()->active_workers();
   TaskQueueSetSuper* qset = ParCompactionManager::region_array();
-  ParallelTaskTerminator terminator(active_gc_threads, qset);
+  TaskTerminator terminator(active_gc_threads, qset);
 
   GCTaskQueue* q = GCTaskQueue::create();
   prepare_region_draining_tasks(q, active_gc_threads);
   enqueue_dense_prefix_tasks(q, active_gc_threads);
-  enqueue_region_stealing_tasks(q, &terminator, active_gc_threads);
+  enqueue_region_stealing_tasks(q, terminator.terminator(), active_gc_threads);
 
   {
     GCTraceTime(Trace, gc, phases) tm("Par Compact", &_gc_timer);
@@ -3052,69 +3090,6 @@ void MoveAndUpdateClosure::copy_partial_obj()
     Copy::aligned_conjoint_words(source(), destination(), words);
   }
   update_state(words);
-}
-
-void InstanceKlass::oop_pc_update_pointers(oop obj, ParCompactionManager* cm) {
-  PSParallelCompact::AdjustPointerClosure closure(cm);
-  oop_oop_iterate_oop_maps<true>(obj, &closure);
-}
-
-void InstanceMirrorKlass::oop_pc_update_pointers(oop obj, ParCompactionManager* cm) {
-  InstanceKlass::oop_pc_update_pointers(obj, cm);
-
-  PSParallelCompact::AdjustPointerClosure closure(cm);
-  oop_oop_iterate_statics<true>(obj, &closure);
-}
-
-void InstanceClassLoaderKlass::oop_pc_update_pointers(oop obj, ParCompactionManager* cm) {
-  InstanceKlass::oop_pc_update_pointers(obj, cm);
-}
-
-#ifdef ASSERT
-template <class T> static void trace_reference_gc(const char *s, oop obj,
-                                                  T* referent_addr,
-                                                  T* next_addr,
-                                                  T* discovered_addr) {
-  log_develop_trace(gc, ref)("%s obj " PTR_FORMAT, s, p2i(obj));
-  log_develop_trace(gc, ref)("     referent_addr/* " PTR_FORMAT " / " PTR_FORMAT,
-                             p2i(referent_addr), referent_addr ? p2i(oopDesc::load_decode_heap_oop(referent_addr)) : NULL);
-  log_develop_trace(gc, ref)("     next_addr/* " PTR_FORMAT " / " PTR_FORMAT,
-                             p2i(next_addr), next_addr ? p2i(oopDesc::load_decode_heap_oop(next_addr)) : NULL);
-  log_develop_trace(gc, ref)("     discovered_addr/* " PTR_FORMAT " / " PTR_FORMAT,
-                             p2i(discovered_addr), discovered_addr ? p2i(oopDesc::load_decode_heap_oop(discovered_addr)) : NULL);
-}
-#endif
-
-template <class T>
-static void oop_pc_update_pointers_specialized(oop obj, ParCompactionManager* cm) {
-  T* referent_addr = (T*)java_lang_ref_Reference::referent_addr(obj);
-  PSParallelCompact::adjust_pointer(referent_addr, cm);
-  T* next_addr = (T*)java_lang_ref_Reference::next_addr(obj);
-  PSParallelCompact::adjust_pointer(next_addr, cm);
-  T* discovered_addr = (T*)java_lang_ref_Reference::discovered_addr(obj);
-  PSParallelCompact::adjust_pointer(discovered_addr, cm);
-  debug_only(trace_reference_gc("InstanceRefKlass::oop_update_ptrs", obj,
-                                referent_addr, next_addr, discovered_addr);)
-}
-
-void InstanceRefKlass::oop_pc_update_pointers(oop obj, ParCompactionManager* cm) {
-  InstanceKlass::oop_pc_update_pointers(obj, cm);
-
-  if (UseCompressedOops) {
-    oop_pc_update_pointers_specialized<narrowOop>(obj, cm);
-  } else {
-    oop_pc_update_pointers_specialized<oop>(obj, cm);
-  }
-}
-
-void ObjArrayKlass::oop_pc_update_pointers(oop obj, ParCompactionManager* cm) {
-  assert(obj->is_objArray(), "obj must be obj array");
-  PSParallelCompact::AdjustPointerClosure closure(cm);
-  oop_oop_iterate_elements<true>(objArrayOop(obj), &closure);
-}
-
-void TypeArrayKlass::oop_pc_update_pointers(oop obj, ParCompactionManager* cm) {
-  assert(obj->is_typeArray(),"must be a type array");
 }
 
 ParMarkBitMapClosure::IterationStatus

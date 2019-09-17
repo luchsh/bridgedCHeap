@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 1999, 2018, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2018 SAP SE. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,6 +37,7 @@
 #include "compiler/compileBroker.hpp"
 #include "interpreter/interpreter.hpp"
 #include "logging/log.hpp"
+#include "logging/logStream.hpp"
 #include "libo4.hpp"
 #include "libperfstat_aix.hpp"
 #include "libodm_aix.hpp"
@@ -54,12 +55,12 @@
 #include "runtime/atomic.hpp"
 #include "runtime/extendedPC.hpp"
 #include "runtime/globals.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/java.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "runtime/objectMonitor.hpp"
-#include "runtime/orderAccess.inline.hpp"
+#include "runtime/orderAccess.hpp"
 #include "runtime/os.hpp"
 #include "runtime/osThread.hpp"
 #include "runtime/perfMemory.hpp"
@@ -541,7 +542,11 @@ query_multipage_support_end:
 
 void os::init_system_properties_values() {
 
-#define DEFAULT_LIBPATH "/lib:/usr/lib"
+#ifndef OVERRIDE_LIBPATH
+  #define DEFAULT_LIBPATH "/lib:/usr/lib"
+#else
+  #define DEFAULT_LIBPATH OVERRIDE_LIBPATH
+#endif
 #define EXTENSIONS_DIR  "/lib/ext"
 
   // Buffer that fits several sprintfs.
@@ -576,7 +581,9 @@ void os::init_system_properties_values() {
       }
     }
     Arguments::set_java_home(buf);
-    set_boot_path('/', ':');
+    if (!set_boot_path('/', ':')) {
+      vm_exit_during_initialization("Failed setting boot class path.", NULL);
+    }
   }
 
   // Where to look for native libraries.
@@ -622,18 +629,6 @@ extern "C" void breakpoint() {
 debug_only(static bool signal_sets_initialized = false);
 static sigset_t unblocked_sigs, vm_sigs;
 
-bool os::Aix::is_sig_ignored(int sig) {
-  struct sigaction oact;
-  sigaction(sig, (struct sigaction*)NULL, &oact);
-  void* ohlr = oact.sa_sigaction ? CAST_FROM_FN_PTR(void*, oact.sa_sigaction)
-    : CAST_FROM_FN_PTR(void*, oact.sa_handler);
-  if (ohlr == CAST_FROM_FN_PTR(void*, SIG_IGN)) {
-    return true;
-  } else {
-    return false;
-  }
-}
-
 void os::Aix::signal_sets_init() {
   // Should also have an assertion stating we are still single-threaded.
   assert(!signal_sets_initialized, "Already initialized");
@@ -659,13 +654,13 @@ void os::Aix::signal_sets_init() {
   sigaddset(&unblocked_sigs, SR_signum);
 
   if (!ReduceSignalUsage) {
-   if (!os::Aix::is_sig_ignored(SHUTDOWN1_SIGNAL)) {
+   if (!os::Posix::is_sig_ignored(SHUTDOWN1_SIGNAL)) {
      sigaddset(&unblocked_sigs, SHUTDOWN1_SIGNAL);
    }
-   if (!os::Aix::is_sig_ignored(SHUTDOWN2_SIGNAL)) {
+   if (!os::Posix::is_sig_ignored(SHUTDOWN2_SIGNAL)) {
      sigaddset(&unblocked_sigs, SHUTDOWN2_SIGNAL);
    }
-   if (!os::Aix::is_sig_ignored(SHUTDOWN3_SIGNAL)) {
+   if (!os::Posix::is_sig_ignored(SHUTDOWN3_SIGNAL)) {
      sigaddset(&unblocked_sigs, SHUTDOWN3_SIGNAL);
    }
   }
@@ -786,12 +781,7 @@ bool os::Aix::get_meminfo(meminfo_t* pmi) {
 // Thread start routine for all newly created threads
 static void *thread_native_entry(Thread *thread) {
 
-  // find out my own stack dimensions
-  {
-    // actually, this should do exactly the same as thread->record_stack_base_and_size...
-    thread->set_stack_base(os::current_stack_base());
-    thread->set_stack_size(os::current_stack_size());
-  }
+  thread->record_stack_base_and_size();
 
   const pthread_t pthread_id = ::pthread_self();
   const tid_t kernel_thread_id = ::thread_self();
@@ -844,19 +834,14 @@ static void *thread_native_entry(Thread *thread) {
   assert(osthread->get_state() == RUNNABLE, "invalid os thread state");
 
   // Call one more level start routine.
-  thread->run();
+  thread->call_run();
+
+  // Note: at this point the thread object may already have deleted itself.
+  // Prevent dereferencing it from here on out.
+  thread = NULL;
 
   log_info(os, thread)("Thread finished (tid: " UINTX_FORMAT ", kernel thread id: " UINTX_FORMAT ").",
     os::current_thread_id(), (uintx) kernel_thread_id);
-
-  // If a thread has not deleted itself ("delete this") as part of its
-  // termination sequence, we have to ensure thread-local-storage is
-  // cleared before we actually terminate. No threads should ever be
-  // deleted asynchronously with respect to their termination.
-  if (Thread::current_or_null_safe() != NULL) {
-    assert(Thread::current_or_null_safe() == thread, "current thread is wrong");
-    thread->clear_thread_current();
-  }
 
   return 0;
 }
@@ -911,8 +896,12 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   // guard pages might not fit on the tiny stack created.
   int ret = pthread_attr_setstacksize(&attr, stack_size);
   if (ret != 0) {
-    log_warning(os, thread)("The thread stack size specified is invalid: " SIZE_FORMAT "k",
+    log_warning(os, thread)("The %sthread stack size specified is invalid: " SIZE_FORMAT "k",
+                            (thr_type == compiler_thread) ? "compiler " : ((thr_type == java_thread) ? "" : "VM "),
                             stack_size / K);
+    thread->set_osthread(NULL);
+    delete osthread;
+    return false;
   }
 
   // Save some cycles and a page by disabling OS guard pages where we have our own
@@ -935,6 +924,11 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
     char buf[64];
     log_warning(os, thread)("Failed to start thread - pthread_create failed (%d=%s) for attributes: %s.",
       ret, os::errno_name(ret), os::Posix::describe_pthread_attr(buf, sizeof(buf), &attr));
+    // Log some OS information which might explain why creating the thread failed.
+    log_info(os, thread)("Number of threads approx. running in the VM: %d", Threads::number_of_threads());
+    LogStream st(Log(os, thread)::info());
+    os::Posix::print_rlimit_info(&st);
+    os::print_memory_info(&st);
   }
 
   pthread_attr_destroy(&attr);
@@ -1212,24 +1206,15 @@ void os::abort(bool dump_core, void* siginfo, const void* context) {
 }
 
 // Die immediately, no exit hook, no abort hook, no cleanup.
+// Dump a core file, if possible, for debugging.
 void os::die() {
-  ::abort();
-}
-
-// This method is a copy of JDK's sysGetLastErrorString
-// from src/solaris/hpi/src/system_md.c
-
-size_t os::lasterror(char *buf, size_t len) {
-  if (errno == 0) return 0;
-
-  const char *s = os::strerror(errno);
-  size_t n = ::strlen(s);
-  if (n >= len) {
-    n = len - 1;
+  if (TestUnresponsiveErrorHandler && !CreateCoredumpOnCrash) {
+    // For TimeoutInErrorHandlingTest.java, we just kill the VM
+    // and don't take the time to generate a core file.
+    os::signal_raise(SIGKILL);
+  } else {
+    ::abort();
   }
-  ::strncpy(buf, s, n);
-  buf[n] = '\0';
-  return n;
 }
 
 intx os::current_thread_id() {
@@ -1342,16 +1327,21 @@ void *os::dll_load(const char *filename, char *ebuf, int ebuflen) {
   // RTLD_LAZY is currently not implemented. The dl is loaded immediately with all its dependants.
   void * result= ::dlopen(filename, RTLD_LAZY);
   if (result != NULL) {
+    Events::log(NULL, "Loaded shared library %s", filename);
     // Reload dll cache. Don't do this in signal handling.
     LoadedLibraries::reload();
     return result;
   } else {
     // error analysis when dlopen fails
-    const char* const error_report = ::dlerror();
-    if (error_report && ebuf && ebuflen > 0) {
+    const char* error_report = ::dlerror();
+    if (error_report == NULL) {
+      error_report = "dlerror returned no error description";
+    }
+    if (ebuf != NULL && ebuflen > 0) {
       snprintf(ebuf, ebuflen - 1, "%s, LIBPATH=%s, LD_LIBRARY_PATH=%s : %s",
                filename, ::getenv("LIBPATH"), ::getenv("LD_LIBRARY_PATH"), error_report);
     }
+    Events::log(NULL, "Loading shared library %s failed, %s", filename, error_report);
   }
   return NULL;
 }
@@ -1377,6 +1367,21 @@ void os::get_summary_os_info(char* buf, size_t buflen) {
   snprintf(buf, buflen, "%s %s", name.release, name.version);
 }
 
+int os::get_loaded_modules_info(os::LoadedModulesCallbackFunc callback, void *param) {
+  // Not yet implemented.
+  return 0;
+}
+
+void os::print_os_info_brief(outputStream* st) {
+  uint32_t ver = os::Aix::os_version();
+  st->print_cr("AIX kernel version %u.%u.%u.%u",
+               (ver >> 24) & 0xFF, (ver >> 16) & 0xFF, (ver >> 8) & 0xFF, ver & 0xFF);
+
+  os::Posix::print_uname_info(st);
+
+  // Linux uses print_libversion_info(st); here.
+}
+
 void os::print_os_info(outputStream* st) {
   st->print("OS:");
 
@@ -1396,12 +1401,15 @@ void os::print_os_info(outputStream* st) {
 
   os::Posix::print_rlimit_info(st);
 
+  // _SC_THREAD_THREADS_MAX is the maximum number of threads within a process.
+  long tmax = sysconf(_SC_THREAD_THREADS_MAX);
+  st->print_cr("maximum #threads within a process:%ld", tmax);
+
   // load average
   st->print("load average:");
   double loadavg[3] = {-1.L, -1.L, -1.L};
   os::loadavg(loadavg, 3);
-  st->print("%0.02f %0.02f %0.02f", loadavg[0], loadavg[1], loadavg[2]);
-  st->cr();
+  st->print_cr("%0.02f %0.02f %0.02f", loadavg[0], loadavg[1], loadavg[2]);
 
   // print wpar info
   libperfstat::wparinfo_t wi;
@@ -1412,13 +1420,7 @@ void os::print_os_info(outputStream* st) {
     st->print_cr("type: %s", (wi.app_wpar ? "application" : "system"));
   }
 
-  // print partition info
-  libperfstat::partitioninfo_t pi;
-  if (libperfstat::get_partitioninfo(&pi)) {
-    st->print_cr("partition info");
-    st->print_cr(" name: %s", pi.name);
-  }
-
+  VM_Version::print_platform_virtualization_info(st);
 }
 
 void os::print_memory_info(outputStream* st) {
@@ -1459,6 +1461,7 @@ void os::print_memory_info(outputStream* st) {
   const char* const aixthread_guardpages = ::getenv("AIXTHREAD_GUARDPAGES");
   st->print_cr("  AIXTHREAD_GUARDPAGES=%s.",
       aixthread_guardpages ? aixthread_guardpages : "<unset>");
+  st->cr();
 
   os::Aix::meminfo_t mi;
   if (os::Aix::get_meminfo(&mi)) {
@@ -1479,6 +1482,16 @@ void os::print_memory_info(outputStream* st) {
         mi.pgsp_total ? (100.0f * (mi.pgsp_total - mi.pgsp_free) / mi.pgsp_total) : -1.0f);
     }
   }
+  st->cr();
+
+  // Print program break.
+  st->print_cr("Program break at VM startup: " PTR_FORMAT ".", p2i(g_brk_at_startup));
+  address brk_now = (address)::sbrk(0);
+  if (brk_now != (address)-1) {
+    st->print_cr("Program break now          : " PTR_FORMAT " (distance: " SIZE_FORMAT "k).",
+                 p2i(brk_now), (size_t)((brk_now - g_brk_at_startup) / K));
+  }
+  st->print_cr("MaxExpectedDataSegmentSize    : " SIZE_FORMAT "k.", MaxExpectedDataSegmentSize / K);
   st->cr();
 
   // Print segments allocated with os::reserve_memory.
@@ -1784,7 +1797,7 @@ static void local_sem_wait() {
   }
 }
 
-void os::signal_init_pd() {
+static void jdk_misc_signal_init() {
   // Initialize signal structures
   ::memset((void*)pending_signals, 0, sizeof(pending_signals));
 
@@ -2441,6 +2454,7 @@ static bool checked_mprotect(char* addr, size_t size, int prot) {
   //
   // See http://publib.boulder.ibm.com/infocenter/pseries/v5r3/index.jsp?topic=/com.ibm.aix.basetechref/doc/basetrf1/mprotect.htm
 
+  Events::log(NULL, "Protecting memory [" INTPTR_FORMAT "," INTPTR_FORMAT "] with protection modes %x", p2i(addr), p2i(addr+size), prot);
   bool rc = ::mprotect(addr, size, prot) == 0 ? true : false;
 
   if (!rc) {
@@ -2481,6 +2495,7 @@ static bool checked_mprotect(char* addr, size_t size, int prot) {
           // A valid strategy is just to try again. This usually works. :-/
 
           ::usleep(1000);
+          Events::log(NULL, "Protecting memory [" INTPTR_FORMAT "," INTPTR_FORMAT "] with protection modes %x", p2i(addr), p2i(addr+size), prot);
           if (::mprotect(addr, size, prot) == 0) {
             const bool read_protected_2 =
               (SafeFetch32((int*)addr, 0x12345678) == 0x12345678 &&
@@ -2596,31 +2611,6 @@ char* os::pd_attempt_reserve_memory_at(size_t bytes, char* requested_addr) {
   return addr;
 }
 
-size_t os::read(int fd, void *buf, unsigned int nBytes) {
-  return ::read(fd, buf, nBytes);
-}
-
-size_t os::read_at(int fd, void *buf, unsigned int nBytes, jlong offset) {
-  return ::pread(fd, buf, nBytes, offset);
-}
-
-void os::naked_short_sleep(jlong ms) {
-  struct timespec req;
-
-  assert(ms < 1000, "Un-interruptable sleep, short time use only");
-  req.tv_sec = 0;
-  if (ms > 0) {
-    req.tv_nsec = (ms % 1000) * 1000000;
-  }
-  else {
-    req.tv_nsec = 1;
-  }
-
-  nanosleep(&req, NULL);
-
-  return;
-}
-
 // Sleep forever; naked call to OS-specific sleep; use with CAUTION
 void os::infinite_sleep() {
   while (true) {    // sleep forever ...
@@ -2700,10 +2690,6 @@ OSReturn os::get_native_priority(const Thread* const thread, int *priority_ptr) 
 
   return (ret == 0) ? OS_OK : OS_ERR;
 }
-
-// Hint to the underlying OS that a task switch would not be good.
-// Void return because it's a hint and can fail.
-void os::hint_no_preempt() {}
 
 ////////////////////////////////////////////////////////////////////////////////
 // suspend/resume support
@@ -3009,7 +2995,7 @@ bool unblock_program_error_signals() {
 }
 
 // Renamed from 'signalHandler' to avoid collision with other shared libs.
-void javaSignalHandler(int sig, siginfo_t* info, void* uc) {
+static void javaSignalHandler(int sig, siginfo_t* info, void* uc) {
   assert(info != NULL && uc != NULL, "it must be old kernel");
 
   // Never leave program error signals blocked;
@@ -3027,8 +3013,6 @@ void javaSignalHandler(int sig, siginfo_t* info, void* uc) {
 bool os::Aix::signal_handlers_are_installed = false;
 
 // For signal-chaining
-struct sigaction sigact[NSIG];
-sigset_t sigs;
 bool os::Aix::libjsig_is_loaded = false;
 typedef struct sigaction *(*get_signal_t)(int);
 get_signal_t os::Aix::get_signal_action = NULL;
@@ -3042,7 +3026,7 @@ struct sigaction* os::Aix::get_chained_signal_action(int sig) {
   }
   if (actp == NULL) {
     // Retrieve the preinstalled signal handler from jvm
-    actp = get_preinstalled_handler(sig);
+    actp = os::Posix::get_preinstalled_handler(sig);
   }
 
   return actp;
@@ -3105,19 +3089,6 @@ bool os::Aix::chained_handler(int sig, siginfo_t* siginfo, void* context) {
   return chained;
 }
 
-struct sigaction* os::Aix::get_preinstalled_handler(int sig) {
-  if (sigismember(&sigs, sig)) {
-    return &sigact[sig];
-  }
-  return NULL;
-}
-
-void os::Aix::save_preinstalled_handler(int sig, struct sigaction& oldAct) {
-  assert(sig > 0 && sig < NSIG, "vm signal out of expected range");
-  sigact[sig] = oldAct;
-  sigaddset(&sigs, sig);
-}
-
 // for diagnostic
 int sigflags[NSIG];
 
@@ -3149,7 +3120,7 @@ void os::Aix::set_signal_handler(int sig, bool set_installed) {
       return;
     } else if (UseSignalChaining) {
       // save the old handler in jvm
-      save_preinstalled_handler(sig, oldAct);
+      os::Posix::save_preinstalled_handler(sig, oldAct);
       // libjsig also interposes the sigaction() call below and saves the
       // old sigaction on it own.
     } else {
@@ -3205,7 +3176,6 @@ void os::Aix::install_signal_handlers() {
       (*begin_signal_setting)();
     }
 
-    ::sigemptyset(&sigs);
     set_signal_handler(SIGSEGV, true);
     set_signal_handler(SIGPIPE, true);
     set_signal_handler(SIGBUS, true);
@@ -3491,7 +3461,7 @@ void os::init(void) {
       // fall back to 4K paged mode and use mmap for everything.
       trcVerbose("4K page mode");
       Aix::_page_size = 4*K;
-      FLAG_SET_ERGO(bool, Use64KPages, false);
+      FLAG_SET_ERGO(Use64KPages, false);
     }
   } else {
     // datapsize = 64k. Data segment, thread stacks are 64k paged.
@@ -3501,11 +3471,11 @@ void os::init(void) {
     assert0(g_multipage_support.can_use_64K_pages);
     Aix::_page_size = 64*K;
     trcVerbose("64K page mode");
-    FLAG_SET_ERGO(bool, Use64KPages, true);
+    FLAG_SET_ERGO(Use64KPages, true);
   }
 
   // For now UseLargePages is just ignored.
-  FLAG_SET_ERGO(bool, UseLargePages, false);
+  FLAG_SET_ERGO(UseLargePages, false);
   _page_sizes[0] = 0;
 
   // debug trace
@@ -3542,6 +3512,10 @@ void os::init(void) {
 // This is called _after_ the global arguments have been parsed.
 jint os::init_2(void) {
 
+  // This could be set after os::Posix::init() but all platforms
+  // have to set it the same so we have to mirror Solaris.
+  DEBUG_ONLY(os::set_mutex_init_done();)
+
   os::Posix::init_2();
 
   if (os::Aix::on_pase()) {
@@ -3568,6 +3542,10 @@ jint os::init_2(void) {
 
   Aix::signal_sets_init();
   Aix::install_signal_handlers();
+  // Initialize data for jdk.internal.misc.Signal
+  if (!ReduceSignalUsage) {
+    jdk_misc_signal_init();
+  }
 
   // Check and sets minimum stack sizes against command line options
   if (Posix::set_minimum_stack_sizes() == JNI_ERR) {
@@ -3715,16 +3693,6 @@ bool os::message_box(const char* title, const char* message) {
   return buf[0] == 'y' || buf[0] == 'Y';
 }
 
-int os::stat(const char *path, struct stat *sbuf) {
-  char pathbuf[MAX_PATH];
-  if (strlen(path) > MAX_PATH - 1) {
-    errno = ENAMETOOLONG;
-    return -1;
-  }
-  os::native_path(strcpy(pathbuf, path));
-  return ::stat(pathbuf, sbuf);
-}
-
 // Is a (classpath) directory empty?
 bool os::dir_is_empty(const char* path) {
   DIR *dir = NULL;
@@ -3735,8 +3703,7 @@ bool os::dir_is_empty(const char* path) {
 
   /* Scan the directory */
   bool result = true;
-  char buf[sizeof(struct dirent) + MAX_PATH];
-  while (result && (ptr = ::readdir(dir)) != NULL) {
+  while (result && (ptr = readdir(dir)) != NULL) {
     if (strcmp(ptr->d_name, ".") != 0 && strcmp(ptr->d_name, "..") != 0) {
       result = false;
     }
@@ -4266,7 +4233,7 @@ extern char** environ;
 // or -1 on failure (e.g. can't fork a new process).
 // Unlike system(), this function can be called from signal handler. It
 // doesn't block SIGINT et al.
-int os::fork_and_exec(char* cmd) {
+int os::fork_and_exec(char* cmd, bool use_vfork_if_available) {
   char * argv[4] = {"sh", "-c", cmd, NULL};
 
   pid_t pid = fork();
@@ -4368,7 +4335,7 @@ bool os::start_debugging(char *buf, int buflen) {
 static inline time_t get_mtime(const char* filename) {
   struct stat st;
   int ret = os::stat(filename, &st);
-  assert(ret == 0, "failed to stat() file '%s': %s", filename, strerror(errno));
+  assert(ret == 0, "failed to stat() file '%s': %s", filename, os::strerror(errno));
   return st.st_mtime;
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -113,10 +113,9 @@ public class TransformRelatedClassesAppCDS extends TransformRelatedClasses {
             log("runTestWithAppLoader(): testCaseId = %d", entry.testCaseId);
             String params = TransformTestCommon.getAgentParams(entry, parent, child);
             String agentParam = String.format("-javaagent:%s=%s", agentJar, params);
-            out = TestCommon.execCommon("-Xlog:class+load=info", "-cp", appJar,
-                                        agentParam, child);
-
-            TransformTestCommon.checkResults(entry, out, parent, child);
+            TestCommon.run("-Xlog:class+load=info", "-cp", appJar,
+                           agentParam, child)
+              .assertNormalExit(output -> TransformTestCommon.checkResults(entry, output, parent, child));
         }
     }
 
@@ -155,6 +154,12 @@ public class TransformRelatedClassesAppCDS extends TransformRelatedClasses {
             return;
         }
 
+        if (TestCommon.isDynamicArchive()) {
+            log("custom loader class list not applicable to dynamic archive" +
+                " - skipping test case for custom loader");
+            return;
+        }
+
         String appClasses[] = {
             "CustomLoaderApp",
         };
@@ -187,13 +192,12 @@ public class TransformRelatedClassesAppCDS extends TransformRelatedClasses {
         String agentParam = "-javaagent:" + agentJar + "=" +
             TransformTestCommon.getAgentParams(entry, parent, child);
 
-        out = TestCommon.execCommon("-Xlog:class+load=info",
-                                    "-cp", appJar,
-                                    "--add-opens=java.base/java.security=ALL-UNNAMED",
-                                    agentParam,
-                                    "CustomLoaderApp",
-                                    customJar, loaderType, child);
-        TransformTestCommon.checkResults(entry, out, parent, child);
+        TestCommon.run("-Xlog:class+load=info",
+                       "-cp", appJar,
+                       agentParam,
+                       "CustomLoaderApp",
+                       customJar, loaderType, child)
+          .assertNormalExit(output -> TransformTestCommon.checkResults(entry, output, parent, child));
     }
 
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,8 +23,8 @@
  */
 
 
-#ifndef SHARE_VM_UTILITIES_DECODER_HPP
-#define SHARE_VM_UTILITIES_DECODER_HPP
+#ifndef SHARE_UTILITIES_DECODER_HPP
+#define SHARE_UTILITIES_DECODER_HPP
 
 #include "memory/allocation.hpp"
 #include "runtime/mutex.hpp"
@@ -33,18 +33,22 @@
 
 class AbstractDecoder : public CHeapObj<mtInternal> {
 public:
-  virtual ~AbstractDecoder() {}
-
   // status code for decoding native C frame
   enum decoder_status {
          not_available = -10,  // real decoder is not available
-         no_error = 0,         // successfully decoded frames
+         no_error = 0,         // no error encountered
          out_of_memory,        // out of memory
          file_invalid,         // invalid elf file
          file_not_found,       // could not found symbol file (on windows), such as jvm.pdb or jvm.map
          helper_func_error,    // decoding functions not found (Windows only)
          helper_init_error     // SymInitialize failed (Windows only)
   };
+
+protected:
+  decoder_status  _decoder_status;
+
+public:
+  virtual ~AbstractDecoder() {}
 
   // decode an pc address to corresponding function name and an offset from the beginning of
   // the function
@@ -68,11 +72,8 @@ public:
   }
 
   static bool is_error(decoder_status status) {
-    return (status > 0);
+    return (status > no_error);
   }
-
-protected:
-  decoder_status  _decoder_status;
 };
 
 // Do nothing decoder
@@ -96,9 +97,7 @@ public:
   virtual bool demangle(const char* symbol, char* buf, int buflen) {
     return false;
   }
-
 };
-
 
 class Decoder : AllStatic {
 public:
@@ -132,20 +131,9 @@ private:
   static NullDecoder          _do_nothing_decoder;
 
 protected:
-  static Mutex*               _shared_decoder_lock;
   static Mutex* shared_decoder_lock();
 
   friend class DecoderLocker;
 };
 
-class DecoderLocker : public MutexLockerEx {
-  AbstractDecoder* _decoder;
-  inline bool is_first_error_thread();
-public:
-  DecoderLocker();
-  AbstractDecoder* decoder() {
-    return _decoder;
-  }
-};
-
-#endif // SHARE_VM_UTILITIES_DECODER_HPP
+#endif // SHARE_UTILITIES_DECODER_HPP

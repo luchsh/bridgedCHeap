@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -45,8 +45,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import sun.net.dns.ResolverConfiguration;
+import sun.security.action.GetPropertyAction;
 import sun.security.krb5.internal.crypto.EType;
 import sun.security.krb5.internal.Krb5;
+import sun.security.util.SecurityProperties;
 
 /**
  * This class maintains key-value pairs of Kerberos configurable constants
@@ -54,6 +56,41 @@ import sun.security.krb5.internal.Krb5;
  */
 
 public class Config {
+
+    /**
+     * {@systemProperty sun.security.krb5.disableReferrals} property
+     * indicating whether or not cross-realm referrals (RFC 6806) are
+     * enabled.
+     */
+    public static final boolean DISABLE_REFERRALS;
+
+    /**
+     * {@systemProperty sun.security.krb5.maxReferrals} property
+     * indicating the maximum number of cross-realm referral
+     * hops allowed.
+     */
+    public static final int MAX_REFERRALS;
+
+    static {
+        String disableReferralsProp =
+                SecurityProperties.privilegedGetOverridable(
+                        "sun.security.krb5.disableReferrals");
+        if (disableReferralsProp != null) {
+            DISABLE_REFERRALS = "true".equalsIgnoreCase(disableReferralsProp);
+        } else {
+            DISABLE_REFERRALS = false;
+        }
+
+        int maxReferralsValue = 5;
+        String maxReferralsProp =
+                SecurityProperties.privilegedGetOverridable(
+                        "sun.security.krb5.maxReferrals");
+        try {
+            maxReferralsValue = Integer.parseInt(maxReferralsProp);
+        } catch (NumberFormatException e) {
+        }
+        MAX_REFERRALS = maxReferralsValue;
+    }
 
     /*
      * Only allow a single instance of Config.
@@ -122,12 +159,12 @@ public class Config {
 
     private static boolean isMacosLionOrBetter() {
         // split the "10.x.y" version number
-        String osname = getProperty("os.name");
+        String osname = GetPropertyAction.privilegedGetProperty("os.name");
         if (!osname.contains("OS X")) {
             return false;
         }
 
-        String osVersion = getProperty("os.version");
+        String osVersion = GetPropertyAction.privilegedGetProperty("os.version");
         String[] fragments = osVersion.split("\\.");
 
         // sanity check the "10." part of the version
@@ -152,14 +189,16 @@ public class Config {
         /*
          * If either one system property is specified, we throw exception.
          */
-        String tmp = getProperty("java.security.krb5.kdc");
+        String tmp = GetPropertyAction
+                .privilegedGetProperty("java.security.krb5.kdc");
         if (tmp != null) {
             // The user can specify a list of kdc hosts separated by ":"
             defaultKDC = tmp.replace(':', ' ');
         } else {
             defaultKDC = null;
         }
-        defaultRealm = getProperty("java.security.krb5.realm");
+        defaultRealm = GetPropertyAction
+                .privilegedGetProperty("java.security.krb5.realm");
         if ((defaultKDC == null && defaultRealm != null) ||
             (defaultRealm == null && defaultKDC != null)) {
             throw new KrbException
@@ -818,11 +857,12 @@ public class Config {
      * The method returns null if it cannot find a Java config file.
      */
     private String getJavaFileName() {
-        String name = getProperty("java.security.krb5.conf");
+        String name = GetPropertyAction
+                .privilegedGetProperty("java.security.krb5.conf");
         if (name == null) {
-            name = getProperty("java.home") + File.separator +
-                                "conf" + File.separator + "security" +
-                                File.separator + "krb5.conf";
+            name = GetPropertyAction.privilegedGetProperty("java.home")
+                    + File.separator + "conf" + File.separator + "security"
+                    + File.separator + "krb5.conf";
             if (!fileExists(name)) {
                 name = null;
             }
@@ -852,7 +892,7 @@ public class Config {
      */
     private String getNativeFileName() {
         String name = null;
-        String osname = getProperty("os.name");
+        String osname = GetPropertyAction.privilegedGetProperty("os.name");
         if (osname.startsWith("Windows")) {
             try {
                 Credentials.ensureLoaded();
@@ -899,13 +939,8 @@ public class Config {
         return name;
     }
 
-    private static String getProperty(String property) {
-        return java.security.AccessController.doPrivileged(
-                new sun.security.action.GetPropertyAction(property));
-    }
-
     private String findMacosConfigFile() {
-        String userHome = getProperty("user.home");
+        String userHome = GetPropertyAction.privilegedGetProperty("user.home");
         final String PREF_FILE = "/Library/Preferences/edu.mit.Kerberos";
         String userPrefs = userHome + PREF_FILE;
 

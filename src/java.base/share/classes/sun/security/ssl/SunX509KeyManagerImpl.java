@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,13 +25,27 @@
 
 package sun.security.ssl;
 
-import javax.net.ssl.*;
-import java.security.*;
-import java.security.cert.*;
-import java.security.cert.Certificate;
-import java.util.*;
 import java.net.Socket;
-
+import java.security.Key;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.Principal;
+import java.security.PrivateKey;
+import java.security.UnrecoverableKeyException;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.X509ExtendedKeyManager;
 import javax.security.auth.x500.X500Principal;
 
 
@@ -67,8 +81,6 @@ import javax.security.auth.x500.X500Principal;
  */
 final class SunX509KeyManagerImpl extends X509ExtendedKeyManager {
 
-    private static final Debug debug = Debug.getInstance("ssl");
-
     private static final String[] STRING0 = new String[0];
 
     /*
@@ -90,25 +102,21 @@ final class SunX509KeyManagerImpl extends X509ExtendedKeyManager {
      * Basic container for credentials implemented as an inner class.
      */
     private static class X509Credentials {
-        PrivateKey privateKey;
-        X509Certificate[] certificates;
-        private Set<X500Principal> issuerX500Principals;
+        final PrivateKey privateKey;
+        final X509Certificate[] certificates;
+        private final Set<X500Principal> issuerX500Principals;
 
         X509Credentials(PrivateKey privateKey, X509Certificate[] certificates) {
             // assert privateKey and certificates != null
             this.privateKey = privateKey;
             this.certificates = certificates;
+            this.issuerX500Principals = new HashSet<>(certificates.length);
+            for (X509Certificate certificate : certificates) {
+                issuerX500Principals.add(certificate.getIssuerX500Principal());
+            }
         }
 
-        synchronized Set<X500Principal> getIssuerX500Principals() {
-            // lazy initialization
-            if (issuerX500Principals == null) {
-                issuerX500Principals = new HashSet<X500Principal>();
-                for (int i = 0; i < certificates.length; i++) {
-                    issuerX500Principals.add(
-                                certificates[i].getIssuerX500Principal());
-                }
-            }
+        Set<X500Principal> getIssuerX500Principals() {
             return issuerX500Principals;
         }
     }
@@ -148,14 +156,8 @@ final class SunX509KeyManagerImpl extends X509ExtendedKeyManager {
             X509Credentials cred = new X509Credentials((PrivateKey)key,
                 (X509Certificate[])certs);
             credentialsMap.put(alias, cred);
-            if (debug != null && Debug.isOn("keymanager")) {
-                System.out.println("***");
-                System.out.println("found key for : " + alias);
-                for (int i = 0; i < certs.length; i++) {
-                    System.out.println("chain [" + i + "] = "
-                    + certs[i]);
-                }
-                System.out.println("***");
+            if (SSLLogger.isOn && SSLLogger.isOn("keymanager")) {
+                SSLLogger.fine("found key for : " + alias, (Object[])certs);
             }
         }
     }
@@ -382,8 +384,8 @@ final class SunX509KeyManagerImpl extends X509ExtendedKeyManager {
             if (issuers.length == 0) {
                 // no issuer specified, match all
                 aliases.add(alias);
-                if (debug != null && Debug.isOn("keymanager")) {
-                    System.out.println("matching alias: " + alias);
+                if (SSLLogger.isOn && SSLLogger.isOn("keymanager")) {
+                    SSLLogger.fine("matching alias: " + alias);
                 }
             } else {
                 Set<X500Principal> certIssuers =
@@ -391,8 +393,8 @@ final class SunX509KeyManagerImpl extends X509ExtendedKeyManager {
                 for (int i = 0; i < x500Issuers.length; i++) {
                     if (certIssuers.contains(issuers[i])) {
                         aliases.add(alias);
-                        if (debug != null && Debug.isOn("keymanager")) {
-                            System.out.println("matching alias: " + alias);
+                        if (SSLLogger.isOn && SSLLogger.isOn("keymanager")) {
+                            SSLLogger.fine("matching alias: " + alias);
                         }
                         break;
                     }

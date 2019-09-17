@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,11 +24,11 @@
 
 #include "precompiled.hpp"
 #include "classfile/javaClasses.hpp"
+#include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
-#include "memory/universe.inline.hpp"
 #include "oops/instanceKlass.hpp"
 #include "oops/method.hpp"
 #include "oops/oop.inline.hpp"
@@ -39,11 +39,13 @@
 #include "runtime/arguments.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/javaCalls.hpp"
+#include "runtime/os.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/signature.hpp"
 #include "utilities/macros.hpp"
-#if INCLUDE_TRACE
-#include "trace/traceMacros.hpp"
+#include "utilities/utf8.hpp"
+#if INCLUDE_JFR
+#include "jfr/jfr.hpp"
 #endif
 
 static void mangle_name_on(outputStream* st, Symbol* name, int begin, int end) {
@@ -103,7 +105,7 @@ char* NativeLookup::long_jni_name(const methodHandle& method) {
   st.print("__");
   // find ')'
   int end;
-  for (end = 0; end < signature->utf8_length() && signature->byte_at(end) != ')'; end++);
+  for (end = 0; end < signature->utf8_length() && signature->char_at(end) != ')'; end++);
   // skip first '('
   mangle_name_on(&st, signature, 1, end);
   return st.as_string();
@@ -131,8 +133,8 @@ static JNINativeMethod lookup_special_native_methods[] = {
   { CC"Java_jdk_vm_ci_runtime_JVMCI_initializeRuntime",            NULL, FN_PTR(JVM_GetJVMCIRuntime)             },
   { CC"Java_jdk_vm_ci_hotspot_CompilerToVM_registerNatives",       NULL, FN_PTR(JVM_RegisterJVMCINatives)        },
 #endif
-#if INCLUDE_TRACE
-  { CC"Java_jdk_jfr_internal_JVM_registerNatives",                 NULL, TRACE_REGISTER_NATIVES                  },
+#if INCLUDE_JFR
+  { CC"Java_jdk_jfr_internal_JVM_registerNatives",                 NULL, FN_PTR(jfr_register_natives)            },
 #endif
 };
 
@@ -288,7 +290,7 @@ address NativeLookup::lookup_critical_entry(const methodHandle& method) {
 
   Symbol* signature = method->signature();
   for (int end = 0; end < signature->utf8_length(); end++) {
-    if (signature->byte_at(end) == 'L') {
+    if (signature->char_at(end) == 'L') {
       // Don't allow object types
       return NULL;
     }
@@ -378,8 +380,11 @@ address NativeLookup::lookup_base(const methodHandle& method, bool& in_base_libr
   if (entry != NULL) return entry;
 
   // Native function not found, throw UnsatisfiedLinkError
-  THROW_MSG_0(vmSymbols::java_lang_UnsatisfiedLinkError(),
-              method->name_and_sig_as_C_string());
+  stringStream ss;
+  ss.print("'");
+  method->print_external_name(&ss);
+  ss.print("'");
+  THROW_MSG_0(vmSymbols::java_lang_UnsatisfiedLinkError(), ss.as_string());
 }
 
 
@@ -402,9 +407,9 @@ address NativeLookup::lookup(const methodHandle& method, bool& in_base_library, 
 address NativeLookup::base_library_lookup(const char* class_name, const char* method_name, const char* signature) {
   EXCEPTION_MARK;
   bool in_base_library = true;  // SharedRuntime inits some math methods.
-  TempNewSymbol c_name = SymbolTable::new_symbol(class_name,  CATCH);
-  TempNewSymbol m_name = SymbolTable::new_symbol(method_name, CATCH);
-  TempNewSymbol s_name = SymbolTable::new_symbol(signature,   CATCH);
+  TempNewSymbol c_name = SymbolTable::new_symbol(class_name);
+  TempNewSymbol m_name = SymbolTable::new_symbol(method_name);
+  TempNewSymbol s_name = SymbolTable::new_symbol(signature);
 
   // Find the class
   Klass* k = SystemDictionary::resolve_or_fail(c_name, true, CATCH);

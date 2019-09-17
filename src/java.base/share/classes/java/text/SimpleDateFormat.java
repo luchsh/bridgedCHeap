@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -55,6 +55,7 @@ import java.util.concurrent.ConcurrentMap;
 import sun.util.calendar.CalendarUtils;
 import sun.util.calendar.ZoneInfoFile;
 import sun.util.locale.provider.LocaleProviderAdapter;
+import sun.util.locale.provider.TimeZoneNameUtility;
 
 /**
  * <code>SimpleDateFormat</code> is a concrete class for formatting and
@@ -73,7 +74,7 @@ import sun.util.locale.provider.LocaleProviderAdapter;
  * For more information on using these methods, see
  * {@link DateFormat}.
  *
- * <h3>Date and Time Patterns</h3>
+ * <h2>Date and Time Patterns</h2>
  * <p>
  * Date and time formats are specified by <em>date and time pattern</em>
  * strings.
@@ -369,7 +370,7 @@ import sun.util.locale.provider.LocaleProviderAdapter;
  * <code>SimpleDateFormat</code> does not deal with the localization of text
  * other than the pattern letters; that's up to the client of the class.
  *
- * <h4>Examples</h4>
+ * <h3>Examples</h3>
  *
  * The following examples show how date and time patterns are interpreted in
  * the U.S. locale. The given date and time are 2001-07-04 12:08:56 local time
@@ -420,7 +421,7 @@ import sun.util.locale.provider.LocaleProviderAdapter;
  * </table>
  * </blockquote>
  *
- * <h4><a id="synchronization">Synchronization</a></h4>
+ * <h3><a id="synchronization">Synchronization</a></h3>
  *
  * <p>
  * Date formats are not synchronized.
@@ -830,7 +831,7 @@ public class SimpleDateFormat extends DateFormat {
                             break;
                         }
                     }
-                    compiledCode.append((char)(TAG_QUOTE_CHARS << 8 | (j - i)));
+                    encode(TAG_QUOTE_CHARS, j - i, compiledCode);
                     for (; i < j; i++) {
                         compiledCode.append(pattern.charAt(i));
                     }
@@ -1188,7 +1189,7 @@ public class SimpleDateFormat extends DateFormat {
             }
             break;
 
-        case PATTERN_MONTH:            // 'M' (context seinsive)
+        case PATTERN_MONTH:            // 'M' (context sensitive)
             if (useDateFormatSymbols) {
                 String[] months;
                 if (count >= 4) {
@@ -1691,6 +1692,12 @@ public class SimpleDateFormat extends DateFormat {
             // Checking long and short zones [1 & 2],
             // and long and short daylight [3 & 4].
             String zoneName = zoneNames[i];
+            if (zoneName.isEmpty()) {
+                // fill in by retrieving single name
+                zoneName = TimeZoneNameUtility.retrieveDisplayName(
+                                zoneNames[0], i >= 3, i % 2, locale);
+                zoneNames[i] = zoneName;
+            }
             if (text.regionMatches(true, start,
                                    zoneName, 0, zoneName.length())) {
                 return i;
@@ -2026,7 +2033,7 @@ public class SimpleDateFormat extends DateFormat {
                         return index;
                     }
                 } else {
-                    Map<String, Integer> map = getDisplayNamesMap(field, locale);
+                    Map<String, Integer> map = getDisplayContextNamesMap(field, locale);
                     if ((index = matchString(text, start, field, map, calb)) > 0) {
                         return index;
                     }
@@ -2438,6 +2445,22 @@ public class SimpleDateFormat extends DateFormat {
             if (m != null) {
                 map.putAll(m);
             }
+        }
+        return map;
+    }
+
+    /**
+     * Obtains display names map, taking the context into account. Currently only
+     * the month name pattern 'M' is context dependent.
+     */
+    private Map<String, Integer> getDisplayContextNamesMap(int field, Locale locale) {
+        Map<String, Integer> map = calendar.getDisplayNames(field,
+            forceStandaloneForm ? Calendar.SHORT_STANDALONE : Calendar.SHORT_FORMAT, locale);
+        // Get the LONG style
+        Map<String, Integer> m = calendar.getDisplayNames(field,
+            forceStandaloneForm ? Calendar.LONG_STANDALONE : Calendar.LONG_FORMAT, locale);
+        if (m != null) {
+            map.putAll(m);
         }
         return map;
     }

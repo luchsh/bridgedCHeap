@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * Copyright 2007, 2008, 2009, 2010, 2011 Red Hat, Inc.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -31,6 +31,7 @@
 #include "interpreter/interpreter.hpp"
 #include "interpreter/interpreterRuntime.hpp"
 #include "oops/arrayOop.hpp"
+#include "oops/cpCache.inline.hpp"
 #include "oops/methodData.hpp"
 #include "oops/method.hpp"
 #include "oops/oop.inline.hpp"
@@ -40,8 +41,10 @@
 #include "runtime/atomic.hpp"
 #include "runtime/deoptimization.hpp"
 #include "runtime/frame.inline.hpp"
-#include "runtime/interfaceSupport.hpp"
-#include "runtime/orderAccess.inline.hpp"
+#include "runtime/handles.inline.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
+#include "runtime/jniHandles.inline.hpp"
+#include "runtime/orderAccess.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
 #include "runtime/synchronizer.hpp"
@@ -273,7 +276,7 @@ int CppInterpreter::native_entry(Method* method, intptr_t UNUSED, TRAPS) {
     markOop disp = lockee->mark()->set_unlocked();
 
     monitor->lock()->set_displaced_header(disp);
-    if (Atomic::cmpxchg((markOop)monitor, lockee->mark_addr(), disp) != disp) {
+    if (lockee->cas_set_mark((markOop)monitor, disp) != disp) {
       if (thread->is_lock_owned((address) disp->clear_lock_bits())) {
         monitor->lock()->set_displaced_header(NULL);
       }
@@ -368,18 +371,16 @@ int CppInterpreter::native_entry(Method* method, intptr_t UNUSED, TRAPS) {
   intptr_t result[4 - LogBytesPerWord];
   ffi_call(handler->cif(), (void (*)()) function, result, arguments);
 
-  // Change the thread state back to _thread_in_Java.
+  // Change the thread state back to _thread_in_Java and ensure it
+  // is seen by the GC thread.
   // ThreadStateTransition::transition_from_native() cannot be used
   // here because it does not check for asynchronous exceptions.
   // We have to manage the transition ourself.
-  thread->set_thread_state(_thread_in_native_trans);
-
-  // Make sure new state is visible in the GC thread
-  InterfaceSupport::serialize_thread_state(thread);
+  thread->set_thread_state_fence(_thread_in_native_trans);
 
   // Handle safepoint operations, pending suspend requests,
   // and pending asynchronous exceptions.
-  if (SafepointMechanism::poll(thread) ||
+  if (SafepointMechanism::should_block(thread) ||
       thread->has_special_condition_for_native_trans()) {
     JavaThread::check_special_condition_for_native_trans(thread);
     CHECK_UNHANDLED_OOPS_ONLY(thread->clear_unhandled_oops());
@@ -511,7 +512,7 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
   intptr_t *locals = stack->sp();
 
   // Drop into the slow path if we need a safepoint check
-  if (SafepointMechanism::poll(THREAD)) {
+  if (SafepointMechanism::should_block(THREAD)) {
     return normal_entry(method, 0, THREAD);
   }
 
@@ -643,7 +644,7 @@ int CppInterpreter::empty_entry(Method* method, intptr_t UNUSED, TRAPS) {
   ZeroStack *stack = thread->zero_stack();
 
   // Drop into the slow path if we need a safepoint check
-  if (SafepointMechanism::poll(THREAD)) {
+  if (SafepointMechanism::should_block(THREAD)) {
     return normal_entry(method, 0, THREAD);
   }
 
@@ -698,11 +699,11 @@ intptr_t* CppInterpreter::calculate_unwind_sp(ZeroStack* stack,
   return stack->sp() + argument_slots;
 }
 
-IRT_ENTRY(void, CppInterpreter::throw_exception(JavaThread* thread,
+JRT_ENTRY(void, CppInterpreter::throw_exception(JavaThread* thread,
                                                 Symbol*     name,
                                                 char*       message))
   THROW_MSG(name, message);
-IRT_END
+JRT_END
 
 InterpreterFrame *InterpreterFrame::build(Method* const method, TRAPS) {
   JavaThread *thread = (JavaThread *) THREAD;

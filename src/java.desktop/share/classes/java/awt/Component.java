@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,66 +22,97 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
 package java.awt;
 
-import java.io.PrintStream;
-import java.io.PrintWriter;
-import java.util.Objects;
-import java.util.Vector;
-import java.util.Locale;
-import java.util.EventListener;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.Collections;
+import java.applet.Applet;
+import java.awt.dnd.DropTarget;
+import java.awt.event.ActionEvent;
+import java.awt.event.AdjustmentEvent;
+import java.awt.event.ComponentEvent;
+import java.awt.event.ComponentListener;
+import java.awt.event.FocusEvent;
+import java.awt.event.FocusListener;
+import java.awt.event.HierarchyBoundsListener;
+import java.awt.event.HierarchyEvent;
+import java.awt.event.HierarchyListener;
+import java.awt.event.InputEvent;
+import java.awt.event.InputMethodEvent;
+import java.awt.event.InputMethodListener;
+import java.awt.event.ItemEvent;
+import java.awt.event.KeyEvent;
+import java.awt.event.KeyListener;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseListener;
+import java.awt.event.MouseMotionListener;
+import java.awt.event.MouseWheelEvent;
+import java.awt.event.MouseWheelListener;
+import java.awt.event.PaintEvent;
+import java.awt.event.TextEvent;
+import java.awt.im.InputContext;
+import java.awt.im.InputMethodRequests;
+import java.awt.image.BufferStrategy;
+import java.awt.image.ColorModel;
+import java.awt.image.ImageObserver;
+import java.awt.image.ImageProducer;
+import java.awt.image.VolatileImage;
 import java.awt.peer.ComponentPeer;
 import java.awt.peer.ContainerPeer;
 import java.awt.peer.LightweightPeer;
-import java.awt.image.BufferStrategy;
-import java.awt.image.ImageObserver;
-import java.awt.image.ImageProducer;
-import java.awt.image.ColorModel;
-import java.awt.image.VolatileImage;
-import java.awt.event.*;
-import java.io.Serializable;
-import java.io.ObjectOutputStream;
-import java.io.ObjectInputStream;
-import java.io.IOException;
 import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
 import java.beans.Transient;
-import java.awt.im.InputContext;
-import java.awt.im.InputMethodRequests;
-import java.awt.dnd.DropTarget;
-import java.security.AccessController;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.io.Serializable;
 import java.security.AccessControlContext;
-import javax.accessibility.*;
-import java.applet.Applet;
+import java.security.AccessController;
+import java.util.Collections;
+import java.util.EventListener;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.Vector;
+
+import javax.accessibility.Accessible;
+import javax.accessibility.AccessibleComponent;
+import javax.accessibility.AccessibleContext;
+import javax.accessibility.AccessibleRole;
+import javax.accessibility.AccessibleSelection;
+import javax.accessibility.AccessibleState;
+import javax.accessibility.AccessibleStateSet;
 import javax.swing.JComponent;
 import javax.swing.JRootPane;
 
-import sun.awt.ComponentFactory;
-import sun.security.action.GetPropertyAction;
-import sun.awt.AppContext;
 import sun.awt.AWTAccessor;
+import sun.awt.AppContext;
+import sun.awt.ComponentFactory;
 import sun.awt.ConstrainableGraphics;
+import sun.awt.EmbeddedFrame;
+import sun.awt.RequestFocusController;
 import sun.awt.SubRegionShowable;
 import sun.awt.SunToolkit;
-import sun.awt.EmbeddedFrame;
 import sun.awt.dnd.SunDropTargetEvent;
 import sun.awt.im.CompositionArea;
+import sun.awt.image.VSyncedBSManager;
 import sun.font.FontManager;
 import sun.font.FontManagerFactory;
 import sun.font.SunFontManager;
 import sun.java2d.SunGraphics2D;
-import sun.java2d.pipe.Region;
-import sun.awt.image.VSyncedBSManager;
-import sun.java2d.pipe.hw.ExtendedBufferCapabilities;
-import static sun.java2d.pipe.hw.ExtendedBufferCapabilities.VSyncType.*;
-import sun.awt.RequestFocusController;
 import sun.java2d.SunGraphicsEnvironment;
+import sun.java2d.pipe.Region;
+import sun.java2d.pipe.hw.ExtendedBufferCapabilities;
+import sun.security.action.GetPropertyAction;
 import sun.swing.SwingAccessor;
 import sun.util.logging.PlatformLogger;
+
+import static sun.java2d.pipe.hw.ExtendedBufferCapabilities.VSyncType.VSYNC_DEFAULT;
+import static sun.java2d.pipe.hw.ExtendedBufferCapabilities.VSyncType.VSYNC_ON;
 
 /**
  * A <em>component</em> is an object having a graphical representation
@@ -104,7 +135,7 @@ import sun.util.logging.PlatformLogger;
  * validated afterwards by means of the {@link Container#validate()} method
  * invoked on the top-most invalid container of the hierarchy.
  *
- * <h3>Serialization</h3>
+ * <h2>Serialization</h2>
  * It is important to note that only AWT listeners which conform
  * to the {@code Serializable} protocol will be saved when
  * the object is stored.  If an AWT object has listeners that
@@ -173,7 +204,7 @@ import sun.util.logging.PlatformLogger;
  * <a href="http://www.oracle.com/technetwork/java/painting-140037.html">Painting in AWT and Swing</a>.
  * <p>
  * For details on the focus subsystem, see
- * <a href="http://docs.oracle.com/javase/tutorial/uiswing/misc/focus.html">
+ * <a href="https://docs.oracle.com/javase/tutorial/uiswing/misc/focus.html">
  * How to Use the Focus Subsystem</a>,
  * a section in <em>The Java Tutorial</em>, and the
  * <a href="../../java/awt/doc-files/FocusSpec.html">Focus Specification</a>
@@ -321,7 +352,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @see java.awt.image.BufferStrategy
      * @see #getBufferStrategy()
      */
-    transient BufferStrategy bufferStrategy = null;
+    private transient BufferStrategy bufferStrategy = null;
 
     /**
      * True when the object should ignore all repaint events.
@@ -1129,28 +1160,39 @@ public abstract class Component implements ImageObserver, MenuContainer,
         }
     }
 
-    boolean updateGraphicsData(GraphicsConfiguration gc) {
-        checkTreeLock();
+    final boolean updateGraphicsData(GraphicsConfiguration gc) {
+        GraphicsConfiguration oldConfig = graphicsConfig;
+        // First, update own graphics configuration
+        boolean ret = updateSelfGraphicsData(gc);
+        // Second, update children graphics configurations
+        ret |= updateChildGraphicsData(gc);
+        // Third, fire PropertyChange if needed
+        if (oldConfig != gc) {
+            /*
+             * If component is moved from one screen to another screen or shown
+             * for the first time graphicsConfiguration property is fired to
+             * enable the component to recalculate any rendering data, if needed
+             */
+            firePropertyChange("graphicsConfiguration", oldConfig, gc);
+        }
+        return ret;
+    }
 
+    private boolean updateSelfGraphicsData(GraphicsConfiguration gc) {
+        checkTreeLock();
         if (graphicsConfig == gc) {
             return false;
         }
-        GraphicsConfiguration oldConfig = graphicsConfig;
         graphicsConfig = gc;
-
-        /*
-         * If component is moved from one screen to another sceeen
-         * graphicsConfiguration property is fired to enable the component
-         * to recalculate any rendering data, if needed
-         */
-        if (oldConfig != null && gc != null) {
-            firePropertyChange("graphicsConfiguration", oldConfig, gc);
-        }
 
         ComponentPeer peer = this.peer;
         if (peer != null) {
             return peer.updateGraphicsData(gc);
         }
+        return false;
+    }
+
+    boolean updateChildGraphicsData(GraphicsConfiguration gc) {
         return false;
     }
 
@@ -3996,12 +4038,12 @@ public abstract class Component implements ImageObserver, MenuContainer,
          /**
           * The width of the back buffers
           */
-        int width;
+        private int width;
 
         /**
          * The height of the back buffers
          */
-        int height;
+        private int height;
 
         /**
          * Creates a new flipping buffer strategy for this component.
@@ -4074,9 +4116,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
 
             if (drawBuffer != null) {
                 // dispose the existing backbuffers
-                drawBuffer = null;
-                drawVBuffer = null;
-                destroyBuffers();
+                invalidate();
                 // ... then recreate the backbuffers
             }
 
@@ -4164,6 +4204,15 @@ public abstract class Component implements ImageObserver, MenuContainer,
         }
 
         /**
+         * Destroys the buffers and invalidates the state of FlipBufferStrategy.
+         */
+        private void invalidate() {
+            drawBuffer = null;
+            drawVBuffer = null;
+            destroyBuffers();
+        }
+
+        /**
          * Destroys the buffers created through this object
          */
         protected void destroyBuffers() {
@@ -4202,14 +4251,11 @@ public abstract class Component implements ImageObserver, MenuContainer,
          * Restore the drawing buffer if it has been lost
          */
         protected void revalidate() {
-            revalidate(true);
-        }
-
-        void revalidate(boolean checkSize) {
             validatedContents = false;
-
-            if (checkSize && (getWidth() != width || getHeight() != height)) {
-                // component has been resized; recreate the backbuffers
+            if (getWidth() != width || getHeight() != height
+                    || drawBuffer == null) {
+                // component has been resized or the peer was recreated;
+                // recreate the backbuffers
                 try {
                     createBuffers(numBuffers, caps);
                 } catch (AWTException e) {
@@ -4287,7 +4333,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
             if (Component.this.bufferStrategy == this) {
                 Component.this.bufferStrategy = null;
                 if (peer != null) {
-                    destroyBuffers();
+                    invalidate();
                 }
             }
         }
@@ -5945,7 +5991,8 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * {@code InputMethodRequests} instance.
      * If listener {@code l} is {@code null},
      * no exception is thrown and no action is performed.
-     * <p>Refer to <a href="{@docRoot}/java/awt/doc-files/AWTThreadIssues.html#ListenersThreads"
+     * <p>Refer to
+     * <a href="{@docRoot}/java.desktop/java/awt/doc-files/AWTThreadIssues.html#ListenersThreads"
      * >AWT Threading Issues</a> for details on AWT's threading model.
      *
      * @param    l   the input method listener
@@ -7113,7 +7160,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
                 boolean isLightweight = isLightweight();
 
                 if (bufferStrategy instanceof FlipBufferStrategy) {
-                    ((FlipBufferStrategy)bufferStrategy).destroyBuffers();
+                    ((FlipBufferStrategy)bufferStrategy).invalidate();
                 }
 
                 if (dropTarget != null) dropTarget.removeNotify();

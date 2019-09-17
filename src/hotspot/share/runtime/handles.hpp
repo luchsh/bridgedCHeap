@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,8 +22,8 @@
  *
  */
 
-#ifndef SHARE_VM_RUNTIME_HANDLES_HPP
-#define SHARE_VM_RUNTIME_HANDLES_HPP
+#ifndef SHARE_RUNTIME_HANDLES_HPP
+#define SHARE_RUNTIME_HANDLES_HPP
 
 #include "memory/arena.hpp"
 #include "oops/oop.hpp"
@@ -31,13 +31,14 @@
 
 class InstanceKlass;
 class Klass;
+class Thread;
 
 //------------------------------------------------------------------------------------------------------------------------
 // In order to preserve oops during garbage collection, they should be
 // allocated and passed around via Handles within the VM. A handle is
 // simply an extra indirection allocated in a thread local handle area.
 //
-// A handle is a ValueObj, so it can be passed around as a value, can
+// A handle is a value object, so it can be passed around as a value, can
 // be used as a parameter w/o using &-passing, and can be returned as a
 // return value.
 //
@@ -61,7 +62,7 @@ class Klass;
 // Base class for all handles. Provides overloading of frequently
 // used operators for ease of use.
 
-class Handle VALUE_OBJ_CLASS_SPEC {
+class Handle {
  private:
   oop* _handle;
 
@@ -72,13 +73,14 @@ class Handle VALUE_OBJ_CLASS_SPEC {
  public:
   // Constructors
   Handle()                                       { _handle = NULL; }
-  Handle(Thread* thread, oop obj);
+  inline Handle(Thread* thread, oop obj);
 
   // General access
   oop     operator () () const                   { return obj(); }
   oop     operator -> () const                   { return non_null_obj(); }
-  bool    operator == (oop o) const              { return obj() == o; }
-  bool    operator == (const Handle& h) const          { return obj() == h.obj(); }
+
+  bool operator == (oop o) const                 { return oopDesc::equals(obj(), o); }
+  bool operator == (const Handle& h) const       { return oopDesc::equals(obj(), h.obj()); }
 
   // Null checks
   bool    is_null() const                        { return _handle == NULL; }
@@ -108,9 +110,7 @@ class Handle VALUE_OBJ_CLASS_SPEC {
    public:                                       \
     /* Constructors */                           \
     type##Handle ()                              : Handle()                 {} \
-    type##Handle (Thread* thread, type##Oop obj) : Handle(thread, (oop)obj) { \
-      assert(is_null() || ((oop)obj)->is_a(), "illegal type");                \
-    }                                                                         \
+    inline type##Handle (Thread* thread, type##Oop obj); \
     \
     /* Operators for ease of use */              \
     type##Oop    operator () () const            { return obj(); } \
@@ -253,6 +253,8 @@ class HandleMark {
   HandleMark* previous_handle_mark() const        { return _previous_handle_mark; }
 
   size_t size_in_bytes() const { return _size_in_bytes; }
+  // remove all chunks beginning with the next
+  void chop_later_chunks();
  public:
   HandleMark();                            // see handles_inline.hpp
   HandleMark(Thread* thread)                      { initialize(thread); }
@@ -298,4 +300,17 @@ class ResetNoHandleMark: public StackObj {
 #endif
 };
 
-#endif // SHARE_VM_RUNTIME_HANDLES_HPP
+// The HandleMarkCleaner is a faster version of HandleMark.
+// It relies on the fact that there is a HandleMark further
+// down the stack (in JavaCalls::call_helper), and just resets
+// to the saved values in that HandleMark.
+
+class HandleMarkCleaner: public StackObj {
+ private:
+  Thread* _thread;
+ public:
+  inline HandleMarkCleaner(Thread* thread);
+  inline ~HandleMarkCleaner();
+};
+
+#endif // SHARE_RUNTIME_HANDLES_HPP

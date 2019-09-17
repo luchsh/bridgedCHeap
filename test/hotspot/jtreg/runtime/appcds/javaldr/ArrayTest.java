@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,7 +31,7 @@
  * @compile ArrayTestHelper.java
  * @build sun.hotspot.WhiteBox
  * @run driver ClassFileInstaller sun.hotspot.WhiteBox
- * @run main ArrayTest
+ * @run driver ArrayTest
  */
 
 import java.util.List;
@@ -57,7 +57,7 @@ public class ArrayTest {
         String bootClassPath = "-Xbootclasspath/a:" + whiteBoxJar;
 
         // create an archive containing array classes
-        OutputAnalyzer output = TestCommon.dump(appJar, TestCommon.list(arrayClasses), bootClassPath, "-verbose:class");
+        OutputAnalyzer output = TestCommon.dump(appJar, TestCommon.list(arrayClasses), bootClassPath);
         // we currently don't support array classes during CDS dump
         output.shouldContain("Preload Warning: Cannot find [Ljava/lang/Comparable;")
               .shouldContain("Preload Warning: Cannot find [I")
@@ -70,7 +70,6 @@ public class ArrayTest {
         argsList.add("-cp");
         argsList.add(appJar);
         argsList.add(bootClassPath);
-        argsList.add("-verbose:class");
         argsList.add("ArrayTestHelper");
         // the following are input args to the ArrayTestHelper.
         // skip checking array classes during run time
@@ -79,7 +78,6 @@ public class ArrayTest {
         }
         String[] opts = new String[argsList.size()];
         opts = argsList.toArray(opts);
-        output = TestCommon.execCommon(opts);
-        TestCommon.checkExec(output);
+        TestCommon.run(opts).assertNormalExit();
     }
 }

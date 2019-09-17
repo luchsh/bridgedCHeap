@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,8 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
-#include <thread_db.h>
+#include <sys/procfs.h>
 #include "libproc_impl.h"
+#include "proc_service.h"
 
 #define SA_ALTROOT "SA_ALTROOT"
 
@@ -112,16 +113,10 @@ bool is_debug() {
 }
 
 // initialize libproc
-bool init_libproc(bool debug) {
+JNIEXPORT bool JNICALL
+init_libproc(bool debug) {
    // init debug mode
    _libsaproc_debug = debug;
-
-   // initialize the thread_db library
-   if (td_init() != TD_OK) {
-     print_debug("libthread_db's td_init failed\n");
-     return false;
-   }
-
    return true;
 }
 
@@ -149,7 +144,8 @@ static void destroy_thread_info(struct ps_prochandle* ph) {
 // ps_prochandle cleanup
 
 // ps_prochandle cleanup
-void Prelease(struct ps_prochandle* ph) {
+JNIEXPORT void JNICALL
+Prelease(struct ps_prochandle* ph) {
    // do the "derived class" clean-up first
    ph->ops->release(ph);
    destroy_lib_info(ph);
@@ -254,7 +250,7 @@ const char* symbol_for_pc(struct ps_prochandle* ph, uintptr_t addr, uintptr_t* p
 }
 
 // add a thread to ps_prochandle
-thread_info* add_thread_info(struct ps_prochandle* ph, pthread_t pthread_id, lwpid_t lwp_id) {
+thread_info* add_thread_info(struct ps_prochandle* ph, lwpid_t lwp_id) {
    thread_info* newthr;
    if ( (newthr = (thread_info*) calloc(1, sizeof(thread_info))) == NULL) {
       print_debug("can't allocate memory for thread_info\n");
@@ -262,7 +258,6 @@ thread_info* add_thread_info(struct ps_prochandle* ph, pthread_t pthread_id, lwp
    }
 
    // initialize thread info
-   newthr->pthread_id = pthread_id;
    newthr->lwp_id = lwp_id;
 
    // add new thread to the list
@@ -272,59 +267,26 @@ thread_info* add_thread_info(struct ps_prochandle* ph, pthread_t pthread_id, lwp
    return newthr;
 }
 
+void delete_thread_info(struct ps_prochandle* ph, thread_info* thr_to_be_removed) {
+    thread_info* current_thr = ph->threads;
 
-// struct used for client data from thread_db callback
-struct thread_db_client_data {
-   struct ps_prochandle* ph;
-   thread_info_callback callback;
-};
-
-// callback function for libthread_db
-static int thread_db_callback(const td_thrhandle_t *th_p, void *data) {
-  struct thread_db_client_data* ptr = (struct thread_db_client_data*) data;
-  td_thrinfo_t ti;
-  td_err_e err;
-
-  memset(&ti, 0, sizeof(ti));
-  err = td_thr_get_info(th_p, &ti);
-  if (err != TD_OK) {
-    print_debug("libthread_db : td_thr_get_info failed, can't get thread info\n");
-    return err;
-  }
-
-  print_debug("thread_db : pthread %d (lwp %d)\n", ti.ti_tid, ti.ti_lid);
-
-  if (ptr->callback(ptr->ph, ti.ti_tid, ti.ti_lid) != true)
-    return TD_ERR;
-
-  return TD_OK;
+    if (thr_to_be_removed == ph->threads) {
+      ph->threads = ph->threads->next;
+    } else {
+      thread_info* previous_thr;
+      while (current_thr && current_thr != thr_to_be_removed) {
+        previous_thr = current_thr;
+        current_thr = current_thr->next;
+      }
+      if (current_thr == NULL) {
+        print_error("Could not find the thread to be removed");
+        return;
+      }
+      previous_thr->next = current_thr->next;
+    }
+    ph->num_threads--;
+    free(current_thr);
 }
-
-// read thread_info using libthread_db
-bool read_thread_info(struct ps_prochandle* ph, thread_info_callback cb) {
-  struct thread_db_client_data mydata;
-  td_thragent_t* thread_agent = NULL;
-  if (td_ta_new(ph, &thread_agent) != TD_OK) {
-     print_debug("can't create libthread_db agent\n");
-     return false;
-  }
-
-  mydata.ph = ph;
-  mydata.callback = cb;
-
-  // we use libthread_db iterator to iterate thru list of threads.
-  if (td_ta_thr_iter(thread_agent, thread_db_callback, &mydata,
-                 TD_THR_ANY_STATE, TD_THR_LOWEST_PRIORITY,
-                 TD_SIGNO_MASK, TD_THR_ANY_USER_FLAGS) != TD_OK) {
-     td_ta_delete(thread_agent);
-     return false;
-  }
-
-  // delete thread agent
-  td_ta_delete(thread_agent);
-  return true;
-}
-
 
 // get number of threads
 int get_num_threads(struct ps_prochandle* ph) {
@@ -398,7 +360,8 @@ bool find_lib(struct ps_prochandle* ph, const char *lib_name) {
 // proc service functions
 
 // get process id
-pid_t ps_getpid(struct ps_prochandle *ph) {
+JNIEXPORT pid_t JNICALL
+ps_getpid(struct ps_prochandle *ph) {
    return ph->pid;
 }
 
@@ -407,20 +370,23 @@ pid_t ps_getpid(struct ps_prochandle *ph) {
 // It returns the symbol's value as an address in the target process in
 // *sym_addr.
 
-ps_err_e ps_pglobal_lookup(struct ps_prochandle *ph, const char *object_name,
+JNIEXPORT ps_err_e JNICALL
+ps_pglobal_lookup(struct ps_prochandle *ph, const char *object_name,
                     const char *sym_name, psaddr_t *sym_addr) {
   *sym_addr = (psaddr_t) lookup_symbol(ph, object_name, sym_name);
   return (*sym_addr ? PS_OK : PS_NOSYM);
 }
 
 // read "size" bytes info "buf" from address "addr"
-ps_err_e ps_pdread(struct ps_prochandle *ph, psaddr_t  addr,
+JNIEXPORT ps_err_e JNICALL
+ps_pdread(struct ps_prochandle *ph, psaddr_t  addr,
                    void *buf, size_t size) {
   return ph->ops->p_pread(ph, (uintptr_t) addr, buf, size)? PS_OK: PS_ERR;
 }
 
 // write "size" bytes of data to debuggee at address "addr"
-ps_err_e ps_pdwrite(struct ps_prochandle *ph, psaddr_t addr,
+JNIEXPORT ps_err_e JNICALL
+ps_pdwrite(struct ps_prochandle *ph, psaddr_t addr,
                     const void *buf, size_t size) {
   return ph->ops->p_pwrite(ph, (uintptr_t)addr, buf, size)? PS_OK: PS_ERR;
 }
@@ -429,28 +395,27 @@ ps_err_e ps_pdwrite(struct ps_prochandle *ph, psaddr_t addr,
 // Functions below this point are not yet implemented. They are here only
 // to make the linker happy.
 
-ps_err_e ps_lsetfpregs(struct ps_prochandle *ph, lwpid_t lid, const prfpregset_t *fpregs) {
+JNIEXPORT ps_err_e JNICALL
+ps_lsetfpregs(struct ps_prochandle *ph, lwpid_t lid, const prfpregset_t *fpregs) {
   print_debug("ps_lsetfpregs not implemented\n");
   return PS_OK;
 }
 
-ps_err_e ps_lsetregs(struct ps_prochandle *ph, lwpid_t lid, const prgregset_t gregset) {
+JNIEXPORT ps_err_e JNICALL
+ps_lsetregs(struct ps_prochandle *ph, lwpid_t lid, const prgregset_t gregset) {
   print_debug("ps_lsetregs not implemented\n");
   return PS_OK;
 }
 
-ps_err_e  ps_lgetfpregs(struct  ps_prochandle  *ph,  lwpid_t lid, prfpregset_t *fpregs) {
+JNIEXPORT ps_err_e  JNICALL
+ps_lgetfpregs(struct  ps_prochandle  *ph,  lwpid_t lid, prfpregset_t *fpregs) {
   print_debug("ps_lgetfpregs not implemented\n");
   return PS_OK;
 }
 
-ps_err_e ps_lgetregs(struct ps_prochandle *ph, lwpid_t lid, prgregset_t gregset) {
+JNIEXPORT ps_err_e JNICALL
+ps_lgetregs(struct ps_prochandle *ph, lwpid_t lid, prgregset_t gregset) {
   print_debug("ps_lgetfpregs not implemented\n");
   return PS_OK;
 }
 
-// new libthread_db of NPTL seem to require this symbol
-ps_err_e ps_get_thread_area() {
-  print_debug("ps_get_thread_area not implemented\n");
-  return PS_OK;
-}

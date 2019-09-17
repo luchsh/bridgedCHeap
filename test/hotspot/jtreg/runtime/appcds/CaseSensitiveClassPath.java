@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,7 +34,7 @@
  *          jdk.jartool/sun.tools.jar
  * @requires os.family != "mac"
  * @compile test-classes/Hello.java
- * @run main CaseSensitiveClassPath
+ * @run driver CaseSensitiveClassPath
  */
 
 import java.nio.file.FileAlreadyExistsException;
@@ -76,17 +76,16 @@ public class CaseSensitiveClassPath {
         } else {
             jarPathUpper = Paths.get(appJarUpper);
         }
+        boolean isSameFile = Files.isSameFile(jarPath, jarPathUpper);
 
-        out = TestCommon.exec(appJarUpper, "Hello", "-Xlog:class+path=info",
-                              "-Xlog:cds");
-        if (TestCommon.isUnableToMap(out))
-            return;
-
-        if (Files.isSameFile(jarPath, jarPathUpper)) {
-            TestCommon.checkExec(out, "Hello World");
-        } else {
-            out.shouldContain("shared class paths mismatch")
-                .shouldHaveExitValue(1);
-        }
-   }
+        TestCommon.run("-Xlog:class+path=info,cds", "-cp", appJarUpper, "Hello")
+            .ifNoMappingFailure(output -> {
+                    if (isSameFile) {
+                        output.shouldContain("Hello World");
+                    } else {
+                        output.shouldContain("shared class paths mismatch");
+                        output.shouldHaveExitValue(1);
+                    }
+                });
+    }
 }

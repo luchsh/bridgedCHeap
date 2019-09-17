@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,13 +39,15 @@
 #include "ci/ciSymbol.hpp"
 #include "ci/ciTypeArray.hpp"
 #include "ci/ciTypeArrayKlass.hpp"
-#include "ci/ciUtilities.hpp"
+#include "ci/ciUtilities.inline.hpp"
 #include "classfile/javaClasses.inline.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
 #include "memory/allocation.inline.hpp"
+#include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/fieldType.hpp"
+#include "runtime/handles.inline.hpp"
 #include "utilities/macros.hpp"
 
 // ciObjectFactory
@@ -156,8 +158,8 @@ void ciObjectFactory::init_shared_objects() {
   ciEnv::_null_object_instance = new (_arena) ciNullObject();
   init_ident_of(ciEnv::_null_object_instance);
 
-#define WK_KLASS_DEFN(name, ignore_s, opt)                              \
-  if (SystemDictionary::name() != NULL) \
+#define WK_KLASS_DEFN(name, ignore_s)                              \
+  if (SystemDictionary::name##_is_loaded()) \
     ciEnv::_##name = get_metadata(SystemDictionary::name())->as_instance_klass();
 
   WK_KLASSES_DO(WK_KLASS_DEFN)
@@ -184,7 +186,7 @@ void ciObjectFactory::init_shared_objects() {
 
   get_metadata(Universe::boolArrayKlassObj());
   get_metadata(Universe::charArrayKlassObj());
-  get_metadata(Universe::singleArrayKlassObj());
+  get_metadata(Universe::floatArrayKlassObj());
   get_metadata(Universe::doubleArrayKlassObj());
   get_metadata(Universe::byteArrayKlassObj());
   get_metadata(Universe::shortArrayKlassObj());
@@ -248,7 +250,7 @@ ciObject* ciObjectFactory::get(oop key) {
   // into the cache.
   Handle keyHandle(Thread::current(), key);
   ciObject* new_object = create_new_object(keyHandle());
-  assert(keyHandle() == new_object->get_oop(), "must be properly recorded");
+  assert(oopDesc::equals(keyHandle(), new_object->get_oop()), "must be properly recorded");
   init_ident_of(new_object);
   assert(Universe::heap()->is_in_reserved(new_object->get_oop()), "must be");
 
@@ -263,6 +265,24 @@ int ciObjectFactory::metadata_compare(Metadata* const& key, ciMetadata* const& e
   else if (key > value) return 1;
   else                  return 0;
 }
+
+// ------------------------------------------------------------------
+// ciObjectFactory::cached_metadata
+//
+// Get the ciMetadata corresponding to some Metadata. If the ciMetadata has
+// already been created, it is returned. Otherwise, null is returned.
+ciMetadata* ciObjectFactory::cached_metadata(Metadata* key) {
+  ASSERT_IN_VM;
+
+  bool found = false;
+  int index = _ci_metadata->find_sorted<Metadata*, ciObjectFactory::metadata_compare>(key, found);
+
+  if (!found) {
+    return NULL;
+  }
+  return _ci_metadata->at(index)->as_metadata();
+}
+
 
 // ------------------------------------------------------------------
 // ciObjectFactory::get_metadata
@@ -449,8 +469,8 @@ ciKlass* ciObjectFactory::get_unloaded_klass(ciKlass* accessing_klass,
   for (int i=0; i<_unloaded_klasses->length(); i++) {
     ciKlass* entry = _unloaded_klasses->at(i);
     if (entry->name()->equals(name) &&
-        entry->loader() == loader &&
-        entry->protection_domain() == domain) {
+        oopDesc::equals(entry->loader(), loader) &&
+        oopDesc::equals(entry->protection_domain(), domain)) {
       // We've found a match.
       return entry;
     }
@@ -465,7 +485,7 @@ ciKlass* ciObjectFactory::get_unloaded_klass(ciKlass* accessing_klass,
 
   // Two cases: this is an unloaded ObjArrayKlass or an
   // unloaded InstanceKlass.  Deal with both.
-  if (name->byte_at(0) == '[') {
+  if (name->char_at(0) == '[') {
     // Decompose the name.'
     FieldArrayInfo fd;
     BasicType element_type = FieldType::get_array_info(name->get_symbol(),
@@ -670,11 +690,11 @@ ciSymbol* ciObjectFactory::vm_symbol_at(int index) {
 
 // ------------------------------------------------------------------
 // ciObjectFactory::metadata_do
-void ciObjectFactory::metadata_do(void f(Metadata*)) {
+void ciObjectFactory::metadata_do(MetadataClosure* f) {
   if (_ci_metadata == NULL) return;
   for (int j = 0; j< _ci_metadata->length(); j++) {
     Metadata* o = _ci_metadata->at(j)->constant_encoding();
-    f(o);
+    f->do_metadata(o);
   }
 }
 

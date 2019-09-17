@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2017, SAP SE. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019, SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,15 +26,16 @@
 #include "precompiled.hpp"
 #include "asm/macroAssembler.inline.hpp"
 #include "compiler/disassembler.hpp"
-#include "gc/shared/cardTableModRefBS.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
+#include "gc/shared/barrierSet.hpp"
+#include "gc/shared/barrierSetAssembler.hpp"
 #include "interpreter/interpreter.hpp"
 #include "memory/resourceArea.hpp"
 #include "nativeInst_ppc.hpp"
 #include "prims/methodHandles.hpp"
 #include "runtime/biasedLocking.hpp"
 #include "runtime/icache.hpp"
-#include "runtime/interfaceSupport.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/objectMonitor.hpp"
 #include "runtime/os.hpp"
 #include "runtime/safepoint.hpp"
@@ -42,11 +43,6 @@
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
 #include "utilities/macros.hpp"
-#if INCLUDE_ALL_GCS
-#include "gc/g1/g1CollectedHeap.inline.hpp"
-#include "gc/g1/g1SATBCardTableModRefBS.hpp"
-#include "gc/g1/heapRegion.hpp"
-#endif // INCLUDE_ALL_GCS
 #ifdef COMPILER2
 #include "opto/intrinsicnode.hpp"
 #endif
@@ -1306,35 +1302,6 @@ bool MacroAssembler::is_load_from_polling_page(int instruction, void* ucontext,
 #endif
 }
 
-bool MacroAssembler::is_memory_serialization(int instruction, JavaThread* thread, void* ucontext) {
-#ifdef LINUX
-  ucontext_t* uc = (ucontext_t*) ucontext;
-
-  if (is_stwx(instruction) || is_stwux(instruction)) {
-    int ra = inv_ra_field(instruction);
-    int rb = inv_rb_field(instruction);
-
-    // look up content of ra and rb in ucontext
-    address ra_val=(address)uc->uc_mcontext.regs->gpr[ra];
-    long rb_val=(long)uc->uc_mcontext.regs->gpr[rb];
-    return os::is_memory_serialize_page(thread, ra_val+rb_val);
-  } else if (is_stw(instruction) || is_stwu(instruction)) {
-    int ra = inv_ra_field(instruction);
-    int d1 = inv_d1_field(instruction);
-
-    // look up content of ra in ucontext
-    address ra_val=(address)uc->uc_mcontext.regs->gpr[ra];
-    return os::is_memory_serialize_page(thread, ra_val+d1);
-  } else {
-    return false;
-  }
-#else
-  // workaround not needed on !LINUX :-)
-  ShouldNotCallThis();
-  return false;
-#endif
-}
-
 void MacroAssembler::bang_stack_with_offset(int offset) {
   // When increasing the stack, the old stack pointer will be written
   // to the new top of stack according to the PPC64 abi.
@@ -2044,12 +2011,42 @@ void MacroAssembler::check_klass_subtype(Register sub_klass,
   bind(L_failure); // Fallthru if not successful.
 }
 
+void MacroAssembler::clinit_barrier(Register klass, Register thread, Label* L_fast_path, Label* L_slow_path) {
+  assert(L_fast_path != NULL || L_slow_path != NULL, "at least one is required");
+
+  Label L_fallthrough;
+  if (L_fast_path == NULL) {
+    L_fast_path = &L_fallthrough;
+  } else if (L_slow_path == NULL) {
+    L_slow_path = &L_fallthrough;
+  }
+
+  // Fast path check: class is fully initialized
+  lbz(R0, in_bytes(InstanceKlass::init_state_offset()), klass);
+  cmpwi(CCR0, R0, InstanceKlass::fully_initialized);
+  beq(CCR0, *L_fast_path);
+
+  // Fast path check: current thread is initializer thread
+  ld(R0, in_bytes(InstanceKlass::init_thread_offset()), klass);
+  cmpd(CCR0, thread, R0);
+  if (L_slow_path == &L_fallthrough) {
+    beq(CCR0, *L_fast_path);
+  } else if (L_fast_path == &L_fallthrough) {
+    bne(CCR0, *L_slow_path);
+  } else {
+    Unimplemented();
+  }
+
+  bind(L_fallthrough);
+}
+
 void MacroAssembler::check_method_handle_type(Register mtype_reg, Register mh_reg,
                                               Register temp_reg,
                                               Label& wrong_method_type) {
   assert_different_registers(mtype_reg, mh_reg, temp_reg);
   // Compare method type against that of the receiver.
-  load_heap_oop_not_null(temp_reg, delayed_value(java_lang_invoke_MethodHandle::type_offset_in_bytes, temp_reg), mh_reg);
+  load_heap_oop(temp_reg, delayed_value(java_lang_invoke_MethodHandle::type_offset_in_bytes, temp_reg), mh_reg,
+                noreg, noreg, false, IS_NOT_NULL);
   cmpd(CCR0, temp_reg, mtype_reg);
   bne(CCR0, wrong_method_type);
 }
@@ -2305,7 +2302,7 @@ void MacroAssembler::tlab_allocate(
 ) {
   // make sure arguments make sense
   assert_different_registers(obj, var_size_in_bytes, t1);
-  assert(0 <= con_size_in_bytes && is_simm13(con_size_in_bytes), "illegal object size");
+  assert(0 <= con_size_in_bytes && is_simm16(con_size_in_bytes), "illegal object size");
   assert((con_size_in_bytes & MinObjAlignmentInBytesMask) == 0, "object size is not multiple of alignment");
 
   const Register new_top = t1;
@@ -2335,9 +2332,6 @@ void MacroAssembler::tlab_allocate(
   // update the tlab top pointer
   std(new_top, in_bytes(JavaThread::tlab_top_offset()), R16_thread);
   //verify_tlab(); not implemented
-}
-void MacroAssembler::tlab_refill(Label& retry_tlab, Label& try_eden, Label& slow_case) {
-  unimplemented("tlab_refill");
 }
 void MacroAssembler::incr_allocated_bytes(RegisterOrConstant size_in_bytes, Register t1, Register t2) {
   unimplemented("incr_allocated_bytes");
@@ -2418,7 +2412,7 @@ void MacroAssembler::atomic_ori_int(Register addr, Register result, int uimm16) 
 
 // Update rtm_counters based on abort status
 // input: abort_status
-//        rtm_counters (RTMLockingCounters*)
+//        rtm_counters_Reg (RTMLockingCounters*)
 void MacroAssembler::rtm_counters_update(Register abort_status, Register rtm_counters_Reg) {
   // Mapping to keep PreciseRTMLockingStatistics similar to x86.
   // x86 ppc (! means inverted, ? means not the same)
@@ -2428,52 +2422,96 @@ void MacroAssembler::rtm_counters_update(Register abort_status, Register rtm_cou
   //  3   10  Set if an internal buffer overflowed.
   //  4  ?12  Set if a debug breakpoint was hit.
   //  5  ?32  Set if an abort occurred during execution of a nested transaction.
-  const  int tm_failure_bit[] = {Assembler::tm_tabort, // Note: Seems like signal handler sets this, too.
-                                 Assembler::tm_failure_persistent, // inverted: transient
-                                 Assembler::tm_trans_cf,
-                                 Assembler::tm_footprint_of,
-                                 Assembler::tm_non_trans_cf,
-                                 Assembler::tm_suspended};
-  const bool tm_failure_inv[] = {false, true, false, false, false, false};
-  assert(sizeof(tm_failure_bit)/sizeof(int) == RTMLockingCounters::ABORT_STATUS_LIMIT, "adapt mapping!");
+  const int failure_bit[] = {tm_tabort, // Signal handler will set this too.
+                             tm_failure_persistent,
+                             tm_non_trans_cf,
+                             tm_trans_cf,
+                             tm_footprint_of,
+                             tm_failure_code,
+                             tm_transaction_level};
 
-  const Register addr_Reg = R0;
-  // Keep track of offset to where rtm_counters_Reg had pointed to.
+  const int num_failure_bits = sizeof(failure_bit) / sizeof(int);
+  const int num_counters = RTMLockingCounters::ABORT_STATUS_LIMIT;
+
+  const int bit2counter_map[][num_counters] =
+  // 0 = no map; 1 = mapped, no inverted logic; -1 = mapped, inverted logic
+  // Inverted logic means that if a bit is set don't count it, or vice-versa.
+  // Care must be taken when mapping bits to counters as bits for a given
+  // counter must be mutually exclusive. Otherwise, the counter will be
+  // incremented more than once.
+  // counters:
+  // 0        1        2         3         4         5
+  // abort  , persist, conflict, overflow, debug   , nested         bits:
+  {{ 1      , 0      , 0       , 0       , 0       , 0      },   // abort
+   { 0      , -1     , 0       , 0       , 0       , 0      },   // failure_persistent
+   { 0      , 0      , 1       , 0       , 0       , 0      },   // non_trans_cf
+   { 0      , 0      , 1       , 0       , 0       , 0      },   // trans_cf
+   { 0      , 0      , 0       , 1       , 0       , 0      },   // footprint_of
+   { 0      , 0      , 0       , 0       , -1      , 0      },   // failure_code = 0xD4
+   { 0      , 0      , 0       , 0       , 0       , 1      }};  // transaction_level > 1
+  // ...
+
+  // Move abort_status value to R0 and use abort_status register as a
+  // temporary register because R0 as third operand in ld/std is treated
+  // as base address zero (value). Likewise, R0 as second operand in addi
+  // is problematic because it amounts to li.
+  const Register temp_Reg = abort_status;
+  const Register abort_status_R0 = R0;
+  mr(abort_status_R0, abort_status);
+
+  // Increment total abort counter.
   int counters_offs = RTMLockingCounters::abort_count_offset();
-  addi(addr_Reg, rtm_counters_Reg, counters_offs);
-  const Register temp_Reg = rtm_counters_Reg;
-
-  //atomic_inc_ptr(addr_Reg, temp_Reg); We don't increment atomically
-  ldx(temp_Reg, addr_Reg);
+  ld(temp_Reg, counters_offs, rtm_counters_Reg);
   addi(temp_Reg, temp_Reg, 1);
-  stdx(temp_Reg, addr_Reg);
+  std(temp_Reg, counters_offs, rtm_counters_Reg);
 
+  // Increment specific abort counters.
   if (PrintPreciseRTMLockingStatistics) {
-    int counters_offs_delta = RTMLockingCounters::abortX_count_offset() - counters_offs;
 
-    //mftexasr(abort_status); done by caller
-    for (int i = 0; i < RTMLockingCounters::ABORT_STATUS_LIMIT; i++) {
-      counters_offs += counters_offs_delta;
-      li(temp_Reg, counters_offs_delta); // can't use addi with R0
-      add(addr_Reg, addr_Reg, temp_Reg); // point to next counter
-      counters_offs_delta = sizeof(uintx);
+    // #0 counter offset.
+    int abortX_offs = RTMLockingCounters::abortX_count_offset();
 
-      Label check_abort;
-      rldicr_(temp_Reg, abort_status, tm_failure_bit[i], 0);
-      if (tm_failure_inv[i]) {
-        bne(CCR0, check_abort);
-      } else {
-        beq(CCR0, check_abort);
+    for (int nbit = 0; nbit < num_failure_bits; nbit++) {
+      for (int ncounter = 0; ncounter < num_counters; ncounter++) {
+        if (bit2counter_map[nbit][ncounter] != 0) {
+          Label check_abort;
+          int abort_counter_offs = abortX_offs + (ncounter << 3);
+
+          if (failure_bit[nbit] == tm_transaction_level) {
+            // Don't check outer transaction, TL = 1 (bit 63). Hence only
+            // 11 bits in the TL field are checked to find out if failure
+            // occured in a nested transaction. This check also matches
+            // the case when nesting_of = 1 (nesting overflow).
+            rldicr_(temp_Reg, abort_status_R0, failure_bit[nbit], 10);
+          } else if (failure_bit[nbit] == tm_failure_code) {
+            // Check failure code for trap or illegal caught in TM.
+            // Bits 0:7 are tested as bit 7 (persistent) is copied from
+            // tabort or treclaim source operand.
+            // On Linux: trap or illegal is TM_CAUSE_SIGNAL (0xD4).
+            rldicl(temp_Reg, abort_status_R0, 8, 56);
+            cmpdi(CCR0, temp_Reg, 0xD4);
+          } else {
+            rldicr_(temp_Reg, abort_status_R0, failure_bit[nbit], 0);
+          }
+
+          if (bit2counter_map[nbit][ncounter] == 1) {
+            beq(CCR0, check_abort);
+          } else {
+            bne(CCR0, check_abort);
+          }
+
+          // We don't increment atomically.
+          ld(temp_Reg, abort_counter_offs, rtm_counters_Reg);
+          addi(temp_Reg, temp_Reg, 1);
+          std(temp_Reg, abort_counter_offs, rtm_counters_Reg);
+
+          bind(check_abort);
+        }
       }
-      //atomic_inc_ptr(addr_Reg, temp_Reg); We don't increment atomically
-      ldx(temp_Reg, addr_Reg);
-      addi(temp_Reg, temp_Reg, 1);
-      stdx(temp_Reg, addr_Reg);
-      bind(check_abort);
     }
   }
-  li(temp_Reg, -counters_offs); // can't use addi with R0
-  add(rtm_counters_Reg, addr_Reg, temp_Reg); // restore
+  // Restore abort_status.
+  mr(abort_status, abort_status_R0);
 }
 
 // Branch if (random & (count-1) != 0), count is 2^n
@@ -2575,12 +2613,31 @@ void MacroAssembler::rtm_profiling(Register abort_status_Reg, Register temp_Reg,
 void MacroAssembler::rtm_retry_lock_on_abort(Register retry_count_Reg, Register abort_status_Reg,
                                              Label& retryLabel, Label* checkRetry) {
   Label doneRetry;
+
+  // Don't retry if failure is persistent.
+  // The persistent bit is set when a (A) Disallowed operation is performed in
+  // transactional state, like for instance trying to write the TFHAR after a
+  // transaction is started; or when there is (B) a Nesting Overflow (too many
+  // nested transactions); or when (C) the Footprint overflows (too many
+  // addressess touched in TM state so there is no more space in the footprint
+  // area to track them); or in case of (D) a Self-Induced Conflict, i.e. a
+  // store is performed to a given address in TM state, then once in suspended
+  // state the same address is accessed. Failure (A) is very unlikely to occur
+  // in the JVM. Failure (D) will never occur because Suspended state is never
+  // used in the JVM. Thus mostly (B) a Nesting Overflow or (C) a Footprint
+  // Overflow will set the persistent bit.
   rldicr_(R0, abort_status_Reg, tm_failure_persistent, 0);
   bne(CCR0, doneRetry);
+
+  // Don't retry if transaction was deliberately aborted, i.e. caused by a
+  // tabort instruction.
+  rldicr_(R0, abort_status_Reg, tm_tabort, 0);
+  bne(CCR0, doneRetry);
+
+  // Retry if transaction aborted due to a conflict with another thread.
   if (checkRetry) { bind(*checkRetry); }
   addic_(retry_count_Reg, retry_count_Reg, -1);
   blt(CCR0, doneRetry);
-  smt_yield(); // Can't use wait(). No permission (SIGILL).
   b(retryLabel);
   bind(doneRetry);
 }
@@ -2591,7 +2648,7 @@ void MacroAssembler::rtm_retry_lock_on_abort(Register retry_count_Reg, Register 
 // output: retry_count_Reg decremented by 1
 // CTR is killed
 void MacroAssembler::rtm_retry_lock_on_busy(Register retry_count_Reg, Register owner_addr_Reg, Label& retryLabel) {
-  Label SpinLoop, doneRetry;
+  Label SpinLoop, doneRetry, doRetry;
   addic_(retry_count_Reg, retry_count_Reg, -1);
   blt(CCR0, doneRetry);
 
@@ -2600,15 +2657,25 @@ void MacroAssembler::rtm_retry_lock_on_busy(Register retry_count_Reg, Register o
     mtctr(R0);
   }
 
+  // low thread priority
+  smt_prio_low();
   bind(SpinLoop);
-  smt_yield(); // Can't use waitrsv(). No permission (SIGILL).
 
   if (RTMSpinLoopCount > 1) {
-    bdz(retryLabel);
+    bdz(doRetry);
     ld(R0, 0, owner_addr_Reg);
     cmpdi(CCR0, R0, 0);
     bne(CCR0, SpinLoop);
   }
+
+  bind(doRetry);
+
+  // restore thread priority to default in userspace
+#ifdef LINUX
+  smt_prio_medium_low();
+#else
+  smt_prio_medium();
+#endif
 
   b(retryLabel);
 
@@ -2781,12 +2848,6 @@ void MacroAssembler::compiler_fast_lock_object(ConditionRegister flag, Register 
   ld(displaced_header, oopDesc::mark_offset_in_bytes(), oop);
 
 
-  // Always do locking in runtime.
-  if (EmitSync & 0x01) {
-    cmpdi(flag, oop, 0); // Oop can't be 0 here => always false.
-    return;
-  }
-
   if (try_bias) {
     biased_locking_enter(flag, oop, displaced_header, temp, current_header, cont);
   }
@@ -2800,11 +2861,9 @@ void MacroAssembler::compiler_fast_lock_object(ConditionRegister flag, Register 
 #endif // INCLUDE_RTM_OPT
 
   // Handle existing monitor.
-  if ((EmitSync & 0x02) == 0) {
-    // The object has an existing monitor iff (mark & monitor_value) != 0.
-    andi_(temp, displaced_header, markOopDesc::monitor_value);
-    bne(CCR0, object_has_monitor);
-  }
+  // The object has an existing monitor iff (mark & monitor_value) != 0.
+  andi_(temp, displaced_header, markOopDesc::monitor_value);
+  bne(CCR0, object_has_monitor);
 
   // Set displaced_header to be (markOop of object | UNLOCK_VALUE).
   ori(displaced_header, displaced_header, markOopDesc::unlocked_value);
@@ -2847,48 +2906,46 @@ void MacroAssembler::compiler_fast_lock_object(ConditionRegister flag, Register 
   std(R0/*==0, perhaps*/, BasicLock::displaced_header_offset_in_bytes(), box);
 
   // Handle existing monitor.
-  if ((EmitSync & 0x02) == 0) {
-    b(cont);
+  b(cont);
 
-    bind(object_has_monitor);
-    // The object's monitor m is unlocked iff m->owner == NULL,
-    // otherwise m->owner may contain a thread or a stack address.
+  bind(object_has_monitor);
+  // The object's monitor m is unlocked iff m->owner == NULL,
+  // otherwise m->owner may contain a thread or a stack address.
 
 #if INCLUDE_RTM_OPT
-    // Use the same RTM locking code in 32- and 64-bit VM.
-    if (use_rtm) {
-      rtm_inflated_locking(flag, oop, displaced_header, box, temp, /*temp*/ current_header,
-                           rtm_counters, method_data, profile_rtm, cont);
-    } else {
+  // Use the same RTM locking code in 32- and 64-bit VM.
+  if (use_rtm) {
+    rtm_inflated_locking(flag, oop, displaced_header, box, temp, /*temp*/ current_header,
+                         rtm_counters, method_data, profile_rtm, cont);
+  } else {
 #endif // INCLUDE_RTM_OPT
 
-    // Try to CAS m->owner from NULL to current thread.
-    addi(temp, displaced_header, ObjectMonitor::owner_offset_in_bytes()-markOopDesc::monitor_value);
-    cmpxchgd(/*flag=*/flag,
-             /*current_value=*/current_header,
-             /*compare_value=*/(intptr_t)0,
-             /*exchange_value=*/R16_thread,
-             /*where=*/temp,
-             MacroAssembler::MemBarRel | MacroAssembler::MemBarAcq,
-             MacroAssembler::cmpxchgx_hint_acquire_lock());
+  // Try to CAS m->owner from NULL to current thread.
+  addi(temp, displaced_header, ObjectMonitor::owner_offset_in_bytes()-markOopDesc::monitor_value);
+  cmpxchgd(/*flag=*/flag,
+           /*current_value=*/current_header,
+           /*compare_value=*/(intptr_t)0,
+           /*exchange_value=*/R16_thread,
+           /*where=*/temp,
+           MacroAssembler::MemBarRel | MacroAssembler::MemBarAcq,
+           MacroAssembler::cmpxchgx_hint_acquire_lock());
 
-    // Store a non-null value into the box.
-    std(box, BasicLock::displaced_header_offset_in_bytes(), box);
+  // Store a non-null value into the box.
+  std(box, BasicLock::displaced_header_offset_in_bytes(), box);
 
-#   ifdef ASSERT
-    bne(flag, cont);
-    // We have acquired the monitor, check some invariants.
-    addi(/*monitor=*/temp, temp, -ObjectMonitor::owner_offset_in_bytes());
-    // Invariant 1: _recursions should be 0.
-    //assert(ObjectMonitor::recursions_size_in_bytes() == 8, "unexpected size");
-    asm_assert_mem8_is_zero(ObjectMonitor::recursions_offset_in_bytes(), temp,
+# ifdef ASSERT
+  bne(flag, cont);
+  // We have acquired the monitor, check some invariants.
+  addi(/*monitor=*/temp, temp, -ObjectMonitor::owner_offset_in_bytes());
+  // Invariant 1: _recursions should be 0.
+  //assert(ObjectMonitor::recursions_size_in_bytes() == 8, "unexpected size");
+  asm_assert_mem8_is_zero(ObjectMonitor::recursions_offset_in_bytes(), temp,
                             "monitor->_recursions should be 0", -1);
-#   endif
+# endif
 
 #if INCLUDE_RTM_OPT
-    } // use_rtm()
+  } // use_rtm()
 #endif
-  }
 
   bind(cont);
   // flag == EQ indicates success
@@ -2902,12 +2959,6 @@ void MacroAssembler::compiler_fast_unlock_object(ConditionRegister flag, Registe
   assert(flag != CCR0, "bad condition register");
   Label cont;
   Label object_has_monitor;
-
-  // Always do locking in runtime.
-  if (EmitSync & 0x01) {
-    cmpdi(flag, oop, 0); // Oop can't be 0 here => always false.
-    return;
-  }
 
   if (try_bias) {
     biased_locking_exit(flag, oop, current_header, cont);
@@ -2935,13 +2986,11 @@ void MacroAssembler::compiler_fast_unlock_object(ConditionRegister flag, Registe
   beq(flag, cont);
 
   // Handle existing monitor.
-  if ((EmitSync & 0x02) == 0) {
-    // The object has an existing monitor iff (mark & monitor_value) != 0.
-    RTM_OPT_ONLY( if (!(UseRTMForStackLocks && use_rtm)) ) // skip load if already done
-    ld(current_header, oopDesc::mark_offset_in_bytes(), oop);
-    andi_(R0, current_header, markOopDesc::monitor_value);
-    bne(CCR0, object_has_monitor);
-  }
+  // The object has an existing monitor iff (mark & monitor_value) != 0.
+  RTM_OPT_ONLY( if (!(UseRTMForStackLocks && use_rtm)) ) // skip load if already done
+  ld(current_header, oopDesc::mark_offset_in_bytes(), oop);
+  andi_(R0, current_header, markOopDesc::monitor_value);
+  bne(CCR0, object_has_monitor);
 
   // Check if it is still a light weight lock, this is is true if we see
   // the stack address of the basicLock in the markOop of the object.
@@ -2959,65 +3008,42 @@ void MacroAssembler::compiler_fast_unlock_object(ConditionRegister flag, Registe
   assert(oopDesc::mark_offset_in_bytes() == 0, "offset of _mark is not 0");
 
   // Handle existing monitor.
-  if ((EmitSync & 0x02) == 0) {
-    b(cont);
+  b(cont);
 
-    bind(object_has_monitor);
-    addi(current_header, current_header, -markOopDesc::monitor_value); // monitor
-    ld(temp,             ObjectMonitor::owner_offset_in_bytes(), current_header);
+  bind(object_has_monitor);
+  addi(current_header, current_header, -markOopDesc::monitor_value); // monitor
+  ld(temp,             ObjectMonitor::owner_offset_in_bytes(), current_header);
 
     // It's inflated.
 #if INCLUDE_RTM_OPT
-    if (use_rtm) {
-      Label L_regular_inflated_unlock;
-      // Clean monitor_value bit to get valid pointer
-      cmpdi(flag, temp, 0);
-      bne(flag, L_regular_inflated_unlock);
-      tend_();
-      b(cont);
-      bind(L_regular_inflated_unlock);
-    }
+  if (use_rtm) {
+    Label L_regular_inflated_unlock;
+    // Clean monitor_value bit to get valid pointer
+    cmpdi(flag, temp, 0);
+    bne(flag, L_regular_inflated_unlock);
+    tend_();
+    b(cont);
+    bind(L_regular_inflated_unlock);
+  }
 #endif
 
-    ld(displaced_header, ObjectMonitor::recursions_offset_in_bytes(), current_header);
-    xorr(temp, R16_thread, temp);      // Will be 0 if we are the owner.
-    orr(temp, temp, displaced_header); // Will be 0 if there are 0 recursions.
-    cmpdi(flag, temp, 0);
-    bne(flag, cont);
+  ld(displaced_header, ObjectMonitor::recursions_offset_in_bytes(), current_header);
+  xorr(temp, R16_thread, temp);      // Will be 0 if we are the owner.
+  orr(temp, temp, displaced_header); // Will be 0 if there are 0 recursions.
+  cmpdi(flag, temp, 0);
+  bne(flag, cont);
 
-    ld(temp,             ObjectMonitor::EntryList_offset_in_bytes(), current_header);
-    ld(displaced_header, ObjectMonitor::cxq_offset_in_bytes(), current_header);
-    orr(temp, temp, displaced_header); // Will be 0 if both are 0.
-    cmpdi(flag, temp, 0);
-    bne(flag, cont);
-    release();
-    std(temp, ObjectMonitor::owner_offset_in_bytes(), current_header);
-  }
+  ld(temp,             ObjectMonitor::EntryList_offset_in_bytes(), current_header);
+  ld(displaced_header, ObjectMonitor::cxq_offset_in_bytes(), current_header);
+  orr(temp, temp, displaced_header); // Will be 0 if both are 0.
+  cmpdi(flag, temp, 0);
+  bne(flag, cont);
+  release();
+  std(temp, ObjectMonitor::owner_offset_in_bytes(), current_header);
 
   bind(cont);
   // flag == EQ indicates success
   // flag == NE indicates failure
-}
-
-// Write serialization page so VM thread can do a pseudo remote membar.
-// We use the current thread pointer to calculate a thread specific
-// offset to write to within the page. This minimizes bus traffic
-// due to cache line collision.
-void MacroAssembler::serialize_memory(Register thread, Register tmp1, Register tmp2) {
-  srdi(tmp2, thread, os::get_serialize_page_shift_count());
-
-  int mask = os::vm_page_size() - sizeof(int);
-  if (Assembler::is_simm(mask, 16)) {
-    andi(tmp2, tmp2, mask);
-  } else {
-    lis(tmp1, (int)((signed short) (mask >> 16)));
-    ori(tmp1, tmp1, mask & 0x0000ffff);
-    andr(tmp2, tmp2, tmp1);
-  }
-
-  load_const(tmp1, (long) os::get_memory_serialize_page());
-  release();
-  stwx(R0, tmp1, tmp2);
 }
 
 void MacroAssembler::safepoint_poll(Label& slow_path, Register temp_reg) {
@@ -3032,211 +3058,10 @@ void MacroAssembler::safepoint_poll(Label& slow_path, Register temp_reg) {
   bne(CCR0, slow_path);
 }
 
-
-// GC barrier helper macros
-
-// Write the card table byte if needed.
-void MacroAssembler::card_write_barrier_post(Register Rstore_addr, Register Rnew_val, Register Rtmp) {
-  CardTableModRefBS* bs =
-    barrier_set_cast<CardTableModRefBS>(Universe::heap()->barrier_set());
-  assert(bs->kind() == BarrierSet::CardTableForRS ||
-         bs->kind() == BarrierSet::CardTableExtension, "wrong barrier");
-#ifdef ASSERT
-  cmpdi(CCR0, Rnew_val, 0);
-  asm_assert_ne("null oop not allowed", 0x321);
-#endif
-  card_table_write(bs->byte_map_base, Rtmp, Rstore_addr);
-}
-
-// Write the card table byte.
-void MacroAssembler::card_table_write(jbyte* byte_map_base, Register Rtmp, Register Robj) {
-  assert_different_registers(Robj, Rtmp, R0);
-  load_const_optimized(Rtmp, (address)byte_map_base, R0);
-  srdi(Robj, Robj, CardTableModRefBS::card_shift);
-  li(R0, 0); // dirty
-  if (UseConcMarkSweepGC) membar(Assembler::StoreStore);
-  stbx(R0, Rtmp, Robj);
-}
-
-// Kills R31 if value is a volatile register.
 void MacroAssembler::resolve_jobject(Register value, Register tmp1, Register tmp2, bool needs_frame) {
-  Label done;
-  cmpdi(CCR0, value, 0);
-  beq(CCR0, done);         // Use NULL as-is.
-
-  clrrdi(tmp1, value, JNIHandles::weak_tag_size);
-#if INCLUDE_ALL_GCS
-  if (UseG1GC) { andi_(tmp2, value, JNIHandles::weak_tag_mask); }
-#endif
-  ld(value, 0, tmp1);      // Resolve (untagged) jobject.
-
-#if INCLUDE_ALL_GCS
-  if (UseG1GC) {
-    Label not_weak;
-    beq(CCR0, not_weak);   // Test for jweak tag.
-    verify_oop(value);
-    g1_write_barrier_pre(noreg, // obj
-                         noreg, // offset
-                         value, // pre_val
-                         tmp1, tmp2, needs_frame);
-    bind(not_weak);
-  }
-#endif // INCLUDE_ALL_GCS
-  verify_oop(value);
-  bind(done);
+  BarrierSetAssembler* bs = BarrierSet::barrier_set()->barrier_set_assembler();
+  bs->resolve_jobject(this, value, tmp1, tmp2, needs_frame);
 }
-
-#if INCLUDE_ALL_GCS
-// General G1 pre-barrier generator.
-// Goal: record the previous value if it is not null.
-void MacroAssembler::g1_write_barrier_pre(Register Robj, RegisterOrConstant offset, Register Rpre_val,
-                                          Register Rtmp1, Register Rtmp2, bool needs_frame) {
-  Label runtime, filtered;
-
-  // Is marking active?
-  if (in_bytes(SATBMarkQueue::byte_width_of_active()) == 4) {
-    lwz(Rtmp1, in_bytes(JavaThread::satb_mark_queue_offset() + SATBMarkQueue::byte_offset_of_active()), R16_thread);
-  } else {
-    guarantee(in_bytes(SATBMarkQueue::byte_width_of_active()) == 1, "Assumption");
-    lbz(Rtmp1, in_bytes(JavaThread::satb_mark_queue_offset() + SATBMarkQueue::byte_offset_of_active()), R16_thread);
-  }
-  cmpdi(CCR0, Rtmp1, 0);
-  beq(CCR0, filtered);
-
-  // Do we need to load the previous value?
-  if (Robj != noreg) {
-    // Load the previous value...
-    if (UseCompressedOops) {
-      lwz(Rpre_val, offset, Robj);
-    } else {
-      ld(Rpre_val, offset, Robj);
-    }
-    // Previous value has been loaded into Rpre_val.
-  }
-  assert(Rpre_val != noreg, "must have a real register");
-
-  // Is the previous value null?
-  cmpdi(CCR0, Rpre_val, 0);
-  beq(CCR0, filtered);
-
-  if (Robj != noreg && UseCompressedOops) {
-    decode_heap_oop_not_null(Rpre_val);
-  }
-
-  // OK, it's not filtered, so we'll need to call enqueue. In the normal
-  // case, pre_val will be a scratch G-reg, but there are some cases in
-  // which it's an O-reg. In the first case, do a normal call. In the
-  // latter, do a save here and call the frameless version.
-
-  // Can we store original value in the thread's buffer?
-  // Is index == 0?
-  // (The index field is typed as size_t.)
-  const Register Rbuffer = Rtmp1, Rindex = Rtmp2;
-
-  ld(Rindex, in_bytes(JavaThread::satb_mark_queue_offset() + SATBMarkQueue::byte_offset_of_index()), R16_thread);
-  cmpdi(CCR0, Rindex, 0);
-  beq(CCR0, runtime); // If index == 0, goto runtime.
-  ld(Rbuffer, in_bytes(JavaThread::satb_mark_queue_offset() + SATBMarkQueue::byte_offset_of_buf()), R16_thread);
-
-  addi(Rindex, Rindex, -wordSize); // Decrement index.
-  std(Rindex, in_bytes(JavaThread::satb_mark_queue_offset() + SATBMarkQueue::byte_offset_of_index()), R16_thread);
-
-  // Record the previous value.
-  stdx(Rpre_val, Rbuffer, Rindex);
-  b(filtered);
-
-  bind(runtime);
-
-  // May need to preserve LR. Also needed if current frame is not compatible with C calling convention.
-  if (needs_frame) {
-    save_LR_CR(Rtmp1);
-    push_frame_reg_args(0, Rtmp2);
-  }
-
-  if (Rpre_val->is_volatile() && Robj == noreg) mr(R31, Rpre_val); // Save pre_val across C call if it was preloaded.
-  call_VM_leaf(CAST_FROM_FN_PTR(address, SharedRuntime::g1_wb_pre), Rpre_val, R16_thread);
-  if (Rpre_val->is_volatile() && Robj == noreg) mr(Rpre_val, R31); // restore
-
-  if (needs_frame) {
-    pop_frame();
-    restore_LR_CR(Rtmp1);
-  }
-
-  bind(filtered);
-}
-
-// General G1 post-barrier generator
-// Store cross-region card.
-void MacroAssembler::g1_write_barrier_post(Register Rstore_addr, Register Rnew_val, Register Rtmp1, Register Rtmp2, Register Rtmp3, Label *filtered_ext) {
-  Label runtime, filtered_int;
-  Label& filtered = (filtered_ext != NULL) ? *filtered_ext : filtered_int;
-  assert_different_registers(Rstore_addr, Rnew_val, Rtmp1, Rtmp2);
-
-  G1SATBCardTableLoggingModRefBS* bs =
-    barrier_set_cast<G1SATBCardTableLoggingModRefBS>(Universe::heap()->barrier_set());
-
-  // Does store cross heap regions?
-  if (G1RSBarrierRegionFilter) {
-    xorr(Rtmp1, Rstore_addr, Rnew_val);
-    srdi_(Rtmp1, Rtmp1, HeapRegion::LogOfHRGrainBytes);
-    beq(CCR0, filtered);
-  }
-
-  // Crosses regions, storing NULL?
-#ifdef ASSERT
-  cmpdi(CCR0, Rnew_val, 0);
-  asm_assert_ne("null oop not allowed (G1)", 0x322); // Checked by caller on PPC64, so following branch is obsolete:
-  //beq(CCR0, filtered);
-#endif
-
-  // Storing region crossing non-NULL, is card already dirty?
-  assert(sizeof(*bs->byte_map_base) == sizeof(jbyte), "adjust this code");
-  const Register Rcard_addr = Rtmp1;
-  Register Rbase = Rtmp2;
-  load_const_optimized(Rbase, (address)bs->byte_map_base, /*temp*/ Rtmp3);
-
-  srdi(Rcard_addr, Rstore_addr, CardTableModRefBS::card_shift);
-
-  // Get the address of the card.
-  lbzx(/*card value*/ Rtmp3, Rbase, Rcard_addr);
-  cmpwi(CCR0, Rtmp3, (int)G1SATBCardTableModRefBS::g1_young_card_val());
-  beq(CCR0, filtered);
-
-  membar(Assembler::StoreLoad);
-  lbzx(/*card value*/ Rtmp3, Rbase, Rcard_addr);  // Reload after membar.
-  cmpwi(CCR0, Rtmp3 /* card value */, CardTableModRefBS::dirty_card_val());
-  beq(CCR0, filtered);
-
-  // Storing a region crossing, non-NULL oop, card is clean.
-  // Dirty card and log.
-  li(Rtmp3, CardTableModRefBS::dirty_card_val());
-  //release(); // G1: oops are allowed to get visible after dirty marking.
-  stbx(Rtmp3, Rbase, Rcard_addr);
-
-  add(Rcard_addr, Rbase, Rcard_addr); // This is the address which needs to get enqueued.
-  Rbase = noreg; // end of lifetime
-
-  const Register Rqueue_index = Rtmp2,
-                 Rqueue_buf   = Rtmp3;
-  ld(Rqueue_index, in_bytes(JavaThread::dirty_card_queue_offset() + DirtyCardQueue::byte_offset_of_index()), R16_thread);
-  cmpdi(CCR0, Rqueue_index, 0);
-  beq(CCR0, runtime); // index == 0 then jump to runtime
-  ld(Rqueue_buf, in_bytes(JavaThread::dirty_card_queue_offset() + DirtyCardQueue::byte_offset_of_buf()), R16_thread);
-
-  addi(Rqueue_index, Rqueue_index, -wordSize); // decrement index
-  std(Rqueue_index, in_bytes(JavaThread::dirty_card_queue_offset() + DirtyCardQueue::byte_offset_of_index()), R16_thread);
-
-  stdx(Rcard_addr, Rqueue_buf, Rqueue_index); // store card
-  b(filtered);
-
-  bind(runtime);
-
-  // Save the live input values.
-  call_VM_leaf(CAST_FROM_FN_PTR(address, SharedRuntime::g1_wb_post), Rcard_addr, R16_thread);
-
-  bind(filtered_int);
-}
-#endif // INCLUDE_ALL_GCS
 
 // Values for last_Java_pc, and last_Java_sp must comply to the rules
 // in frame_ppc.hpp.
@@ -3323,13 +3148,13 @@ void MacroAssembler::get_vm_result_2(Register metadata_result) {
 
 Register MacroAssembler::encode_klass_not_null(Register dst, Register src) {
   Register current = (src != noreg) ? src : dst; // Klass is in dst if no src provided.
-  if (Universe::narrow_klass_base() != 0) {
+  if (CompressedKlassPointers::base() != 0) {
     // Use dst as temp if it is free.
-    sub_const_optimized(dst, current, Universe::narrow_klass_base(), R0);
+    sub_const_optimized(dst, current, CompressedKlassPointers::base(), R0);
     current = dst;
   }
-  if (Universe::narrow_klass_shift() != 0) {
-    srdi(dst, current, Universe::narrow_klass_shift());
+  if (CompressedKlassPointers::shift() != 0) {
+    srdi(dst, current, CompressedKlassPointers::shift());
     current = dst;
   }
   return current;
@@ -3357,7 +3182,7 @@ void MacroAssembler::store_klass_gap(Register dst_oop, Register val) {
 int MacroAssembler::instr_size_for_decode_klass_not_null() {
   if (!UseCompressedClassPointers) return 0;
   int num_instrs = 1;  // shift or move
-  if (Universe::narrow_klass_base() != 0) num_instrs = 7;  // shift + load const + add
+  if (CompressedKlassPointers::base() != 0) num_instrs = 7;  // shift + load const + add
   return num_instrs * BytesPerInstWord;
 }
 
@@ -3365,13 +3190,13 @@ void MacroAssembler::decode_klass_not_null(Register dst, Register src) {
   assert(dst != R0, "Dst reg may not be R0, as R0 is used here.");
   if (src == noreg) src = dst;
   Register shifted_src = src;
-  if (Universe::narrow_klass_shift() != 0 ||
-      Universe::narrow_klass_base() == 0 && src != dst) {  // Move required.
+  if (CompressedKlassPointers::shift() != 0 ||
+      CompressedKlassPointers::base() == 0 && src != dst) {  // Move required.
     shifted_src = dst;
-    sldi(shifted_src, src, Universe::narrow_klass_shift());
+    sldi(shifted_src, src, CompressedKlassPointers::shift());
   }
-  if (Universe::narrow_klass_base() != 0) {
-    add_const_optimized(dst, shifted_src, Universe::narrow_klass_base(), R0);
+  if (CompressedKlassPointers::base() != 0) {
+    add_const_optimized(dst, shifted_src, CompressedKlassPointers::base(), R0);
   }
 }
 
@@ -3396,6 +3221,12 @@ void MacroAssembler::load_mirror_from_const_method(Register mirror, Register con
   ld(mirror, ConstantPool::pool_holder_offset_in_bytes(), mirror);
   ld(mirror, in_bytes(Klass::java_mirror_offset()), mirror);
   resolve_oop_handle(mirror);
+}
+
+void MacroAssembler::load_method_holder(Register holder, Register method) {
+  ld(holder, in_bytes(Method::const_offset()), method);
+  ld(holder, in_bytes(ConstMethod::constants_offset()), holder);
+  ld(holder, ConstantPool::pool_holder_offset_in_bytes(), holder);
 }
 
 // Clear Array
@@ -4063,31 +3894,20 @@ void MacroAssembler::load_reverse_32(Register dst, Register src) {
 // Due to register shortage, setting tc3 may overwrite table. With the return offset
 // at hand, the original table address can be easily reconstructed.
 int MacroAssembler::crc32_table_columns(Register table, Register tc0, Register tc1, Register tc2, Register tc3) {
+  assert(!VM_Version::has_vpmsumb(), "Vector version should be used instead!");
 
+  // Point to 4 byte folding tables (byte-reversed version for Big Endian)
+  // Layout: See StubRoutines::generate_crc_constants.
 #ifdef VM_LITTLE_ENDIAN
-  // This is what we implement (the DOLIT4 part):
-  // ========================================================================= */
-  // #define DOLIT4 c ^= *buf4++; \
-  //         c = crc_table[3][c & 0xff] ^ crc_table[2][(c >> 8) & 0xff] ^ \
-  //             crc_table[1][(c >> 16) & 0xff] ^ crc_table[0][c >> 24]
-  // #define DOLIT32 DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4; DOLIT4
-  // ========================================================================= */
-  const int ix0 = 3*(4*CRC32_COLUMN_SIZE);
-  const int ix1 = 2*(4*CRC32_COLUMN_SIZE);
-  const int ix2 = 1*(4*CRC32_COLUMN_SIZE);
-  const int ix3 = 0*(4*CRC32_COLUMN_SIZE);
+  const int ix0 = 3 * CRC32_TABLE_SIZE;
+  const int ix1 = 2 * CRC32_TABLE_SIZE;
+  const int ix2 = 1 * CRC32_TABLE_SIZE;
+  const int ix3 = 0 * CRC32_TABLE_SIZE;
 #else
-  // This is what we implement (the DOBIG4 part):
-  // =========================================================================
-  // #define DOBIG4 c ^= *++buf4; \
-  //         c = crc_table[4][c & 0xff] ^ crc_table[5][(c >> 8) & 0xff] ^ \
-  //             crc_table[6][(c >> 16) & 0xff] ^ crc_table[7][c >> 24]
-  // #define DOBIG32 DOBIG4; DOBIG4; DOBIG4; DOBIG4; DOBIG4; DOBIG4; DOBIG4; DOBIG4
-  // =========================================================================
-  const int ix0 = 4*(4*CRC32_COLUMN_SIZE);
-  const int ix1 = 5*(4*CRC32_COLUMN_SIZE);
-  const int ix2 = 6*(4*CRC32_COLUMN_SIZE);
-  const int ix3 = 7*(4*CRC32_COLUMN_SIZE);
+  const int ix0 = 1 * CRC32_TABLE_SIZE;
+  const int ix1 = 2 * CRC32_TABLE_SIZE;
+  const int ix2 = 3 * CRC32_TABLE_SIZE;
+  const int ix3 = 4 * CRC32_TABLE_SIZE;
 #endif
   assert_different_registers(table, tc0, tc1, tc2);
   assert(table == tc3, "must be!");
@@ -4102,7 +3922,7 @@ int MacroAssembler::crc32_table_columns(Register table, Register tc0, Register t
 
 /**
  * uint32_t crc;
- * timesXtoThe32[crc & 0xFF] ^ (crc >> 8);
+ * table[crc & 0xFF] ^ (crc >> 8);
  */
 void MacroAssembler::fold_byte_crc32(Register crc, Register val, Register table, Register tmp) {
   assert_different_registers(crc, table, tmp);
@@ -4118,14 +3938,6 @@ void MacroAssembler::fold_byte_crc32(Register crc, Register val, Register table,
   }
   lwzx(tmp, table, tmp);
   xorr(crc, crc, tmp);
-}
-
-/**
- * uint32_t crc;
- * timesXtoThe32[crc & 0xFF] ^ (crc >> 8);
- */
-void MacroAssembler::fold_8bit_crc32(Register crc, Register table, Register tmp) {
-  fold_byte_crc32(crc, crc, table, tmp);
 }
 
 /**
@@ -4178,10 +3990,8 @@ void MacroAssembler::update_byteLoop_crc32(Register crc, Register buf, Register 
  * Emits code to update CRC-32 with a 4-byte value according to constants in table
  * Implementation according to jdk/src/share/native/java/util/zip/zlib-1.2.8/crc32.c
  */
-// A not on the lookup table address(es):
-// The lookup table consists of two sets of four columns each.
-// The columns {0..3} are used for little-endian machines.
-// The columns {4..7} are used for big-endian machines.
+// A note on the lookup table address(es):
+// The implementation uses 4 table columns (byte-reversed versions for Big Endian).
 // To save the effort of adding the column offset to the table address each time
 // a table element is looked up, it is possible to pass the pre-calculated
 // column addresses.
@@ -4215,105 +4025,6 @@ void MacroAssembler::update_1word_crc32(Register crc, Register buf, Register tab
   xorr(t0,  t0, t1);
   xorr(t2,  t2, t3);
   xorr(crc, t0, t2);  // Now crc contains the final checksum value.
-}
-
-/**
- * @param crc   register containing existing CRC (32-bit)
- * @param buf   register pointing to input byte buffer (byte*)
- * @param len   register containing number of bytes
- * @param table register pointing to CRC table
- *
- * Uses R9..R12 as work register. Must be saved/restored by caller!
- */
-void MacroAssembler::kernel_crc32_2word(Register crc, Register buf, Register len, Register table,
-                                        Register t0,  Register t1,  Register t2,  Register t3,
-                                        Register tc0, Register tc1, Register tc2, Register tc3,
-                                        bool invertCRC) {
-  assert_different_registers(crc, buf, len, table);
-
-  Label L_mainLoop, L_tail;
-  Register  tmp  = t0;
-  Register  data = t0;
-  Register  tmp2 = t1;
-  const int mainLoop_stepping  = 8;
-  const int tailLoop_stepping  = 1;
-  const int log_stepping       = exact_log2(mainLoop_stepping);
-  const int mainLoop_alignment = 32; // InputForNewCode > 4 ? InputForNewCode : 32;
-  const int complexThreshold   = 2*mainLoop_stepping;
-
-  // Don't test for len <= 0 here. This pathological case should not occur anyway.
-  // Optimizing for it by adding a test and a branch seems to be a waste of CPU cycles
-  // for all well-behaved cases. The situation itself is detected and handled correctly
-  // within update_byteLoop_crc32.
-  assert(tailLoop_stepping == 1, "check tailLoop_stepping!");
-
-  BLOCK_COMMENT("kernel_crc32_2word {");
-
-  if (invertCRC) {
-    nand(crc, crc, crc);                      // 1s complement of crc
-  }
-
-  // Check for short (<mainLoop_stepping) buffer.
-  cmpdi(CCR0, len, complexThreshold);
-  blt(CCR0, L_tail);
-
-  // Pre-mainLoop alignment did show a slight (1%) positive effect on performance.
-  // We leave the code in for reference. Maybe we need alignment when we exploit vector instructions.
-  {
-    // Align buf addr to mainLoop_stepping boundary.
-    neg(tmp2, buf);                           // Calculate # preLoop iterations for alignment.
-    rldicl(tmp2, tmp2, 0, 64-log_stepping);   // Rotate tmp2 0 bits, insert into tmp2, anding with mask with 1s from 62..63.
-
-    if (complexThreshold > mainLoop_stepping) {
-      sub(len, len, tmp2);                       // Remaining bytes for main loop (>=mainLoop_stepping is guaranteed).
-    } else {
-      sub(tmp, len, tmp2);                       // Remaining bytes for main loop.
-      cmpdi(CCR0, tmp, mainLoop_stepping);
-      blt(CCR0, L_tail);                         // For less than one mainloop_stepping left, do only tail processing
-      mr(len, tmp);                              // remaining bytes for main loop (>=mainLoop_stepping is guaranteed).
-    }
-    update_byteLoop_crc32(crc, buf, tmp2, table, data, false);
-  }
-
-  srdi(tmp2, len, log_stepping);                 // #iterations for mainLoop
-  andi(len, len, mainLoop_stepping-1);           // remaining bytes for tailLoop
-  mtctr(tmp2);
-
-#ifdef VM_LITTLE_ENDIAN
-  Register crc_rv = crc;
-#else
-  Register crc_rv = tmp;                         // Load_reverse needs separate registers to work on.
-                                                 // Occupies tmp, but frees up crc.
-  load_reverse_32(crc_rv, crc);                  // Revert byte order because we are dealing with big-endian data.
-  tmp = crc;
-#endif
-
-  int reconstructTableOffset = crc32_table_columns(table, tc0, tc1, tc2, tc3);
-
-  align(mainLoop_alignment);                     // Octoword-aligned loop address. Shows 2% improvement.
-  BIND(L_mainLoop);
-    update_1word_crc32(crc_rv, buf, table, 0, 0, crc_rv, t1, t2, t3, tc0, tc1, tc2, tc3);
-    update_1word_crc32(crc_rv, buf, table, 4, mainLoop_stepping, crc_rv, t1, t2, t3, tc0, tc1, tc2, tc3);
-    bdnz(L_mainLoop);
-
-#ifndef VM_LITTLE_ENDIAN
-  load_reverse_32(crc, crc_rv);                  // Revert byte order because we are dealing with big-endian data.
-  tmp = crc_rv;                                  // Tmp uses it's original register again.
-#endif
-
-  // Restore original table address for tailLoop.
-  if (reconstructTableOffset != 0) {
-    addi(table, table, -reconstructTableOffset);
-  }
-
-  // Process last few (<complexThreshold) bytes of buffer.
-  BIND(L_tail);
-  update_byteLoop_crc32(crc, buf, len, table, data, false);
-
-  if (invertCRC) {
-    nand(crc, crc, crc);                      // 1s complement of crc
-  }
-  BLOCK_COMMENT("} kernel_crc32_2word");
 }
 
 /**
@@ -4415,612 +4126,345 @@ void MacroAssembler::kernel_crc32_1word(Register crc, Register buf, Register len
 }
 
 /**
- * @param crc   register containing existing CRC (32-bit)
- * @param buf   register pointing to input byte buffer (byte*)
- * @param len   register containing number of bytes
- * @param table register pointing to CRC table
- *
- * Uses R7_ARG5, R8_ARG6 as work registers.
- */
-void MacroAssembler::kernel_crc32_1byte(Register crc, Register buf, Register len, Register table,
-                                        Register t0,  Register t1,  Register t2,  Register t3,
-                                        bool invertCRC) {
-  assert_different_registers(crc, buf, len, table);
-
-  Register  data = t0;                   // Holds the current byte to be folded into crc.
-
-  BLOCK_COMMENT("kernel_crc32_1byte {");
-
-  if (invertCRC) {
-    nand(crc, crc, crc);                      // 1s complement of crc
-  }
-
-  // Process all bytes in a single-byte loop.
-  update_byteLoop_crc32(crc, buf, len, table, data, true);
-
-  if (invertCRC) {
-    nand(crc, crc, crc);                      // 1s complement of crc
-  }
-  BLOCK_COMMENT("} kernel_crc32_1byte");
-}
-
-/**
  * @param crc             register containing existing CRC (32-bit)
  * @param buf             register pointing to input byte buffer (byte*)
  * @param len             register containing number of bytes
- * @param table           register pointing to CRC table
- * @param constants       register pointing to CRC table for 128-bit aligned memory
- * @param barretConstants register pointing to table for barrett reduction
- * @param t0              volatile register
- * @param t1              volatile register
- * @param t2              volatile register
- * @param t3              volatile register
+ * @param constants       register pointing to precomputed constants
+ * @param t0-t6           temp registers
  */
-void MacroAssembler::kernel_crc32_1word_vpmsumd(Register crc, Register buf, Register len, Register table,
-                                                Register constants,  Register barretConstants,
-                                                Register t0,  Register t1, Register t2, Register t3, Register t4,
-                                                bool invertCRC) {
-  assert_different_registers(crc, buf, len, table);
+void MacroAssembler::kernel_crc32_vpmsum(Register crc, Register buf, Register len, Register constants,
+                                         Register t0, Register t1, Register t2, Register t3,
+                                         Register t4, Register t5, Register t6, bool invertCRC) {
+  assert_different_registers(crc, buf, len, constants);
 
-  Label L_alignedHead, L_tail, L_alignTail, L_start, L_end;
+  Label L_tail;
 
-  Register  prealign     = t0;
-  Register  postalign    = t0;
+  BLOCK_COMMENT("kernel_crc32_vpmsum {");
 
-  BLOCK_COMMENT("kernel_crc32_1word_vpmsumb {");
+  if (invertCRC) {
+    nand(crc, crc, crc);                      // 1s complement of crc
+  }
 
-  // 1. use kernel_crc32_1word for shorter than 384bit
+  // Enforce 32 bit.
   clrldi(len, len, 32);
-  cmpdi(CCR0, len, 384);
-  bge(CCR0, L_start);
 
-    Register tc0 = t4;
-    Register tc1 = constants;
-    Register tc2 = barretConstants;
-    kernel_crc32_1word(crc, buf, len, table,t0, t1, t2, t3, tc0, tc1, tc2, table, invertCRC);
-    b(L_end);
+  // Align if we have enough bytes for the fast version.
+  const int alignment = 16,
+            threshold = 32;
+  Register prealign = t0;
 
-  BIND(L_start);
+  neg(prealign, buf);
+  addi(t1, len, -threshold);
+  andi(prealign, prealign, alignment - 1);
+  cmpw(CCR0, t1, prealign);
+  blt(CCR0, L_tail); // len - prealign < threshold?
 
-    // 2. ~c
-    if (invertCRC) {
-      nand(crc, crc, crc);                      // 1s complement of crc
-    }
+  subf(len, prealign, len);
+  update_byteLoop_crc32(crc, buf, prealign, constants, t2, false);
 
-    // 3. calculate from 0 to first 128bit-aligned address
-    clrldi_(prealign, buf, 57);
-    beq(CCR0, L_alignedHead);
+  // Calculate from first aligned address as far as possible.
+  addi(constants, constants, CRC32_TABLE_SIZE); // Point to vector constants.
+  kernel_crc32_vpmsum_aligned(crc, buf, len, constants, t0, t1, t2, t3, t4, t5, t6);
+  addi(constants, constants, -CRC32_TABLE_SIZE); // Point to table again.
 
-    subfic(prealign, prealign, 128);
+  // Remaining bytes.
+  BIND(L_tail);
+  update_byteLoop_crc32(crc, buf, len, constants, t2, false);
 
-    subf(len, prealign, len);
-    update_byteLoop_crc32(crc, buf, prealign, table, t2, false);
+  if (invertCRC) {
+    nand(crc, crc, crc);                      // 1s complement of crc
+  }
 
-    // 4. calculate from first 128bit-aligned address to last 128bit-aligned address
-    BIND(L_alignedHead);
-
-    clrldi(postalign, len, 57);
-    subf(len, postalign, len);
-
-    // len must be more than 256bit
-    kernel_crc32_1word_aligned(crc, buf, len, constants, barretConstants, t1, t2, t3);
-
-    // 5. calculate remaining
-    cmpdi(CCR0, postalign, 0);
-    beq(CCR0, L_tail);
-
-    update_byteLoop_crc32(crc, buf, postalign, table, t2, false);
-
-    BIND(L_tail);
-
-    // 6. ~c
-    if (invertCRC) {
-      nand(crc, crc, crc);                      // 1s complement of crc
-    }
-
-  BIND(L_end);
-
-  BLOCK_COMMENT("} kernel_crc32_1word_vpmsumb");
+  BLOCK_COMMENT("} kernel_crc32_vpmsum");
 }
 
 /**
  * @param crc             register containing existing CRC (32-bit)
  * @param buf             register pointing to input byte buffer (byte*)
- * @param len             register containing number of bytes
+ * @param len             register containing number of bytes (will get updated to remaining bytes)
  * @param constants       register pointing to CRC table for 128-bit aligned memory
- * @param barretConstants register pointing to table for barrett reduction
- * @param t0              volatile register
- * @param t1              volatile register
- * @param t2              volatile register
+ * @param t0-t6           temp registers
  */
-void MacroAssembler::kernel_crc32_1word_aligned(Register crc, Register buf, Register len,
-    Register constants, Register barretConstants, Register t0, Register t1, Register t2) {
-  Label L_mainLoop, L_tail, L_alignTail, L_barrett_reduction, L_end, L_first_warm_up_done, L_first_cool_down, L_second_cool_down, L_XOR, L_test;
-  Label L_lv0, L_lv1, L_lv2, L_lv3, L_lv4, L_lv5, L_lv6, L_lv7, L_lv8, L_lv9, L_lv10, L_lv11, L_lv12, L_lv13, L_lv14, L_lv15;
-  Label L_1, L_2, L_3, L_4;
-
-  Register  rLoaded      = t0;
-  Register  rTmp1        = t1;
-  Register  rTmp2        = t2;
-  Register  off16        = R22;
-  Register  off32        = R23;
-  Register  off48        = R24;
-  Register  off64        = R25;
-  Register  off80        = R26;
-  Register  off96        = R27;
-  Register  off112       = R28;
-  Register  rIdx         = R29;
-  Register  rMax         = R30;
-  Register  constantsPos = R31;
-
-  VectorRegister mask_32bit = VR24;
-  VectorRegister mask_64bit = VR25;
-  VectorRegister zeroes     = VR26;
-  VectorRegister const1     = VR27;
-  VectorRegister const2     = VR28;
+void MacroAssembler::kernel_crc32_vpmsum_aligned(Register crc, Register buf, Register len, Register constants,
+    Register t0, Register t1, Register t2, Register t3, Register t4, Register t5, Register t6) {
 
   // Save non-volatile vector registers (frameless).
-  Register offset = t1;   int offsetInt = 0;
-  offsetInt -= 16; li(offset, -16);           stvx(VR20, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR21, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR22, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR23, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR24, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR25, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR26, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR27, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); stvx(VR28, offset, R1_SP);
-  offsetInt -= 8; std(R22, offsetInt, R1_SP);
-  offsetInt -= 8; std(R23, offsetInt, R1_SP);
-  offsetInt -= 8; std(R24, offsetInt, R1_SP);
-  offsetInt -= 8; std(R25, offsetInt, R1_SP);
-  offsetInt -= 8; std(R26, offsetInt, R1_SP);
-  offsetInt -= 8; std(R27, offsetInt, R1_SP);
-  offsetInt -= 8; std(R28, offsetInt, R1_SP);
-  offsetInt -= 8; std(R29, offsetInt, R1_SP);
-  offsetInt -= 8; std(R30, offsetInt, R1_SP);
-  offsetInt -= 8; std(R31, offsetInt, R1_SP);
+  Register offset = t1;
+  int offsetInt = 0;
+  offsetInt -= 16; li(offset, offsetInt); stvx(VR20, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); stvx(VR21, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); stvx(VR22, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); stvx(VR23, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); stvx(VR24, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); stvx(VR25, offset, R1_SP);
+#ifndef VM_LITTLE_ENDIAN
+  offsetInt -= 16; li(offset, offsetInt); stvx(VR26, offset, R1_SP);
+#endif
+  offsetInt -= 8; std(R14, offsetInt, R1_SP);
+  offsetInt -= 8; std(R15, offsetInt, R1_SP);
 
-  // Set constants
-  li(off16, 16);
-  li(off32, 32);
-  li(off48, 48);
-  li(off64, 64);
-  li(off80, 80);
-  li(off96, 96);
-  li(off112, 112);
+  // Implementation uses an inner loop which uses between 256 and 16 * unroll_factor
+  // bytes per iteration. The basic scheme is:
+  // lvx: load vector (Big Endian needs reversal)
+  // vpmsumw: carry-less 32 bit multiplications with constant representing a large CRC shift
+  // vxor: xor partial results together to get unroll_factor2 vectors
 
-  clrldi(crc, crc, 32);
+  // Outer loop performs the CRC shifts needed to combine the unroll_factor2 vectors.
 
-  vxor(zeroes, zeroes, zeroes);
-  vspltisw(VR0, -1);
+  // Using 16 * unroll_factor / unroll_factor_2 bytes for constants.
+  const int unroll_factor = CRC32_UNROLL_FACTOR,
+            unroll_factor2 = CRC32_UNROLL_FACTOR2;
 
-  vsldoi(mask_32bit, zeroes, VR0, 4);
-  vsldoi(mask_64bit, zeroes, VR0, 8);
+  const int outer_consts_size = (unroll_factor2 - 1) * 16,
+            inner_consts_size = (unroll_factor / unroll_factor2) * 16;
 
-  // Get the initial value into v8
-  vxor(VR8, VR8, VR8);
-  mtvrd(VR8, crc);
-  vsldoi(VR8, zeroes, VR8, 8); // shift into bottom 32 bits
+  // Support registers.
+  Register offs[] = { noreg, t0, t1, t2, t3, t4, t5, t6 };
+  Register num_bytes = R14,
+           loop_count = R15,
+           cur_const = crc; // will live in VCRC
+  // Constant array for outer loop: unroll_factor2 - 1 registers,
+  // Constant array for inner loop: unroll_factor / unroll_factor2 registers.
+  VectorRegister consts0[] = { VR16, VR17, VR18, VR19, VR20, VR21, VR22 },
+                 consts1[] = { VR23, VR24 };
+  // Data register arrays: 2 arrays with unroll_factor2 registers.
+  VectorRegister data0[] = { VR0, VR1, VR2, VR3, VR4, VR5, VR6, VR7 },
+                 data1[] = { VR8, VR9, VR10, VR11, VR12, VR13, VR14, VR15 };
 
-  li (rLoaded, 0);
+  VectorRegister VCRC = data0[0];
+  VectorRegister Vc = VR25;
+  VectorRegister swap_bytes = VR26; // Only for Big Endian.
 
-  rldicr(rIdx, len, 0, 56);
+  // We have at least 1 iteration (ensured by caller).
+  Label L_outer_loop, L_inner_loop, L_last;
 
-  {
-    BIND(L_1);
-    // Checksum in blocks of MAX_SIZE (32768)
-    lis(rMax, 0);
-    ori(rMax, rMax, 32768);
-    mr(rTmp2, rMax);
-    cmpd(CCR0, rIdx, rMax);
-    bgt(CCR0, L_2);
-    mr(rMax, rIdx);
-
-    BIND(L_2);
-    subf(rIdx, rMax, rIdx);
-
-    // our main loop does 128 bytes at a time
-    srdi(rMax, rMax, 7);
-
-    /*
-     * Work out the offset into the constants table to start at. Each
-     * constant is 16 bytes, and it is used against 128 bytes of input
-     * data - 128 / 16 = 8
-     */
-    sldi(rTmp1, rMax, 4);
-    srdi(rTmp2, rTmp2, 3);
-    subf(rTmp1, rTmp1, rTmp2);
-
-    // We reduce our final 128 bytes in a separate step
-    addi(rMax, rMax, -1);
-    mtctr(rMax);
-
-    // Find the start of our constants
-    add(constantsPos, constants, rTmp1);
-
-    // zero VR0-v7 which will contain our checksums
-    vxor(VR0, VR0, VR0);
-    vxor(VR1, VR1, VR1);
-    vxor(VR2, VR2, VR2);
-    vxor(VR3, VR3, VR3);
-    vxor(VR4, VR4, VR4);
-    vxor(VR5, VR5, VR5);
-    vxor(VR6, VR6, VR6);
-    vxor(VR7, VR7, VR7);
-
-    lvx(const1, constantsPos);
-
-    /*
-     * If we are looping back to consume more data we use the values
-     * already in VR16-v23.
-     */
-    cmpdi(CCR0, rLoaded, 1);
-    beq(CCR0, L_3);
-    {
-
-      // First warm up pass
-      lvx(VR16, buf);
-      lvx(VR17, off16, buf);
-      lvx(VR18, off32, buf);
-      lvx(VR19, off48, buf);
-      lvx(VR20, off64, buf);
-      lvx(VR21, off80, buf);
-      lvx(VR22, off96, buf);
-      lvx(VR23, off112, buf);
-      addi(buf, buf, 8*16);
-
-      // xor in initial value
-      vxor(VR16, VR16, VR8);
-    }
-
-    BIND(L_3);
-    bdz(L_first_warm_up_done);
-
-    addi(constantsPos, constantsPos, 16);
-    lvx(const2, constantsPos);
-
-    // Second warm up pass
-    vpmsumd(VR8, VR16, const1);
-    lvx(VR16, buf);
-
-    vpmsumd(VR9, VR17, const1);
-    lvx(VR17, off16, buf);
-
-    vpmsumd(VR10, VR18, const1);
-    lvx(VR18, off32, buf);
-
-    vpmsumd(VR11, VR19, const1);
-    lvx(VR19, off48, buf);
-
-    vpmsumd(VR12, VR20, const1);
-    lvx(VR20, off64, buf);
-
-    vpmsumd(VR13, VR21, const1);
-    lvx(VR21, off80, buf);
-
-    vpmsumd(VR14, VR22, const1);
-    lvx(VR22, off96, buf);
-
-    vpmsumd(VR15, VR23, const1);
-    lvx(VR23, off112, buf);
-
-    addi(buf, buf, 8 * 16);
-
-    bdz(L_first_cool_down);
-
-    /*
-     * main loop. We modulo schedule it such that it takes three iterations
-     * to complete - first iteration load, second iteration vpmsum, third
-     * iteration xor.
-     */
-    {
-      BIND(L_4);
-      lvx(const1, constantsPos); addi(constantsPos, constantsPos, 16);
-
-      vxor(VR0, VR0, VR8);
-      vpmsumd(VR8, VR16, const2);
-      lvx(VR16, buf);
-
-      vxor(VR1, VR1, VR9);
-      vpmsumd(VR9, VR17, const2);
-      lvx(VR17, off16, buf);
-
-      vxor(VR2, VR2, VR10);
-      vpmsumd(VR10, VR18, const2);
-      lvx(VR18, off32, buf);
-
-      vxor(VR3, VR3, VR11);
-      vpmsumd(VR11, VR19, const2);
-      lvx(VR19, off48, buf);
-      lvx(const2, constantsPos);
-
-      vxor(VR4, VR4, VR12);
-      vpmsumd(VR12, VR20, const1);
-      lvx(VR20, off64, buf);
-
-      vxor(VR5, VR5, VR13);
-      vpmsumd(VR13, VR21, const1);
-      lvx(VR21, off80, buf);
-
-      vxor(VR6, VR6, VR14);
-      vpmsumd(VR14, VR22, const1);
-      lvx(VR22, off96, buf);
-
-      vxor(VR7, VR7, VR15);
-      vpmsumd(VR15, VR23, const1);
-      lvx(VR23, off112, buf);
-
-      addi(buf, buf, 8 * 16);
-
-      bdnz(L_4);
-    }
-
-    BIND(L_first_cool_down);
-
-    // First cool down pass
-    lvx(const1, constantsPos);
-    addi(constantsPos, constantsPos, 16);
-
-    vxor(VR0, VR0, VR8);
-    vpmsumd(VR8, VR16, const1);
-
-    vxor(VR1, VR1, VR9);
-    vpmsumd(VR9, VR17, const1);
-
-    vxor(VR2, VR2, VR10);
-    vpmsumd(VR10, VR18, const1);
-
-    vxor(VR3, VR3, VR11);
-    vpmsumd(VR11, VR19, const1);
-
-    vxor(VR4, VR4, VR12);
-    vpmsumd(VR12, VR20, const1);
-
-    vxor(VR5, VR5, VR13);
-    vpmsumd(VR13, VR21, const1);
-
-    vxor(VR6, VR6, VR14);
-    vpmsumd(VR14, VR22, const1);
-
-    vxor(VR7, VR7, VR15);
-    vpmsumd(VR15, VR23, const1);
-
-    BIND(L_second_cool_down);
-    // Second cool down pass
-    vxor(VR0, VR0, VR8);
-    vxor(VR1, VR1, VR9);
-    vxor(VR2, VR2, VR10);
-    vxor(VR3, VR3, VR11);
-    vxor(VR4, VR4, VR12);
-    vxor(VR5, VR5, VR13);
-    vxor(VR6, VR6, VR14);
-    vxor(VR7, VR7, VR15);
-
-    /*
-     * vpmsumd produces a 96 bit result in the least significant bits
-     * of the register. Since we are bit reflected we have to shift it
-     * left 32 bits so it occupies the least significant bits in the
-     * bit reflected domain.
-     */
-    vsldoi(VR0, VR0, zeroes, 4);
-    vsldoi(VR1, VR1, zeroes, 4);
-    vsldoi(VR2, VR2, zeroes, 4);
-    vsldoi(VR3, VR3, zeroes, 4);
-    vsldoi(VR4, VR4, zeroes, 4);
-    vsldoi(VR5, VR5, zeroes, 4);
-    vsldoi(VR6, VR6, zeroes, 4);
-    vsldoi(VR7, VR7, zeroes, 4);
-
-    // xor with last 1024 bits
-    lvx(VR8, buf);
-    lvx(VR9, off16, buf);
-    lvx(VR10, off32, buf);
-    lvx(VR11, off48, buf);
-    lvx(VR12, off64, buf);
-    lvx(VR13, off80, buf);
-    lvx(VR14, off96, buf);
-    lvx(VR15, off112, buf);
-    addi(buf, buf, 8 * 16);
-
-    vxor(VR16, VR0, VR8);
-    vxor(VR17, VR1, VR9);
-    vxor(VR18, VR2, VR10);
-    vxor(VR19, VR3, VR11);
-    vxor(VR20, VR4, VR12);
-    vxor(VR21, VR5, VR13);
-    vxor(VR22, VR6, VR14);
-    vxor(VR23, VR7, VR15);
-
-    li(rLoaded, 1);
-    cmpdi(CCR0, rIdx, 0);
-    addi(rIdx, rIdx, 128);
-    bne(CCR0, L_1);
+  // If supported set DSCR pre-fetch to deepest.
+  if (VM_Version::has_mfdscr()) {
+    load_const_optimized(t0, VM_Version::_dscr_val | 7);
+    mtdscr(t0);
   }
 
-  // Work out how many bytes we have left
-  andi_(len, len, 127);
+  mtvrwz(VCRC, crc); // crc lives in VCRC, now
 
-  // Calculate where in the constant table we need to start
-  subfic(rTmp1, len, 128);
-  add(constantsPos, constantsPos, rTmp1);
+  for (int i = 1; i < unroll_factor2; ++i) {
+    li(offs[i], 16 * i);
+  }
 
-  // How many 16 byte chunks are in the tail
-  srdi(rIdx, len, 4);
-  mtctr(rIdx);
+  // Load consts for outer loop
+  lvx(consts0[0], constants);
+  for (int i = 1; i < unroll_factor2 - 1; ++i) {
+    lvx(consts0[i], offs[i], constants);
+  }
 
-  /*
-   * Reduce the previously calculated 1024 bits to 64 bits, shifting
-   * 32 bits to include the trailing 32 bits of zeros
-   */
-  lvx(VR0, constantsPos);
-  lvx(VR1, off16, constantsPos);
-  lvx(VR2, off32, constantsPos);
-  lvx(VR3, off48, constantsPos);
-  lvx(VR4, off64, constantsPos);
-  lvx(VR5, off80, constantsPos);
-  lvx(VR6, off96, constantsPos);
-  lvx(VR7, off112, constantsPos);
-  addi(constantsPos, constantsPos, 8 * 16);
+  load_const_optimized(num_bytes, 16 * unroll_factor);
 
-  vpmsumw(VR0, VR16, VR0);
-  vpmsumw(VR1, VR17, VR1);
-  vpmsumw(VR2, VR18, VR2);
-  vpmsumw(VR3, VR19, VR3);
-  vpmsumw(VR4, VR20, VR4);
-  vpmsumw(VR5, VR21, VR5);
-  vpmsumw(VR6, VR22, VR6);
-  vpmsumw(VR7, VR23, VR7);
+  // Reuse data registers outside of the loop.
+  VectorRegister Vtmp = data1[0];
+  VectorRegister Vtmp2 = data1[1];
+  VectorRegister zeroes = data1[2];
 
-  // Now reduce the tail (0 - 112 bytes)
-  cmpdi(CCR0, rIdx, 0);
-  beq(CCR0, L_XOR);
+  vspltisb(Vtmp, 0);
+  vsldoi(VCRC, Vtmp, VCRC, 8); // 96 bit zeroes, 32 bit CRC.
 
-  lvx(VR16, buf); addi(buf, buf, 16);
-  lvx(VR17, constantsPos);
-  vpmsumw(VR16, VR16, VR17);
-  vxor(VR0, VR0, VR16);
-  beq(CCR0, L_XOR);
+  // Load vector for vpermxor (to xor both 64 bit parts together)
+  lvsl(Vtmp, buf);   // 000102030405060708090a0b0c0d0e0f
+  vspltisb(Vc, 4);
+  vsl(Vc, Vtmp, Vc); // 00102030405060708090a0b0c0d0e0f0
+  xxspltd(Vc->to_vsr(), Vc->to_vsr(), 0);
+  vor(Vc, Vtmp, Vc); // 001122334455667708192a3b4c5d6e7f
 
-  lvx(VR16, buf); addi(buf, buf, 16);
-  lvx(VR17, off16, constantsPos);
-  vpmsumw(VR16, VR16, VR17);
-  vxor(VR0, VR0, VR16);
-  beq(CCR0, L_XOR);
+#ifdef VM_LITTLE_ENDIAN
+#define BE_swap_bytes(x)
+#else
+  vspltisb(Vtmp2, 0xf);
+  vxor(swap_bytes, Vtmp, Vtmp2);
+#define BE_swap_bytes(x) vperm(x, x, x, swap_bytes)
+#endif
 
-  lvx(VR16, buf); addi(buf, buf, 16);
-  lvx(VR17, off32, constantsPos);
-  vpmsumw(VR16, VR16, VR17);
-  vxor(VR0, VR0, VR16);
-  beq(CCR0, L_XOR);
+  cmpd(CCR0, len, num_bytes);
+  blt(CCR0, L_last);
 
-  lvx(VR16, buf); addi(buf, buf, 16);
-  lvx(VR17, off48,constantsPos);
-  vpmsumw(VR16, VR16, VR17);
-  vxor(VR0, VR0, VR16);
-  beq(CCR0, L_XOR);
+  addi(cur_const, constants, outer_consts_size); // Point to consts for inner loop
+  load_const_optimized(loop_count, unroll_factor / (2 * unroll_factor2) - 1); // One double-iteration peeled off.
 
-  lvx(VR16, buf); addi(buf, buf, 16);
-  lvx(VR17, off64, constantsPos);
-  vpmsumw(VR16, VR16, VR17);
-  vxor(VR0, VR0, VR16);
-  beq(CCR0, L_XOR);
+  // ********** Main loop start **********
+  align(32);
+  bind(L_outer_loop);
 
-  lvx(VR16, buf); addi(buf, buf, 16);
-  lvx(VR17, off80, constantsPos);
-  vpmsumw(VR16, VR16, VR17);
-  vxor(VR0, VR0, VR16);
-  beq(CCR0, L_XOR);
+  // Begin of unrolled first iteration (no xor).
+  lvx(data1[0], buf);
+  for (int i = 1; i < unroll_factor2 / 2; ++i) {
+    lvx(data1[i], offs[i], buf);
+  }
+  vpermxor(VCRC, VCRC, VCRC, Vc); // xor both halves to 64 bit result.
+  lvx(consts1[0], cur_const);
+  mtctr(loop_count);
+  for (int i = 0; i < unroll_factor2 / 2; ++i) {
+    BE_swap_bytes(data1[i]);
+    if (i == 0) { vxor(data1[0], data1[0], VCRC); } // xor in previous CRC.
+    lvx(data1[i + unroll_factor2 / 2], offs[i + unroll_factor2 / 2], buf);
+    vpmsumw(data0[i], data1[i], consts1[0]);
+  }
+  addi(buf, buf, 16 * unroll_factor2);
+  subf(len, num_bytes, len);
+  lvx(consts1[1], offs[1], cur_const);
+  addi(cur_const, cur_const, 32);
+  // Begin of unrolled second iteration (head).
+  for (int i = 0; i < unroll_factor2 / 2; ++i) {
+    BE_swap_bytes(data1[i + unroll_factor2 / 2]);
+    if (i == 0) { lvx(data1[0], buf); } else { lvx(data1[i], offs[i], buf); }
+    vpmsumw(data0[i + unroll_factor2 / 2], data1[i + unroll_factor2 / 2], consts1[0]);
+  }
+  for (int i = 0; i < unroll_factor2 / 2; ++i) {
+    BE_swap_bytes(data1[i]);
+    lvx(data1[i + unroll_factor2 / 2], offs[i + unroll_factor2 / 2], buf);
+    vpmsumw(data1[i], data1[i], consts1[1]);
+  }
+  addi(buf, buf, 16 * unroll_factor2);
 
-  lvx(VR16, buf); addi(buf, buf, 16);
-  lvx(VR17, off96, constantsPos);
-  vpmsumw(VR16, VR16, VR17);
-  vxor(VR0, VR0, VR16);
+  // Generate most performance relevant code. Loads + half of the vpmsumw have been generated.
+  // Double-iteration allows using the 2 constant registers alternatingly.
+  align(32);
+  bind(L_inner_loop);
+  for (int j = 1; j < 3; ++j) { // j < unroll_factor / unroll_factor2 - 1 for complete unrolling.
+    if (j & 1) {
+      lvx(consts1[0], cur_const);
+    } else {
+      lvx(consts1[1], offs[1], cur_const);
+      addi(cur_const, cur_const, 32);
+    }
+    for (int i = 0; i < unroll_factor2; ++i) {
+      int idx = i + unroll_factor2 / 2, inc = 0; // For modulo-scheduled input.
+      if (idx >= unroll_factor2) { idx -= unroll_factor2; inc = 1; }
+      BE_swap_bytes(data1[idx]);
+      vxor(data0[i], data0[i], data1[i]);
+      if (i == 0) lvx(data1[0], buf); else lvx(data1[i], offs[i], buf);
+      vpmsumw(data1[idx], data1[idx], consts1[(j + inc) & 1]);
+    }
+    addi(buf, buf, 16 * unroll_factor2);
+  }
+  bdnz(L_inner_loop);
 
-  // Now xor all the parallel chunks together
-  BIND(L_XOR);
-  vxor(VR0, VR0, VR1);
-  vxor(VR2, VR2, VR3);
-  vxor(VR4, VR4, VR5);
-  vxor(VR6, VR6, VR7);
+  addi(cur_const, constants, outer_consts_size); // Reset
 
-  vxor(VR0, VR0, VR2);
-  vxor(VR4, VR4, VR6);
+  // Tail of last iteration (no loads).
+  for (int i = 0; i < unroll_factor2 / 2; ++i) {
+    BE_swap_bytes(data1[i + unroll_factor2 / 2]);
+    vxor(data0[i], data0[i], data1[i]);
+    vpmsumw(data1[i + unroll_factor2 / 2], data1[i + unroll_factor2 / 2], consts1[1]);
+  }
+  for (int i = 0; i < unroll_factor2 / 2; ++i) {
+    vpmsumw(data0[i], data0[i], consts0[unroll_factor2 - 2 - i]); // First half of fixup shifts.
+    vxor(data0[i + unroll_factor2 / 2], data0[i + unroll_factor2 / 2], data1[i + unroll_factor2 / 2]);
+  }
 
-  vxor(VR0, VR0, VR4);
+  // Last data register is ok, other ones need fixup shift.
+  for (int i = unroll_factor2 / 2; i < unroll_factor2 - 1; ++i) {
+    vpmsumw(data0[i], data0[i], consts0[unroll_factor2 - 2 - i]);
+  }
 
-  b(L_barrett_reduction);
+  // Combine to 128 bit result vector VCRC = data0[0].
+  for (int i = 1; i < unroll_factor2; i<<=1) {
+    for (int j = 0; j <= unroll_factor2 - 2*i; j+=2*i) {
+      vxor(data0[j], data0[j], data0[j+i]);
+    }
+  }
+  cmpd(CCR0, len, num_bytes);
+  bge(CCR0, L_outer_loop);
 
-  BIND(L_first_warm_up_done);
-  lvx(const1, constantsPos);
-  addi(constantsPos, constantsPos, 16);
-  vpmsumd(VR8,  VR16, const1);
-  vpmsumd(VR9,  VR17, const1);
-  vpmsumd(VR10, VR18, const1);
-  vpmsumd(VR11, VR19, const1);
-  vpmsumd(VR12, VR20, const1);
-  vpmsumd(VR13, VR21, const1);
-  vpmsumd(VR14, VR22, const1);
-  vpmsumd(VR15, VR23, const1);
-  b(L_second_cool_down);
+  // Last chance with lower num_bytes.
+  bind(L_last);
+  srdi(loop_count, len, exact_log2(16 * 2 * unroll_factor2)); // Use double-iterations.
+  // Point behind last const for inner loop.
+  add_const_optimized(cur_const, constants, outer_consts_size + inner_consts_size);
+  sldi(R0, loop_count, exact_log2(16 * 2)); // Bytes of constants to be used.
+  clrrdi(num_bytes, len, exact_log2(16 * 2 * unroll_factor2));
+  subf(cur_const, R0, cur_const); // Point to constant to be used first.
 
-  BIND(L_barrett_reduction);
+  addic_(loop_count, loop_count, -1); // One double-iteration peeled off.
+  bgt(CCR0, L_outer_loop);
+  // ********** Main loop end **********
 
-  lvx(const1, barretConstants);
-  addi(barretConstants, barretConstants, 16);
-  lvx(const2, barretConstants);
+  // Restore DSCR pre-fetch value.
+  if (VM_Version::has_mfdscr()) {
+    load_const_optimized(t0, VM_Version::_dscr_val);
+    mtdscr(t0);
+  }
 
-  vsldoi(VR1, VR0, VR0, 8);
-  vxor(VR0, VR0, VR1);    // xor two 64 bit results together
+  // ********** Simple loop for remaining 16 byte blocks **********
+  {
+    Label L_loop, L_done;
 
-  // shift left one bit
-  vspltisb(VR1, 1);
-  vsl(VR0, VR0, VR1);
+    srdi_(t0, len, 4); // 16 bytes per iteration
+    clrldi(len, len, 64-4);
+    beq(CCR0, L_done);
 
-  vand(VR0, VR0, mask_64bit);
+    // Point to const (same as last const for inner loop).
+    add_const_optimized(cur_const, constants, outer_consts_size + inner_consts_size - 16);
+    mtctr(t0);
+    lvx(Vtmp2, cur_const);
 
-  /*
-   * The reflected version of Barrett reduction. Instead of bit
-   * reflecting our data (which is expensive to do), we bit reflect our
-   * constants and our algorithm, which means the intermediate data in
-   * our vector registers goes from 0-63 instead of 63-0. We can reflect
-   * the algorithm because we don't carry in mod 2 arithmetic.
-   */
-  vand(VR1, VR0, mask_32bit);  // bottom 32 bits of a
-  vpmsumd(VR1, VR1, const1);   // ma
-  vand(VR1, VR1, mask_32bit);  // bottom 32bits of ma
-  vpmsumd(VR1, VR1, const2);   // qn */
-  vxor(VR0, VR0, VR1);         // a - qn, subtraction is xor in GF(2)
+    align(32);
+    bind(L_loop);
 
-  /*
-   * Since we are bit reflected, the result (ie the low 32 bits) is in
-   * the high 32 bits. We just need to shift it left 4 bytes
-   * V0 [ 0 1 X 3 ]
-   * V0 [ 0 X 2 3 ]
-   */
-  vsldoi(VR0, VR0, zeroes, 4);    // shift result into top 64 bits of
+    lvx(Vtmp, buf);
+    addi(buf, buf, 16);
+    vpermxor(VCRC, VCRC, VCRC, Vc); // xor both halves to 64 bit result.
+    BE_swap_bytes(Vtmp);
+    vxor(VCRC, VCRC, Vtmp);
+    vpmsumw(VCRC, VCRC, Vtmp2);
+    bdnz(L_loop);
 
-  // Get it into r3
-  mfvrd(crc, VR0);
+    bind(L_done);
+  }
+  // ********** Simple loop end **********
+#undef BE_swap_bytes
 
-  BIND(L_end);
+  // Point to Barrett constants
+  add_const_optimized(cur_const, constants, outer_consts_size + inner_consts_size);
 
-  offsetInt = 0;
+  vspltisb(zeroes, 0);
+
+  // Combine to 64 bit result.
+  vpermxor(VCRC, VCRC, VCRC, Vc); // xor both halves to 64 bit result.
+
+  // Reduce to 32 bit CRC: Remainder by multiply-high.
+  lvx(Vtmp, cur_const);
+  vsldoi(Vtmp2, zeroes, VCRC, 12);  // Extract high 32 bit.
+  vpmsumd(Vtmp2, Vtmp2, Vtmp);      // Multiply by inverse long poly.
+  vsldoi(Vtmp2, zeroes, Vtmp2, 12); // Extract high 32 bit.
+  vsldoi(Vtmp, zeroes, Vtmp, 8);
+  vpmsumd(Vtmp2, Vtmp2, Vtmp);      // Multiply quotient by long poly.
+  vxor(VCRC, VCRC, Vtmp2);          // Remainder fits into 32 bit.
+
+  // Move result. len is already updated.
+  vsldoi(VCRC, VCRC, zeroes, 8);
+  mfvrd(crc, VCRC);
+
   // Restore non-volatile Vector registers (frameless).
-  offsetInt -= 16; li(offset, -16);           lvx(VR20, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR21, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR22, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR23, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR24, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR25, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR26, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR27, offset, R1_SP);
-  offsetInt -= 16; addi(offset, offset, -16); lvx(VR28, offset, R1_SP);
-  offsetInt -= 8;  ld(R22, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R23, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R24, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R25, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R26, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R27, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R28, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R29, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R30, offsetInt, R1_SP);
-  offsetInt -= 8;  ld(R31, offsetInt, R1_SP);
+  offsetInt = 0;
+  offsetInt -= 16; li(offset, offsetInt); lvx(VR20, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); lvx(VR21, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); lvx(VR22, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); lvx(VR23, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); lvx(VR24, offset, R1_SP);
+  offsetInt -= 16; li(offset, offsetInt); lvx(VR25, offset, R1_SP);
+#ifndef VM_LITTLE_ENDIAN
+  offsetInt -= 16; li(offset, offsetInt); lvx(VR26, offset, R1_SP);
+#endif
+  offsetInt -= 8;  ld(R14, offsetInt, R1_SP);
+  offsetInt -= 8;  ld(R15, offsetInt, R1_SP);
 }
 
-void MacroAssembler::kernel_crc32_singleByte(Register crc, Register buf, Register len, Register table, Register tmp, bool invertCRC) {
-  assert_different_registers(crc, buf, /* len,  not used!! */ table, tmp);
+void MacroAssembler::crc32(Register crc, Register buf, Register len, Register t0, Register t1, Register t2,
+                           Register t3, Register t4, Register t5, Register t6, Register t7, bool is_crc32c) {
+  load_const_optimized(t0, is_crc32c ? StubRoutines::crc32c_table_addr()
+                                     : StubRoutines::crc_table_addr()   , R0);
 
-  BLOCK_COMMENT("kernel_crc32_singleByte:");
-  if (invertCRC) {
-    nand(crc, crc, crc);                // 1s complement of crc
-  }
-
-  lbz(tmp, 0, buf);                     // Byte from buffer, zero-extended.
-  update_byte_crc32(crc, tmp, table);
-
-  if (invertCRC) {
-    nand(crc, crc, crc);                // 1s complement of crc
+  if (VM_Version::has_vpmsumb()) {
+    kernel_crc32_vpmsum(crc, buf, len, t0, t1, t2, t3, t4, t5, t6, t7, !is_crc32c);
+  } else {
+    kernel_crc32_1word(crc, buf, len, t0, t1, t2, t3, t4, t5, t6, t7, t0, !is_crc32c);
   }
 }
 

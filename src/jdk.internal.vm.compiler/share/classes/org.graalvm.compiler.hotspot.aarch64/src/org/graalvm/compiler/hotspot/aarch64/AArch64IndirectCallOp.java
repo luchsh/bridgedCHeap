@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,6 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.hotspot.aarch64;
 
 import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.REG;
@@ -71,7 +73,9 @@ final class AArch64IndirectCallOp extends IndirectCallOp {
         crb.recordMark(config.MARKID_INLINE_INVOKE);
         Register callReg = asRegister(targetAddress);
         assert !callReg.equals(METHOD);
+        int pcOffset = masm.position();
         AArch64Call.indirectCall(crb, masm, callReg, callTarget, state);
+        crb.recordInlineInvokeCallOp(pcOffset, getPosition());
     }
 
     @Override

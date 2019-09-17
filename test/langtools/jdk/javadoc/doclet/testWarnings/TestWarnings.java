@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2004, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,18 +23,20 @@
 
 /*
  * @test
- * @bug      4515705 4804296 4702454 4697036 8025633
+ * @bug      4515705 4804296 4702454 4697036 8025633 8182765
  * @summary  Make sure that first sentence warning only appears once.
  *           Make sure that only warnings/errors are printed when quiet is used.
  *           Make sure that links to private/unincluded methods do not cause
  *           a "link unresolved" warning.
  *           Make sure error message starts with "error -".
  * @author   jamieh
- * @library  ../lib
+ * @library  ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
- * @build    JavadocTester
+ * @build    javadoc.tester.*
  * @run main TestWarnings
  */
+
+import javadoc.tester.JavadocTester;
 
 public class TestWarnings extends JavadocTester {
     public static void main(String... args) throws Exception  {
@@ -43,7 +45,7 @@ public class TestWarnings extends JavadocTester {
     }
 
     @Test
-    void testDefault() {
+    public void testDefault() {
         javadoc("-d", "out-default",
                 "-sourcepath", testSrc,
                 "pkg");
@@ -70,7 +72,7 @@ public class TestWarnings extends JavadocTester {
     }
 
     @Test
-    void testPrivate() {
+    public void testPrivate() {
         javadoc("-d", "out-private",
                 "-private",
                 "-sourcepath", testSrc,
@@ -78,8 +80,8 @@ public class TestWarnings extends JavadocTester {
         checkExit(Exit.ERROR);
 
         checkOutput("pkg/X.html", true,
-            "<a href=\"#m--\"><code>m()</code></a><br/>",
-            "<a href=\"#X--\"><code>X()</code></a><br/>",
+            "<a href=\"#m()\"><code>m()</code></a><br/>",
+            "<a href=\"#%3Cinit%3E()\"><code>X()</code></a><br/>",
             "<a href=\"#f\"><code>f</code></a><br/>");
     }
 }

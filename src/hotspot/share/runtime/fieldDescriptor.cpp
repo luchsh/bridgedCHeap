@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,12 +26,12 @@
 #include "classfile/systemDictionary.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "memory/resourceArea.hpp"
-#include "memory/universe.inline.hpp"
 #include "oops/annotations.hpp"
+#include "oops/constantPool.hpp"
 #include "oops/instanceKlass.hpp"
 #include "oops/oop.inline.hpp"
 #include "oops/fieldStreams.hpp"
-#include "runtime/fieldDescriptor.hpp"
+#include "runtime/fieldDescriptor.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/signature.hpp"
 
@@ -145,6 +145,8 @@ void fieldDescriptor::print_on(outputStream* st) const {
   }
 }
 
+void fieldDescriptor::print() const { print_on(tty); }
+
 void fieldDescriptor::print_on_for(outputStream* st, oop obj) {
   print_on(st);
   BasicType ft = field_type();
@@ -188,12 +190,20 @@ void fieldDescriptor::print_on_for(outputStream* st, oop obj) {
     case T_ARRAY:
       st->print(" ");
       NOT_LP64(as_int = obj->int_field(offset()));
-      obj->obj_field(offset())->print_value_on(st);
+      if (obj->obj_field(offset()) != NULL) {
+        obj->obj_field(offset())->print_value_on(st);
+      } else {
+        st->print_cr("NULL");
+      }
       break;
     case T_OBJECT:
       st->print(" ");
       NOT_LP64(as_int = obj->int_field(offset()));
-      obj->obj_field(offset())->print_value_on(st);
+      if (obj->obj_field(offset()) != NULL) {
+        obj->obj_field(offset())->print_value_on(st);
+      } else {
+        st->print_cr("NULL");
+      }
       break;
     default:
       ShouldNotReachHere();
@@ -201,6 +211,12 @@ void fieldDescriptor::print_on_for(outputStream* st, oop obj) {
   }
   // Print a hint as to the underlying integer representation. This can be wrong for
   // pointers on an LP64 machine
+#ifdef _LP64
+  if ((ft == T_OBJECT || ft == T_ARRAY) && UseCompressedOops) {
+    st->print(" (%x)", obj->int_field(offset()));
+  }
+  else // <- intended
+#endif
   if (ft == T_LONG || ft == T_DOUBLE LP64_ONLY(|| !is_java_primitive(ft)) ) {
     st->print(" (%x %x)", obj->int_field(offset()), obj->int_field(offset()+sizeof(jint)));
   } else if (as_int < 0 || as_int > 9) {

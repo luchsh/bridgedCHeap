@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,6 @@
 
 /**
  * @test
- * @requires vm.cds
  * @bug 8059510
  * @summary Test SharedSymbolTableBucketSize option
  * @requires vm.cds
@@ -43,15 +42,14 @@ public class SharedSymbolTableBucketSize {
             CDSTestUtils.createArchive("-XX:SharedSymbolTableBucketSize="
                                        + Integer.valueOf(bucket_size));
         CDSTestUtils.checkDump(output);
+        CDSTestUtils.checkMappingFailure(output);
 
-        if (!CDSTestUtils.isUnableToMap(output)) {
-            String s = output.firstMatch("Average bucket size     : .*");
-            Float f = Float.parseFloat(s.substring(25));
-            int size = Math.round(f);
-            if (size != bucket_size) {
-                throw new Exception("FAILED: incorrect bucket size " + size +
-                                    ", expect " + bucket_size);
-            }
+        String s = output.firstMatch("Average bucket size     : .*");
+        Float f = Float.parseFloat(s.substring(25));
+        int size = Math.round(f);
+        if (size != bucket_size) {
+            throw new Exception("FAILED: incorrect bucket size " + size +
+                                ", expect " + bucket_size);
         }
 
         // Invalid SharedSymbolTableBucketSize input

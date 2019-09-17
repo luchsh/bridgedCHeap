@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,13 +26,13 @@
 #include "code/debugInfoRec.hpp"
 #include "code/pcDesc.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
-#include "gc/shared/space.hpp"
-#include "memory/universe.inline.hpp"
+#include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
 #include "prims/forte.hpp"
+#include "runtime/frame.inline.hpp"
 #include "runtime/javaCalls.hpp"
 #include "runtime/thread.inline.hpp"
-#include "runtime/vframe.hpp"
+#include "runtime/vframe.inline.hpp"
 #include "runtime/vframeArray.hpp"
 
 // call frame copied from old .h file and renamed
@@ -70,7 +70,7 @@ enum {
 // Native interfaces for use by Forte tools.
 
 
-#if !defined(IA64) && !defined(PPC64)
+#if !defined(IA64)
 
 class vframeStreamForte : public vframeStreamCommon {
  public:
@@ -248,7 +248,7 @@ static bool is_decipherable_interpreted_frame(JavaThread* thread,
     // a valid method. Then again we may have caught an interpreter
     // frame in the middle of construction and the bci field is
     // not yet valid.
-    if (!method->is_valid_method()) return false;
+    if (!Method::is_valid_method(method)) return false;
     *method_p = method; // If the Method* found is invalid, it is
                         // ignored by forte_fill_call_trace_given_top().
                         // So set method_p only if the Method is valid.
@@ -434,7 +434,7 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
   // Check if a Java Method has been found.
   if (method == NULL) return;
 
-  if (!method->is_valid_method()) {
+  if (!Method::is_valid_method(method)) {
     trace->num_frames = ticks_GC_active; // -2
     return;
   }
@@ -445,7 +445,7 @@ static void forte_fill_call_trace_given_top(JavaThread* thd,
     bci = st.bci();
     method = st.method();
 
-    if (!method->is_valid_method()) {
+    if (!Method::is_valid_method(method)) {
       // we throw away everything we've gathered in this sample since
       // none of it is safe
       trace->num_frames = ticks_GC_active; // -2
@@ -639,16 +639,16 @@ void    collector_func_load(char* name,
 #endif // !_WINDOWS
 
 } // end extern "C"
-#endif // !IA64 && !PPC64
+#endif // !IA64
 
 void Forte::register_stub(const char* name, address start, address end) {
-#if !defined(_WINDOWS) && !defined(IA64) && !defined(PPC64)
+#if !defined(_WINDOWS) && !defined(IA64)
   assert(pointer_delta(end, start, sizeof(jbyte)) < INT_MAX,
          "Code size exceeds maximum range");
 
   collector_func_load((char*)name, NULL, NULL, start,
     pointer_delta(end, start, sizeof(jbyte)), 0, NULL);
-#endif // !_WINDOWS && !IA64 && !PPC64
+#endif // !_WINDOWS && !IA64
 }
 
 #else // INCLUDE_JVMTI

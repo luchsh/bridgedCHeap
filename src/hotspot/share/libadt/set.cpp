@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2014, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,22 +35,8 @@
 
 //-------------------------Virtual Functions-----------------------------------
 // These functions MUST be implemented by the inheriting class.
-class SparseSet;
-/* Removed for MCC BUG
-   Set::operator const SparseSet*() const { assert(0); return NULL; } */
-const SparseSet *Set::asSparseSet() const { assert(0); return NULL; }
 class VectorSet;
-/* Removed for MCC BUG
-   Set::operator const VectorSet*() const { assert(0); return NULL; } */
 const VectorSet *Set::asVectorSet() const { assert(0); return NULL; }
-class ListSet;
-/* Removed for MCC BUG
-   Set::operator const ListSet*() const { assert(0); return NULL; } */
-const ListSet *Set::asListSet() const { assert(0); return NULL; }
-class CoSet;
-/* Removed for MCC BUG
-   Set::operator const CoSet*() const { assert(0); return NULL; } */
-const CoSet *Set::asCoSet() const { assert(0); return NULL; }
 
 //------------------------------setstr-----------------------------------------
 // Create a string with a printable representation of a set.
@@ -64,7 +50,7 @@ char *Set::setstr() const
   uint len = 128;               // Total string space
   char *buf = NEW_C_HEAP_ARRAY(char,len, mtCompiler);// Some initial string space
 
-  register char *s = buf;       // Current working string pointer
+  char *s = buf;                // Current working string pointer
   *s++ = '{';
   *s = '\0';
 
@@ -116,8 +102,8 @@ void Set::print() const
 // Set.  Return the amount of text parsed in "len", or zero in "len".
 int Set::parse(const char *s)
 {
-  register char c;              // Parse character
-  register const char *t = s;   // Save the starting position of s.
+  char c;                       // Parse character
+  const char *t = s;            // Save the starting position of s.
   do c = *s++;                  // Skip characters
   while( c && (c <= ' ') );     // Till no more whitespace or EOS
   if( c != '{' ) return 0;      // Oops, not a Set openner

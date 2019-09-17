@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -71,10 +71,6 @@ static jmethodID ss_ctrID;     /* sun.nio.ch.sctp.Shutdown.<init>            */
 jobject SockAddrToInetSocketAddress(JNIEnv* env, struct sockaddr* addr);
 
 jint handleSocketError(JNIEnv *env, jint errorValue);
-
-/* use SocketChannelImpl's checkConnect implementation */
-extern jint Java_sun_nio_ch_SocketChannelImpl_checkConnect(JNIEnv* env,
-    jobject this, jobject fdo, jboolean block, jboolean ready);
 
 /*
  * Class:     sun_nio_ch_sctp_SctpChannelImpl
@@ -439,7 +435,7 @@ JNIEXPORT jint JNICALL Java_sun_nio_ch_sctp_SctpChannelImpl_receive0
 
     do {
         if ((rv = recvmsg(fd, msg, flags)) < 0) {
-            if (errno == EWOULDBLOCK) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return IOS_UNAVAILABLE;
             } else if (errno == EINTR) {
                 return IOS_INTERRUPTED;
@@ -582,7 +578,7 @@ JNIEXPORT jint JNICALL Java_sun_nio_ch_sctp_SctpChannelImpl_send0
     setControlData(msg, cdata);
 
     if ((rv = sendmsg(fd, msg, 0)) < 0) {
-        if (errno == EWOULDBLOCK) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return IOS_UNAVAILABLE;
         } else if (errno == EINTR) {
             return IOS_INTERRUPTED;
@@ -598,13 +594,3 @@ JNIEXPORT jint JNICALL Java_sun_nio_ch_sctp_SctpChannelImpl_send0
     return rv;
 }
 
-/*
- * Class:     sun_nio_ch_sctp_SctpChannelImpl
- * Method:    checkConnect
- * Signature: (Ljava/io/FileDescriptor;ZZ)I
- */
-JNIEXPORT jint JNICALL Java_sun_nio_ch_sctp_SctpChannelImpl_checkConnect
-  (JNIEnv* env, jobject this, jobject fdo, jboolean block, jboolean ready) {
-    return Java_sun_nio_ch_SocketChannelImpl_checkConnect(env, this,
-                                                          fdo, block, ready);
-}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -59,6 +59,7 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
+import jdk.internal.loader.BuiltinClassLoader;
 import jdk.internal.perf.PerfCounter;
 import jdk.internal.loader.BootLoader;
 import jdk.internal.loader.ClassLoaders;
@@ -73,7 +74,7 @@ import sun.security.util.SecurityConstants;
 /**
  * A class loader is an object that is responsible for loading classes. The
  * class {@code ClassLoader} is an abstract class.  Given the <a
- * href="#name">binary name</a> of a class, a class loader should attempt to
+ * href="#binary-name">binary name</a> of a class, a class loader should attempt to
  * locate or generate data that constitutes a definition for the class.  A
  * typical strategy is to transform the name into a file name and then read a
  * "class file" of that name from a file system.
@@ -125,7 +126,7 @@ import sun.security.util.SecurityConstants;
  * duration of the class loading process (see {@link #loadClass
  * loadClass} methods).
  *
- * <h3> <a id="builtinLoaders">Run-time Built-in Class Loaders</a></h3>
+ * <h2> <a id="builtinLoaders">Run-time Built-in Class Loaders</a></h2>
  *
  * The Java run-time has the following built-in class loaders:
  *
@@ -202,7 +203,7 @@ import sun.security.util.SecurityConstants;
  *     }
  * </pre></blockquote>
  *
- * <h3> <a id="name">Binary names</a> </h3>
+ * <h3> <a id="binary-name">Binary names</a> </h3>
  *
  * <p> Any class name provided as a {@code String} parameter to methods in
  * {@code ClassLoader} must be a binary name as defined by
@@ -221,7 +222,7 @@ import sun.security.util.SecurityConstants;
  * or a fully qualified name as defined by
  * <cite>The Java&trade; Language Specification</cite>.
  *
- * @jls 6.7  Fully Qualified Names
+ * @jls 6.7 Fully Qualified Names
  * @jls 13.1 The Form of a Binary
  * @see      #resolveClass(Class)
  * @since 1.0
@@ -245,6 +246,9 @@ public abstract class ClassLoader {
 
     // the unnamed module for this ClassLoader
     private final Module unnamedModule;
+
+    // a string for exception message printing
+    private final String nameAndId;
 
     /**
      * Encapsulates the set of parallel capable loader types.
@@ -381,6 +385,24 @@ public abstract class ClassLoader {
             package2certs = new Hashtable<>();
             assertionLock = this;
         }
+        this.nameAndId = nameAndId(this);
+    }
+
+    /**
+     * If the defining loader has a name explicitly set then
+     *       '<loader-name>' @<id>
+     * If the defining loader has no name then
+     *       <qualified-class-name> @<id>
+     * If it's built-in loader then omit `@<id>` as there is only one instance.
+     */
+    private static String nameAndId(ClassLoader ld) {
+        String nid = ld.getName() != null ? "\'" + ld.getName() + "\'"
+                                          : ld.getClass().getName();
+        if (!(ld instanceof BuiltinClassLoader)) {
+            String id = Integer.toHexString(System.identityHashCode(ld));
+            nid = nid + " @" + id;
+        }
+        return nid;
     }
 
     /**
@@ -480,7 +502,7 @@ public abstract class ClassLoader {
     // -- Class --
 
     /**
-     * Loads the class with the specified <a href="#name">binary name</a>.
+     * Loads the class with the specified <a href="#binary-name">binary name</a>.
      * This method searches for classes in the same manner as the {@link
      * #loadClass(String, boolean)} method.  It is invoked by the Java virtual
      * machine to resolve class references.  Invoking this method is equivalent
@@ -488,7 +510,7 @@ public abstract class ClassLoader {
      * false)}.
      *
      * @param  name
-     *         The <a href="#name">binary name</a> of the class
+     *         The <a href="#binary-name">binary name</a> of the class
      *
      * @return  The resulting {@code Class} object
      *
@@ -500,7 +522,7 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Loads the class with the specified <a href="#name">binary name</a>.  The
+     * Loads the class with the specified <a href="#binary-name">binary name</a>.  The
      * default implementation of this method searches for classes in the
      * following order:
      *
@@ -530,7 +552,7 @@ public abstract class ClassLoader {
      * during the entire class loading process.
      *
      * @param  name
-     *         The <a href="#name">binary name</a> of the class
+     *         The <a href="#binary-name">binary name</a> of the class
      *
      * @param  resolve
      *         If {@code true} then resolve the class
@@ -579,7 +601,7 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Loads the class with the specified <a href="#name">binary name</a>
+     * Loads the class with the specified <a href="#binary-name">binary name</a>
      * in a module defined to this class loader.  This method returns {@code null}
      * if the class could not be found.
      *
@@ -598,7 +620,7 @@ public abstract class ClassLoader {
      * @param  module
      *         The module
      * @param  name
-     *         The <a href="#name">binary name</a> of the class
+     *         The <a href="#binary-name">binary name</a> of the class
      *
      * @return The resulting {@code Class} object in a module defined by
      *         this class loader, or {@code null} if the class could not be found.
@@ -650,21 +672,6 @@ public abstract class ClassLoader {
         return lock;
     }
 
-    // This method is invoked by the virtual machine to load a class.
-    private Class<?> loadClassInternal(String name)
-        throws ClassNotFoundException
-    {
-        // For backward compatibility, explicitly lock on 'this' when
-        // the current class loader is not parallel capable.
-        if (parallelLockMap == null) {
-            synchronized (this) {
-                 return loadClass(name);
-            }
-        } else {
-            return loadClass(name);
-        }
-    }
-
     // Invoked by the VM after loading class with this loader.
     private void checkPackageAccess(Class<?> cls, ProtectionDomain pd) {
         final SecurityManager sm = System.getSecurityManager();
@@ -689,7 +696,7 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Finds the class with the specified <a href="#name">binary name</a>.
+     * Finds the class with the specified <a href="#binary-name">binary name</a>.
      * This method should be overridden by class loader implementations that
      * follow the delegation model for loading classes, and will be invoked by
      * the {@link #loadClass loadClass} method after checking the
@@ -698,7 +705,7 @@ public abstract class ClassLoader {
      * @implSpec The default implementation throws {@code ClassNotFoundException}.
      *
      * @param  name
-     *         The <a href="#name">binary name</a> of the class
+     *         The <a href="#binary-name">binary name</a> of the class
      *
      * @return  The resulting {@code Class} object
      *
@@ -712,9 +719,9 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Finds the class with the given <a href="#name">binary name</a>
+     * Finds the class with the given <a href="#binary-name">binary name</a>
      * in a module defined to this class loader.
-     * Class loader implementations that support the loading from modules
+     * Class loader implementations that support loading from modules
      * should override this method.
      *
      * @apiNote This method returns {@code null} rather than throwing
@@ -730,7 +737,7 @@ public abstract class ClassLoader {
      *         class loader
 
      * @param  name
-     *         The <a href="#name">binary name</a> of the class
+     *         The <a href="#binary-name">binary name</a> of the class
      *
      * @return The resulting {@code Class} object, or {@code null}
      *         if the class could not be found.
@@ -752,7 +759,7 @@ public abstract class ClassLoader {
      * Converts an array of bytes into an instance of class {@code Class}.
      * Before the {@code Class} can be used it must be resolved.  This method
      * is deprecated in favor of the version that takes a <a
-     * href="#name">binary name</a> as its first argument, and is more secure.
+     * href="#binary-name">binary name</a> as its first argument, and is more secure.
      *
      * @param  b
      *         The bytes that make up the class data.  The bytes in positions
@@ -819,12 +826,12 @@ public abstract class ClassLoader {
      * This method defines a package in this class loader corresponding to the
      * package of the {@code Class} (if such a package has not already been defined
      * in this class loader). The name of the defined package is derived from
-     * the <a href="#name">binary name</a> of the class specified by
+     * the <a href="#binary-name">binary name</a> of the class specified by
      * the byte array {@code b}.
      * Other properties of the defined package are as specified by {@link Package}.
      *
      * @param  name
-     *         The expected <a href="#name">binary name</a> of the class, or
+     *         The expected <a href="#binary-name">binary name</a> of the class, or
      *         {@code null} if not known
      *
      * @param  b
@@ -938,7 +945,7 @@ public abstract class ClassLoader {
      * package must contain the same set of certificates or a
      * {@code SecurityException} will be thrown.  Note that if
      * {@code name} is {@code null}, this check is not performed.
-     * You should always pass in the <a href="#name">binary name</a> of the
+     * You should always pass in the <a href="#binary-name">binary name</a> of the
      * class you are defining as well as the bytes.  This ensures that the
      * class you are defining is indeed the class you think it is.
      *
@@ -946,19 +953,19 @@ public abstract class ClassLoader {
      * only be defined by the {@linkplain #getPlatformClassLoader()
      * platform class loader} or its ancestors; otherwise {@code SecurityException}
      * will be thrown.  If {@code name} is not {@code null}, it must be equal to
-     * the <a href="#name">binary name</a> of the class
+     * the <a href="#binary-name">binary name</a> of the class
      * specified by the byte array {@code b}, otherwise a {@link
      * NoClassDefFoundError NoClassDefFoundError} will be thrown.
      *
      * <p> This method defines a package in this class loader corresponding to the
      * package of the {@code Class} (if such a package has not already been defined
      * in this class loader). The name of the defined package is derived from
-     * the <a href="#name">binary name</a> of the class specified by
+     * the <a href="#binary-name">binary name</a> of the class specified by
      * the byte array {@code b}.
      * Other properties of the defined package are as specified by {@link Package}.
      *
      * @param  name
-     *         The expected <a href="#name">binary name</a> of the class, or
+     *         The expected <a href="#binary-name">binary name</a> of the class, or
      *         {@code null} if not known
      *
      * @param  b
@@ -984,7 +991,7 @@ public abstract class ClassLoader {
      *
      * @throws  NoClassDefFoundError
      *          If {@code name} is not {@code null} and not equal to the
-     *          <a href="#name">binary name</a> of the class specified by {@code b}
+     *          <a href="#binary-name">binary name</a> of the class specified by {@code b}
      *
      * @throws  IndexOutOfBoundsException
      *          If either {@code off} or {@code len} is negative, or if
@@ -1042,7 +1049,7 @@ public abstract class ClassLoader {
      * </code></p>
      *
      * @param  name
-     *         The expected <a href="#name">binary name</a>. of the class, or
+     *         The expected <a href="#binary-name">binary name</a>. of the class, or
      *         {@code null} if not known
      *
      * @param  b
@@ -1062,7 +1069,7 @@ public abstract class ClassLoader {
      *
      * @throws  NoClassDefFoundError
      *          If {@code name} is not {@code null} and not equal to the
-     *          <a href="#name">binary name</a> of the class specified by {@code b}
+     *          <a href="#binary-name">binary name</a> of the class specified by {@code b}
      *
      * @throws  SecurityException
      *          If an attempt is made to add this class to a package that
@@ -1112,7 +1119,7 @@ public abstract class ClassLoader {
 
     // true if the name is null or has the potential to be a valid binary name
     private boolean checkName(String name) {
-        if ((name == null) || (name.length() == 0))
+        if ((name == null) || (name.isEmpty()))
             return true;
         if ((name.indexOf('/') != -1) || (name.charAt(0) == '['))
             return false;
@@ -1213,7 +1220,7 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Finds a class with the specified <a href="#name">binary name</a>,
+     * Finds a class with the specified <a href="#binary-name">binary name</a>,
      * loading it if necessary.
      *
      * <p> This method loads the class through the system class loader (see
@@ -1224,7 +1231,7 @@ public abstract class ClassLoader {
      * #findClass(String)}.  </p>
      *
      * @param  name
-     *         The <a href="#name">binary name</a> of the class
+     *         The <a href="#binary-name">binary name</a> of the class
      *
      * @return  The {@code Class} object for the specified {@code name}
      *
@@ -1254,13 +1261,13 @@ public abstract class ClassLoader {
     private native Class<?> findBootstrapClass(String name);
 
     /**
-     * Returns the class with the given <a href="#name">binary name</a> if this
+     * Returns the class with the given <a href="#binary-name">binary name</a> if this
      * loader has been recorded by the Java virtual machine as an initiating
-     * loader of a class with that <a href="#name">binary name</a>.  Otherwise
+     * loader of a class with that <a href="#binary-name">binary name</a>.  Otherwise
      * {@code null} is returned.
      *
      * @param  name
-     *         The <a href="#name">binary name</a> of the class
+     *         The <a href="#binary-name">binary name</a> of the class
      *
      * @return  The {@code Class} object, or {@code null} if the class has
      *          not been loaded
@@ -1296,7 +1303,7 @@ public abstract class ClassLoader {
 
     /**
      * Returns a URL to a resource in a module defined to this class loader.
-     * Class loader implementations that support the loading from modules
+     * Class loader implementations that support loading from modules
      * should override this method.
      *
      * @apiNote This method is the basis for the {@link
@@ -1432,12 +1439,12 @@ public abstract class ClassLoader {
      * @param  name
      *         The resource name
      *
-     * @return  An enumeration of {@link java.net.URL URL} objects for
-     *          the resource. If no resources could  be found, the enumeration
-     *          will be empty. Resources for which a {@code URL} cannot be
-     *          constructed, are in package that is not opened unconditionally,
-     *          or access to the resource is denied by the security manager,
-     *          are not returned in the enumeration.
+     * @return  An enumeration of {@link java.net.URL URL} objects for the
+     *          resource. If no resources could be found, the enumeration will
+     *          be empty. Resources for which a {@code URL} cannot be
+     *          constructed, are in a package that is not opened
+     *          unconditionally, or access to the resource is denied by the
+     *          security manager, are not returned in the enumeration.
      *
      * @throws  IOException
      *          If I/O errors occur
@@ -1857,12 +1864,12 @@ public abstract class ClassLoader {
      * <p> The default system class loader is an implementation-dependent
      * instance of this class.
      *
-     * <p> If the system property "{@code java.system.class.loader}" is defined
-     * when this method is first invoked then the value of that property is
-     * taken to be the name of a class that will be returned as the system
-     * class loader.  The class is loaded using the default system class loader
-     * and must define a public constructor that takes a single parameter of
-     * type {@code ClassLoader} which is used as the delegation parent.  An
+     * <p> If the system property "{@systemProperty java.system.class.loader}"
+     * is defined when this method is first invoked then the value of that
+     * property is taken to be the name of a class that will be returned as the
+     * system class loader. The class is loaded using the default system class
+     * loader and must define a public constructor that takes a single parameter
+     * of type {@code ClassLoader} which is used as the delegation parent. An
      * instance is then created using this constructor with the default system
      * class loader as the parameter.  The resulting class loader is defined
      * to be the system class loader. During construction, the class loader
@@ -1885,6 +1892,16 @@ public abstract class ClassLoader {
      * will search for classes and resources using the application module path;
      * otherwise, if unnamed, it will set the class path to the current
      * working directory.
+     *
+     * <p> JAR files on the class path may contain a {@code Class-Path} manifest
+     * attribute to specify dependent JAR files to be included in the class path.
+     * {@code Class-Path} entries must meet certain conditions for validity (see
+     * the <a href="{@docRoot}/../specs/jar/jar.html#class-path-attribute">
+     * JAR File Specification</a> for details).  Invalid {@code Class-Path}
+     * entries are ignored.  For debugging purposes, ignored entries can be
+     * printed to the console if the
+     * {@systemProperty jdk.net.URLClassPath.showIgnoredClassPathEntries} system
+     * property is set to {@code true}.
      *
      * @return  The system {@code ClassLoader}
      *
@@ -1922,7 +1939,7 @@ public abstract class ClassLoader {
             case 3:
                 String msg = "getSystemClassLoader cannot be called during the system class loader instantiation";
                 throw new IllegalStateException(msg);
-            case 4:
+            default:
                 // system fully initialized
                 assert VM.isBooted() && scl != null;
                 SecurityManager sm = System.getSecurityManager();
@@ -1930,8 +1947,6 @@ public abstract class ClassLoader {
                     checkClassLoaderPermission(scl, Reflection.getCallerClass());
                 }
                 return scl;
-            default:
-                throw new InternalError("should not reach here");
         }
     }
 
@@ -2104,9 +2119,9 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Defines a package by <a href="#name">name</a> in this {@code ClassLoader}.
+     * Defines a package by <a href="#binary-name">name</a> in this {@code ClassLoader}.
      * <p>
-     * <a href="#name">Package names</a> must be unique within a class loader and
+     * <a href="#binary-name">Package names</a> must be unique within a class loader and
      * cannot be redefined or changed once created.
      * <p>
      * If a class loader wishes to define a package with specific properties,
@@ -2140,7 +2155,7 @@ public abstract class ClassLoader {
      * in a named module may be for example sealed with different seal base.
      *
      * @param  name
-     *         The <a href="#name">package name</a>
+     *         The <a href="#binary-name">package name</a>
      *
      * @param  specTitle
      *         The specification title
@@ -2179,7 +2194,7 @@ public abstract class ClassLoader {
      * @revised 9
      * @spec JPMS
      *
-     * @jvms 5.3 Run-time package
+     * @jvms 5.3 Creation and Loading
      * @see <a href="{@docRoot}/../specs/jar/jar.html#package-sealing">
      *      The JAR File Specification: Package Sealing</a>
      */
@@ -2202,10 +2217,10 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Returns a {@code Package} of the given <a href="#name">name</a> that
+     * Returns a {@code Package} of the given <a href="#binary-name">name</a> that
      * has been defined by this class loader.
      *
-     * @param  name The <a href="#name">package name</a>
+     * @param  name The <a href="#binary-name">package name</a>
      *
      * @return The {@code Package} of the given name that has been defined
      *         by this class loader, or {@code null} if not found
@@ -2213,7 +2228,7 @@ public abstract class ClassLoader {
      * @throws  NullPointerException
      *          if {@code name} is {@code null}.
      *
-     * @jvms 5.3 Run-time package
+     * @jvms 5.3 Creation and Loading
      *
      * @since  9
      * @spec JPMS
@@ -2240,7 +2255,7 @@ public abstract class ClassLoader {
      *         this class loader; or an zero length array if no package has been
      *         defined by this class loader.
      *
-     * @jvms 5.3 Run-time package
+     * @jvms 5.3 Creation and Loading
      *
      * @since  9
      * @spec JPMS
@@ -2250,7 +2265,7 @@ public abstract class ClassLoader {
     }
 
     /**
-     * Finds a package by <a href="#name">name</a> in this class loader and its ancestors.
+     * Finds a package by <a href="#binary-name">name</a> in this class loader and its ancestors.
      * <p>
      * If this class loader defines a {@code Package} of the given name,
      * the {@code Package} is returned. Otherwise, the ancestors of
@@ -2264,7 +2279,7 @@ public abstract class ClassLoader {
      * class loader.
      *
      * @param  name
-     *         The <a href="#name">package name</a>
+     *         The <a href="#binary-name">package name</a>
      *
      * @return The {@code Package} of the given name that has been defined by
      *         this class loader or its ancestors, or {@code null} if not found.
@@ -2425,7 +2440,7 @@ public abstract class ClassLoader {
             if (!load0(name, isBuiltin)) return false;
 
             // register the class loader for cleanup when unloaded
-            // built class loaders are never unloaded
+            // builtin class loaders are never unloaded
             ClassLoader loader = fromClass.getClassLoader();
             if (loader != null &&
                 loader != getBuiltinPlatformClassLoader() &&
@@ -2997,7 +3012,7 @@ public abstract class ClassLoader {
         Class<?> k = ClassLoader.class;
         long offset;
         offset = unsafe.objectFieldOffset(k, name);
-        return unsafe.compareAndSetObject(this, offset, null, obj);
+        return unsafe.compareAndSetReference(this, offset, null, obj);
     }
 }
 

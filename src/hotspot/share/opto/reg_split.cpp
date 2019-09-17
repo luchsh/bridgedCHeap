@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -683,7 +683,7 @@ uint PhaseChaitin::Split(uint maxlrg, ResourceArea* split_arena) {
         if( needs_phi ) {
           // create a new phi node and insert it into the block
           // type is taken from left over pointer to a predecessor
-          assert(n3,"No non-NULL reaching DEF for a Phi");
+          guarantee(n3, "No non-NULL reaching DEF for a Phi");
           phi = new PhiNode(b->head(), n3->bottom_type());
           // initialize the Reaches entry for this LRG
           Reachblock[slidx] = phi;
@@ -1192,9 +1192,8 @@ uint PhaseChaitin::Split(uint maxlrg, ResourceArea* split_arena) {
               (deflrg._direct_conflict || deflrg._must_spill)) ||
              // Check for LRG being up in a register and we are inside a high
              // pressure area.  Spill it down immediately.
-             (defup && is_high_pressure(b,&deflrg,insidx))) ) {
+             (defup && is_high_pressure(b,&deflrg,insidx) && !n->is_SpillCopy())) ) {
           assert( !n->rematerialize(), "" );
-          assert( !n->is_SpillCopy(), "" );
           // Do a split at the def site.
           maxlrg = split_DEF( n, b, insidx, maxlrg, Reachblock, debug_defs, splits, slidx );
           // If it wasn't split bail

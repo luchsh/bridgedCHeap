@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,10 +27,11 @@ package jdk.javadoc.internal.doclets.formats.html;
 
 import javax.lang.model.element.PackageElement;
 
-import jdk.javadoc.internal.doclets.formats.html.markup.HtmlConstants;
 import jdk.javadoc.internal.doclets.formats.html.markup.HtmlStyle;
 import jdk.javadoc.internal.doclets.formats.html.markup.HtmlTag;
 import jdk.javadoc.internal.doclets.formats.html.markup.HtmlTree;
+import jdk.javadoc.internal.doclets.formats.html.markup.Navigation;
+import jdk.javadoc.internal.doclets.formats.html.markup.Navigation.PageMode;
 import jdk.javadoc.internal.doclets.toolkit.Content;
 import jdk.javadoc.internal.doclets.toolkit.util.ClassTree;
 import jdk.javadoc.internal.doclets.toolkit.util.DocFileIOException;
@@ -57,6 +58,8 @@ public class PackageTreeWriter extends AbstractTreeWriter {
      */
     protected PackageElement packageElement;
 
+    private final Navigation navBar;
+
     /**
      * Constructor.
      * @param configuration the configuration
@@ -67,6 +70,7 @@ public class PackageTreeWriter extends AbstractTreeWriter {
         super(configuration, path,
               new ClassTree(configuration.typeElementCatalog.allClasses(packageElement), configuration));
         this.packageElement = packageElement;
+        this.navBar = new Navigation(packageElement, configuration, fixedNavDiv, PageMode.TREE, path);
     }
 
     /**
@@ -93,37 +97,30 @@ public class PackageTreeWriter extends AbstractTreeWriter {
      */
     protected void generatePackageTreeFile() throws DocFileIOException {
         HtmlTree body = getPackageTreeHeader();
-        HtmlTree htmlTree = (configuration.allowTag(HtmlTag.MAIN))
-                ? HtmlTree.MAIN()
-                : body;
+        HtmlTree mainTree = HtmlTree.MAIN();
         Content headContent = contents.getContent("doclet.Hierarchy_For_Package",
                 utils.getPackageName(packageElement));
-        Content heading = HtmlTree.HEADING(HtmlConstants.TITLE_HEADING, false,
+        Content heading = HtmlTree.HEADING(Headings.PAGE_TITLE_HEADING, false,
                 HtmlStyle.title, headContent);
         Content div = HtmlTree.DIV(HtmlStyle.header, heading);
         if (configuration.packages.size() > 1) {
             addLinkToMainTree(div);
         }
-        htmlTree.addContent(div);
+        mainTree.add(div);
         HtmlTree divTree = new HtmlTree(HtmlTag.DIV);
         divTree.setStyle(HtmlStyle.contentContainer);
         addTree(classtree.baseClasses(), "doclet.Class_Hierarchy", divTree);
         addTree(classtree.baseInterfaces(), "doclet.Interface_Hierarchy", divTree);
         addTree(classtree.baseAnnotationTypes(), "doclet.Annotation_Type_Hierarchy", divTree);
         addTree(classtree.baseEnums(), "doclet.Enum_Hierarchy", divTree, true);
-        htmlTree.addContent(divTree);
-        if (configuration.allowTag(HtmlTag.MAIN)) {
-            body.addContent(htmlTree);
-        }
-        HtmlTree tree = (configuration.allowTag(HtmlTag.FOOTER))
-                ? HtmlTree.FOOTER()
-                : body;
-        addNavLinks(false, tree);
-        addBottom(tree);
-        if (configuration.allowTag(HtmlTag.FOOTER)) {
-            body.addContent(tree);
-        }
-        printHtmlDocument(null, true, body);
+        mainTree.add(divTree);
+        body.add(mainTree);
+        HtmlTree footer = HtmlTree.FOOTER();
+        navBar.setUserFooter(getUserHeaderFooter(false));
+        footer.add(navBar.getContent(false));
+        addBottom(footer);
+        body.add(footer);
+        printHtmlDocument(null, getDescription("tree", packageElement), body);
     }
 
     /**
@@ -133,16 +130,16 @@ public class PackageTreeWriter extends AbstractTreeWriter {
      */
     protected HtmlTree getPackageTreeHeader() {
         String packageName = packageElement.isUnnamed() ? "" : utils.getPackageName(packageElement);
-        String title = packageName + " " + configuration.getText("doclet.Window_Class_Hierarchy");
-        HtmlTree bodyTree = getBody(true, getWindowTitle(title));
-        HtmlTree htmlTree = (configuration.allowTag(HtmlTag.HEADER))
-                ? HtmlTree.HEADER()
-                : bodyTree;
+        String title = packageName + " " + resources.getText("doclet.Window_Class_Hierarchy");
+        HtmlTree bodyTree = getBody(getWindowTitle(title));
+        HtmlTree htmlTree = HtmlTree.HEADER();
         addTop(htmlTree);
-        addNavLinks(true, htmlTree);
-        if (configuration.allowTag(HtmlTag.HEADER)) {
-            bodyTree.addContent(htmlTree);
-        }
+        Content linkContent = getModuleLink(utils.elementUtils.getModuleOf(packageElement),
+                contents.moduleLabel);
+        navBar.setNavLinkModule(linkContent);
+        navBar.setUserHeader(getUserHeaderFooter(true));
+        htmlTree.add(navBar.getContent(true));
+        bodyTree.add(htmlTree);
         return bodyTree;
     }
 
@@ -154,36 +151,10 @@ public class PackageTreeWriter extends AbstractTreeWriter {
     protected void addLinkToMainTree(Content div) {
         Content span = HtmlTree.SPAN(HtmlStyle.packageHierarchyLabel,
                 contents.packageHierarchies);
-        div.addContent(span);
+        div.add(span);
         HtmlTree ul = new HtmlTree (HtmlTag.UL);
         ul.setStyle(HtmlStyle.horizontal);
-        ul.addContent(getNavLinkMainTree(configuration.getText("doclet.All_Packages")));
-        div.addContent(ul);
-    }
-
-    /**
-     * Get the module link.
-     *
-     * @return a content tree for the module link
-     */
-    @Override
-    protected Content getNavLinkModule() {
-        Content linkContent = getModuleLink(utils.elementUtils.getModuleOf(packageElement),
-                contents.moduleLabel);
-        Content li = HtmlTree.LI(linkContent);
-        return li;
-    }
-
-    /**
-     * Get link to the package summary page for the package of this tree.
-     *
-     * @return a content tree for the package link
-     */
-    @Override
-    protected Content getNavLinkPackage() {
-        Content linkContent = links.createLink(DocPaths.PACKAGE_SUMMARY,
-                contents.packageLabel);
-        Content li = HtmlTree.LI(linkContent);
-        return li;
+        ul.add(getNavLinkMainTree(resources.getText("doclet.All_Packages")));
+        div.add(ul);
     }
 }

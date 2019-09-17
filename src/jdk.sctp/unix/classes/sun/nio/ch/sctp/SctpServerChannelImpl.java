@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -46,7 +46,6 @@ import sun.nio.ch.NativeThread;
 import sun.nio.ch.IOStatus;
 import sun.nio.ch.IOUtil;
 import sun.nio.ch.Net;
-import sun.nio.ch.PollArrayWrapper;
 import sun.nio.ch.SelChImpl;
 import sun.nio.ch.SelectionKeyImpl;
 import sun.nio.ch.Util;
@@ -231,7 +230,7 @@ public class SctpServerChannelImpl extends SctpServerChannel
                     return null;
                 thread = NativeThread.current();
                 for (;;) {
-                    n = accept0(fd, newfd, isaa);
+                    n = Net.accept(fd, newfd, isaa);
                     if ((n == IOStatus.INTERRUPTED) && isOpen())
                         continue;
                     break;
@@ -346,15 +345,11 @@ public class SctpServerChannelImpl extends SctpServerChannel
     }
 
     @Override
-    public void translateAndSetInterestOps(int ops, SelectionKeyImpl sk) {
+    public int translateInterestOps(int ops) {
         int newOps = 0;
-
-        /* Translate ops */
         if ((ops & SelectionKey.OP_ACCEPT) != 0)
             newOps |= Net.POLLIN;
-        /* Place ops into pollfd array */
-        sk.selector.putEventOps(sk, newOps);
-
+        return newOps;
     }
 
     @Override
@@ -416,23 +411,5 @@ public class SctpServerChannelImpl extends SctpServerChannel
 
             return SctpNet.getLocalAddresses(fdVal);
         }
-    }
-
-    /* Native */
-    private static native void initIDs();
-
-    private static native int accept0(FileDescriptor ssfd,
-        FileDescriptor newfd, InetSocketAddress[] isaa) throws IOException;
-
-    static {
-        IOUtil.load();   // loads nio & net native libraries
-        java.security.AccessController.doPrivileged(
-            new java.security.PrivilegedAction<Void>() {
-                public Void run() {
-                    System.loadLibrary("sctp");
-                    return null;
-                }
-            });
-        initIDs();
     }
 }

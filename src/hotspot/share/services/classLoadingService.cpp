@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
 #include "classfile/systemDictionary.hpp"
 #include "memory/allocation.hpp"
 #include "memory/resourceArea.hpp"
-#include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "services/classLoadingService.hpp"
@@ -53,7 +52,7 @@
       len = name->utf8_length();                    \
     }                                               \
     HOTSPOT_CLASS_##type( /* type = unloaded, loaded */ \
-      data, len, (void*)(clss)->class_loader(), (shared)); \
+      data, len, (void*)(clss)->class_loader_data(), (shared)); \
   }
 
 #else //  ndef DTRACE_ENABLED
@@ -137,11 +136,6 @@ void ClassLoadingService::notify_class_unloaded(InstanceKlass* k) {
       _class_methods_size->inc(-methods->at(i)->size());
     }
   }
-
-  if (log_is_enabled(Info, class, unload)) {
-    ResourceMark rm;
-    log_info(class, unload)("unloading class %s " INTPTR_FORMAT , k->external_name(), p2i(k));
-  }
 }
 
 void ClassLoadingService::notify_class_loaded(InstanceKlass* k, bool shared_class) {
@@ -172,7 +166,9 @@ size_t ClassLoadingService::compute_class_size(InstanceKlass* k) {
     // FIXME: Need to count the contents of methods
     class_size += k->constants()->size();
     class_size += k->local_interfaces()->size();
-    class_size += k->transitive_interfaces()->size();
+    if (k->transitive_interfaces() != NULL) {
+      class_size += k->transitive_interfaces()->size();
+    }
     // We do not have to count implementors, since we only store one!
     // FIXME: How should these be accounted for, now when they have moved.
     //class_size += k->fields()->size();

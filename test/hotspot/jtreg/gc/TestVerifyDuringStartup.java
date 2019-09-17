@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,12 +21,16 @@
  * questions.
  */
 
+package gc;
+
 /* @test TestVerifyDuringStartup.java
  * @key gc
  * @bug 8010463 8011343 8011898
  * @summary Simple test run with -XX:+VerifyDuringStartup -XX:-UseTLAB to verify 8010463
+ * @requires vm.gc != "Z"
  * @library /test/lib
  * @modules java.base/jdk.internal.misc
+ * @run main gc.TestVerifyDuringStartup
  */
 
 import jdk.test.lib.JDKToolFinder;
@@ -37,7 +41,7 @@ import java.util.Collections;
 
 public class TestVerifyDuringStartup {
   public static void main(String args[]) throws Exception {
-    ArrayList<String> vmOpts = new ArrayList();
+    ArrayList<String> vmOpts = new ArrayList<>();
 
     String testVmOptsStr = System.getProperty("test.java.opts");
     if (!testVmOptsStr.isEmpty()) {

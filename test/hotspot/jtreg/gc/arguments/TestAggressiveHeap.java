@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,6 +21,8 @@
  * questions.
  */
 
+package gc.arguments;
+
 /*
  * @test TestAggressiveHeap
  * @key gc
@@ -29,7 +31,7 @@
  * @summary Test argument processing for -XX:+AggressiveHeap.
  * @library /test/lib
  * @modules java.base java.management
- * @run driver TestAggressiveHeap
+ * @run driver gc.arguments.TestAggressiveHeap
  */
 
 import java.lang.management.ManagementFactory;
@@ -38,6 +40,7 @@ import javax.management.ObjectName;
 
 import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.process.ProcessTools;
+import jtreg.SkippedException;
 
 public class TestAggressiveHeap {
 
@@ -53,13 +56,18 @@ public class TestAggressiveHeap {
     // Option requires at least 256M, else error during option processing.
     private static final long minMemory = 256 * 1024 * 1024;
 
+    // Setting the heap to half of the physical memory is not suitable for
+    // a test environment with many tests running concurrently, setting to
+    // half of the required size instead.
+    private static final String heapSizeOption = "-Xmx128M";
+
     // bool UseParallelGC = true {product} {command line}
     private static final String parallelGCPattern =
         " *bool +UseParallelGC *= *true +\\{product\\} *\\{command line\\}";
 
     private static void testFlag() throws Exception {
         ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(
-            option, "-XX:+PrintFlagsFinal", "-version");
+            option, heapSizeOption, "-XX:+PrintFlagsFinal", "-version");
 
         OutputAnalyzer output = new OutputAnalyzer(pb.start());
 
@@ -83,9 +91,7 @@ public class TestAggressiveHeap {
 
     private static boolean canUseAggressiveHeapOption() throws Exception {
         if (!haveRequiredMemory()) {
-            System.out.println(
-                "Skipping test of " + option + " : insufficient memory");
-            return false;
+            throw new SkippedException("Skipping test of " + option + " : insufficient memory");
         }
         return true;
     }

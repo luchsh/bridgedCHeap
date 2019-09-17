@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -512,9 +512,7 @@ abstract class AsynchronousSocketChannelImpl
                 set.add(StandardSocketOptions.SO_REUSEPORT);
             }
             set.add(StandardSocketOptions.TCP_NODELAY);
-            ExtendedSocketOptions extendedOptions =
-                    ExtendedSocketOptions.getInstance();
-            set.addAll(extendedOptions.options());
+            set.addAll(ExtendedSocketOptions.clientSocketOptions());
             return Collections.unmodifiableSet(set);
         }
     }

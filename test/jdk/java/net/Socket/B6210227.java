@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,15 +24,21 @@
 /**
  * @test
  * @bug 6210227
+ * @library /test/lib
  * @summary  REGRESSION: Socket.getLocalAddress() returns address of 0.0.0.0 on outbound TCP
+ * @run main B6210227
+ * @run main/othervm -Djava.net.preferIPv4Stack=true B6210227
  */
 
 import java.util.*;
 import java.net.*;
+import jdk.test.lib.net.IPSupport;
 
 public class B6210227 {
     public static void main(String[] args) throws Exception
     {
+        IPSupport.throwSkippedExceptionIfNonOperational();
+
         ServerSocket ss = new ServerSocket(0);
         int port = ss.getLocalPort();
 

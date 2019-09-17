@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -86,7 +86,7 @@ public final class CFontManager extends SunFontManager {
         String fontName = f.fullName;
         String familyName = f.familyName;
 
-        if (fontName == null || "".equals(fontName)) {
+        if (fontName == null || fontName.isEmpty()) {
             return null;
         }
 
@@ -220,12 +220,12 @@ public final class CFontManager extends SunFontManager {
             );
 
             String defaultFont = "Lucida Grande";
-            String defaultFallback = "Lucida Sans";
+            String defaultFallback = "Lucida Grande";
 
             setupLogicalFonts("Dialog", defaultFont, defaultFallback);
-            setupLogicalFonts("Serif", "Times", "Lucida Bright");
+            setupLogicalFonts("Serif", "Times", "Times");
             setupLogicalFonts("SansSerif", defaultFont, defaultFallback);
-            setupLogicalFonts("Monospaced", "Menlo", "Lucida Sans Typewriter");
+            setupLogicalFonts("Monospaced", "Menlo", "Courier");
             setupLogicalFonts("DialogInput", defaultFont, defaultFallback);
         }
     }

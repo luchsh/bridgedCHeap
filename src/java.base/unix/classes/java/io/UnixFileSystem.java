@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,8 @@
 package java.io;
 
 import java.util.Properties;
+
+import jdk.internal.util.StaticProperty;
 import sun.security.action.GetPropertyAction;
 
 
@@ -34,21 +36,27 @@ class UnixFileSystem extends FileSystem {
     private final char slash;
     private final char colon;
     private final String javaHome;
+    private final String userDir;
 
     public UnixFileSystem() {
         Properties props = GetPropertyAction.privilegedGetProperties();
         slash = props.getProperty("file.separator").charAt(0);
         colon = props.getProperty("path.separator").charAt(0);
-        javaHome = props.getProperty("java.home");
+        javaHome = StaticProperty.javaHome();
+        userDir = StaticProperty.userDir();
+        cache = useCanonCaches ? new ExpiringCache() : null;
+        javaHomePrefixCache = useCanonPrefixCache ? new ExpiringCache() : null;
     }
 
 
     /* -- Normalization and construction -- */
 
+    @Override
     public char getSeparator() {
         return slash;
     }
 
+    @Override
     public char getPathSeparator() {
         return colon;
     }
@@ -78,6 +86,7 @@ class UnixFileSystem extends FileSystem {
     /* Check that the given pathname is normal.  If not, invoke the real
        normalizer on the part of the pathname that requires normalization.
        This way we iterate through the whole pathname string only once. */
+    @Override
     public String normalize(String pathname) {
         int n = pathname.length();
         char prevChar = 0;
@@ -91,13 +100,15 @@ class UnixFileSystem extends FileSystem {
         return pathname;
     }
 
+    @Override
     public int prefixLength(String pathname) {
-        if (pathname.length() == 0) return 0;
+        if (pathname.isEmpty()) return 0;
         return (pathname.charAt(0) == '/') ? 1 : 0;
     }
 
+    @Override
     public String resolve(String parent, String child) {
-        if (child.equals("")) return parent;
+        if (child.isEmpty()) return parent;
         if (child.charAt(0) == '/') {
             if (parent.equals("/")) return child;
             return parent + child;
@@ -106,10 +117,12 @@ class UnixFileSystem extends FileSystem {
         return parent + '/' + child;
     }
 
+    @Override
     public String getDefaultParent() {
         return "/";
     }
 
+    @Override
     public String fromURIPath(String path) {
         String p = path;
         if (p.endsWith("/") && (p.length() > 1)) {
@@ -122,13 +135,19 @@ class UnixFileSystem extends FileSystem {
 
     /* -- Path operations -- */
 
+    @Override
     public boolean isAbsolute(File f) {
         return (f.getPrefixLength() != 0);
     }
 
+    @Override
     public String resolve(File f) {
         if (isAbsolute(f)) return f.getPath();
-        return resolve(System.getProperty("user.dir"), f.getPath());
+        SecurityManager sm = System.getSecurityManager();
+        if (sm != null) {
+            sm.checkPropertyAccess("user.dir");
+        }
+        return resolve(userDir, f.getPath());
     }
 
     // Caches for canonicalization results to improve startup performance.
@@ -137,12 +156,13 @@ class UnixFileSystem extends FileSystem {
     // same directory, and must not create results differing from the true
     // canonicalization algorithm in canonicalize_md.c. For this reason the
     // prefix cache is conservative and is not used for complex path names.
-    private ExpiringCache cache = new ExpiringCache();
+    private final ExpiringCache cache;
     // On Unix symlinks can jump anywhere in the file system, so we only
     // treat prefixes in java.home as trusted and cacheable in the
     // canonicalization algorithm
-    private ExpiringCache javaHomePrefixCache = new ExpiringCache();
+    private final ExpiringCache javaHomePrefixCache;
 
+    @Override
     public String canonicalize(String path) throws IOException {
         if (!useCanonCaches) {
             return canonicalize0(path);
@@ -150,7 +170,7 @@ class UnixFileSystem extends FileSystem {
             String res = cache.get(path);
             if (res == null) {
                 String dir = null;
-                String resDir = null;
+                String resDir;
                 if (useCanonPrefixCache) {
                     // Note that this can cause symlinks that should
                     // be resolved to a destination directory to be
@@ -236,52 +256,81 @@ class UnixFileSystem extends FileSystem {
 
     public native int getBooleanAttributes0(File f);
 
+    @Override
     public int getBooleanAttributes(File f) {
         int rv = getBooleanAttributes0(f);
         String name = f.getName();
-        boolean hidden = (name.length() > 0) && (name.charAt(0) == '.');
+        boolean hidden = !name.isEmpty() && name.charAt(0) == '.';
         return rv | (hidden ? BA_HIDDEN : 0);
     }
 
+    @Override
     public native boolean checkAccess(File f, int access);
+
+    @Override
     public native long getLastModifiedTime(File f);
+
+    @Override
     public native long getLength(File f);
+
+    @Override
     public native boolean setPermission(File f, int access, boolean enable, boolean owneronly);
 
     /* -- File operations -- */
 
+    @Override
     public native boolean createFileExclusively(String path)
         throws IOException;
+
+    @Override
     public boolean delete(File f) {
         // Keep canonicalization caches in sync after file deletion
         // and renaming operations. Could be more clever than this
         // (i.e., only remove/update affected entries) but probably
         // not worth it since these entries expire after 30 seconds
         // anyway.
-        cache.clear();
-        javaHomePrefixCache.clear();
+        if (useCanonCaches) {
+            cache.clear();
+        }
+        if (useCanonPrefixCache) {
+            javaHomePrefixCache.clear();
+        }
         return delete0(f);
     }
     private native boolean delete0(File f);
+
+    @Override
     public native String[] list(File f);
+
+    @Override
     public native boolean createDirectory(File f);
+
+    @Override
     public boolean rename(File f1, File f2) {
         // Keep canonicalization caches in sync after file deletion
         // and renaming operations. Could be more clever than this
         // (i.e., only remove/update affected entries) but probably
         // not worth it since these entries expire after 30 seconds
         // anyway.
-        cache.clear();
-        javaHomePrefixCache.clear();
+        if (useCanonCaches) {
+            cache.clear();
+        }
+        if (useCanonPrefixCache) {
+            javaHomePrefixCache.clear();
+        }
         return rename0(f1, f2);
     }
     private native boolean rename0(File f1, File f2);
-    public native boolean setLastModifiedTime(File f, long time);
-    public native boolean setReadOnly(File f);
 
+    @Override
+    public native boolean setLastModifiedTime(File f, long time);
+
+    @Override
+    public native boolean setReadOnly(File f);
 
     /* -- Filesystem interface -- */
 
+    @Override
     public File[] listRoots() {
         try {
             SecurityManager security = System.getSecurityManager();
@@ -295,12 +344,15 @@ class UnixFileSystem extends FileSystem {
     }
 
     /* -- Disk usage -- */
+
+    @Override
     public native long getSpace(File f, int t);
 
     /* -- Basic infrastructure -- */
 
     private native long getNameMax0(String path);
 
+    @Override
     public int getNameMax(String path) {
         long nameMax = getNameMax0(path);
         if (nameMax > Integer.MAX_VALUE) {
@@ -309,10 +361,12 @@ class UnixFileSystem extends FileSystem {
         return (int)nameMax;
     }
 
+    @Override
     public int compare(File f1, File f2) {
         return f1.getPath().compareTo(f2.getPath());
     }
 
+    @Override
     public int hashCode(File f) {
         return f.getPath().hashCode() ^ 1234321;
     }
@@ -323,5 +377,4 @@ class UnixFileSystem extends FileSystem {
     static {
         initIDs();
     }
-
 }

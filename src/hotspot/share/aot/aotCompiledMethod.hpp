@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,8 +21,8 @@
  * questions.
  */
 
-#ifndef SHARE_VM_AOT_AOTCOMPILEDMETHOD_HPP
-#define SHARE_VM_AOT_AOTCOMPILEDMETHOD_HPP
+#ifndef SHARE_AOT_AOTCOMPILEDMETHOD_HPP
+#define SHARE_AOT_AOTCOMPILEDMETHOD_HPP
 
 #include "code/codeCache.hpp"
 #include "code/compiledIC.hpp"
@@ -51,6 +51,7 @@ private:
   int _scopes_begin;
   int _reloc_begin;
   int _exception_table_begin;
+  int _nul_chk_table_begin;
   int _oopmap_begin;
   address at_offset(size_t offset) const { return ((address) this) + offset; }
 public:
@@ -63,9 +64,9 @@ public:
   relocInfo* relocation_begin() const { return (relocInfo*) at_offset(_reloc_begin); }
   relocInfo* relocation_end() const { return (relocInfo*) at_offset(_exception_table_begin); }
   address handler_table_begin   () const { return at_offset(_exception_table_begin); }
-  address handler_table_end() const { return at_offset(_oopmap_begin); }
+  address handler_table_end() const { return at_offset(_nul_chk_table_begin); }
 
-  address nul_chk_table_begin() const { return at_offset(_oopmap_begin); }
+  address nul_chk_table_begin() const { return at_offset(_nul_chk_table_begin); }
   address nul_chk_table_end() const { return at_offset(_oopmap_begin); }
 
   ImmutableOopMapSet* oopmap_set() const { return (ImmutableOopMapSet*) at_offset(_oopmap_begin); }
@@ -117,7 +118,7 @@ private:
   const int _method_index;
   oop _oop;  // method()->method_holder()->klass_holder()
 
-  address* orig_pc_addr(const frame* fr) { return (address*) ((address)fr->unextended_sp() + _meta->orig_pc_offset()); }
+  address* orig_pc_addr(const frame* fr);
   bool make_not_entrant_helper(int new_state);
 
  public:
@@ -138,8 +139,8 @@ private:
     _heap(heap),
     _name(name),
     _metadata_size(metadata_size),
-    _method_index(method_index),
-    _aot_id(aot_id) {
+    _aot_id(aot_id),
+    _method_index(method_index) {
 
     _is_far_code = CodeCache::is_far_target(code) ||
                    CodeCache::is_far_target(code + meta->code_size());
@@ -167,7 +168,7 @@ private:
   int state() const { return *_state_adr; }
 
   // Non-virtual for speed
-  bool _is_alive() const { return state() < zombie; }
+  bool _is_alive() const { return state() < unloaded; }
 
   virtual bool is_zombie() const { return state() == zombie; }
   virtual bool is_unloaded() const { return state() == unloaded; }
@@ -175,6 +176,8 @@ private:
                                                  state() == not_used; }
   virtual bool is_alive() const { return _is_alive(); }
   virtual bool is_in_use() const { return state() == in_use; }
+
+  virtual bool is_unloading() { return false; }
 
   address exception_begin() const { return (address) _code + _meta->exception_handler_offset(); }
 
@@ -194,7 +197,7 @@ private:
   virtual address verified_entry_point() const { return _code + _meta->verified_entry_offset(); }
   virtual void log_identity(xmlStream* stream) const;
   virtual void log_state_change() const;
-  virtual bool make_entrant();
+  virtual bool make_entrant() NOT_TIERED({ ShouldNotReachHere(); return false; });
   virtual bool make_not_entrant() { return make_not_entrant_helper(not_entrant); }
   virtual bool make_not_used() { return make_not_entrant_helper(not_used); }
   virtual address entry_point() const { return _code + _meta->entry_offset(); }
@@ -204,7 +207,6 @@ private:
   // AOT compiled methods do not get into zombie state
   virtual bool can_convert_to_zombie() { return false; }
 
-  virtual bool is_evol_dependent_on(Klass* dependee);
   virtual bool is_dependent_on_method(Method* dependee) { return true; }
 
   virtual void clear_inline_caches();
@@ -238,12 +240,7 @@ private:
   address get_original_pc(const frame* fr) { return *orig_pc_addr(fr); }
   void    set_original_pc(const frame* fr, address pc) { *orig_pc_addr(fr) = pc; }
 
-#ifdef HOTSWAP
-  // Flushing and deoptimization in case of evolution
-  void flush_evol_dependents_on(InstanceKlass* dependee);
-#endif // HOTSWAP
-
-  virtual void metadata_do(void f(Metadata*));
+  virtual void metadata_do(MetadataClosure* f);
 
   bool metadata_got_contains(Metadata **p) {
     return p >= &_metadata_got[0] && p < &_metadata_got[_metadata_size];
@@ -268,6 +265,7 @@ private:
 #endif
   }
 
+  virtual void do_unloading(bool unloading_occurred);
 
 protected:
   // AOT compiled methods are not flushed
@@ -282,11 +280,6 @@ protected:
   CompiledStaticCall* compiledStaticCall_before(address addr) const;
 private:
   bool is_aot_runtime_stub() const { return _method == NULL; }
-
-protected:
-  virtual bool do_unloading_oops(address low_boundary, BoolObjectClosure* is_alive, bool unloading_occurred);
-  virtual bool do_unloading_jvmci(BoolObjectClosure* is_alive, bool unloading_occurred) { return false; }
-
 };
 
 class PltNativeCallWrapper: public NativeCallWrapper {
@@ -321,4 +314,4 @@ public:
   }
 };
 
-#endif //SHARE_VM_AOT_AOTCOMPILEDMETHOD_HPP
+#endif // SHARE_AOT_AOTCOMPILEDMETHOD_HPP

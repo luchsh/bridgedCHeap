@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,9 +20,15 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+
 package org.graalvm.compiler.nodes.graphbuilderconf;
 
+import org.graalvm.compiler.graph.Node.ValueNumberable;
+import org.graalvm.compiler.nodes.FixedWithNextNode;
+import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.ValueNode;
+import org.graalvm.compiler.nodes.extended.GuardingNode;
 
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaTypeProfile;
@@ -106,10 +112,12 @@ public interface NodePlugin extends GraphBuilderPlugin {
      * @param b the context
      * @param array the accessed array
      * @param index the index for the array access
+     * @param boundsCheck the explicit bounds check already emitted, or null if no bounds check was
+     *            emitted yet
      * @param elementKind the element kind of the accessed array
      * @return true if the plugin handles the array access, false otherwise.
      */
-    default boolean handleLoadIndexed(GraphBuilderContext b, ValueNode array, ValueNode index, JavaKind elementKind) {
+    default boolean handleLoadIndexed(GraphBuilderContext b, ValueNode array, ValueNode index, GuardingNode boundsCheck, JavaKind elementKind) {
         return false;
     }
 
@@ -119,11 +127,15 @@ public interface NodePlugin extends GraphBuilderPlugin {
      * @param b the context
      * @param array the accessed array
      * @param index the index for the array access
+     * @param boundsCheck the explicit array bounds check already emitted, or null if no array
+     *            bounds check was emitted yet
+     * @param storeCheck the explicit array store check already emitted, or null if no array store
+     *            check was emitted yet
      * @param elementKind the element kind of the accessed array
      * @param value the value to be stored into the array
      * @return true if the plugin handles the array access, false otherwise.
      */
-    default boolean handleStoreIndexed(GraphBuilderContext b, ValueNode array, ValueNode index, JavaKind elementKind, ValueNode value) {
+    default boolean handleStoreIndexed(GraphBuilderContext b, ValueNode array, ValueNode index, GuardingNode boundsCheck, GuardingNode storeCheck, JavaKind elementKind, ValueNode value) {
         return false;
     }
 
@@ -201,6 +213,26 @@ public interface NodePlugin extends GraphBuilderPlugin {
     }
 
     /**
+     * Allows this plugin to add nodes after the exception object has been loaded in the dispatch
+     * sequence. Note that a {@link StructuredGraph} is provided to this call instead of a
+     * {@link GraphBuilderContext} so that the caller has a guarantee that its current control flow
+     * insertion point is not changed by this call. This means nodes must be added to the graph with
+     * the appropriate method (e.g., {@link StructuredGraph#unique} for {@link ValueNumberable}
+     * nodes) and fixed nodes must be manually {@linkplain FixedWithNextNode#setNext added} as
+     * successors of {@code afterExceptionLoaded}.
+     *
+     * The reason for this constraint is that when this plugin runs, it's inserting instructions
+     * into a different block than the one currently being parsed.
+     *
+     * @param graph the graph being parsed
+     * @param afterExceptionLoaded the last fixed node after loading the exception
+     * @return the last fixed node after instrumentation
+     */
+    default FixedWithNextNode instrumentExceptionDispatch(StructuredGraph graph, FixedWithNextNode afterExceptionLoaded) {
+        return afterExceptionLoaded;
+    }
+
+    /**
      * If the plugin {@link GraphBuilderContext#push pushes} a value with a different
      * {@link JavaKind} than specified by the bytecode, it must override this method and return
      * {@code true}. This disables assertion checking for value kinds.
@@ -211,3 +243,4 @@ public interface NodePlugin extends GraphBuilderPlugin {
         return false;
     }
 }
+
