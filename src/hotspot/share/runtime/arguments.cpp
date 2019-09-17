@@ -1630,7 +1630,7 @@ void Arguments::set_use_compressed_oops() {
 #ifdef _LP64
   // for now, UseBridgedCHeap does not support compressed oops
   if (UseBridgedCHeap) {
-    FLAG_SET_ERGO(bool, UseCompressedOops, false);
+    FLAG_SET_ERGO(UseCompressedOops, false);
     return;
   }
   // MaxHeapSize is not set up properly at this point, but

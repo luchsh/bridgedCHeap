@@ -85,7 +85,7 @@ void DynLibCHeapAllocator::initialize() {
 BridgedCHeap::BridgedCHeap()
  : _used_bytes(0),
    _allocator(NULL) {
-  set_barrier_set(new BridgedModRefBS());
+  BarrierSet::set_barrier_set(new BridgedCHeapBarrierSet());
   // pretend to have allocated the entire address space
   initialize_reserved_region((HeapWord*)0, (HeapWord*)max_jlong);
 }
@@ -105,7 +105,7 @@ HeapWord* BridgedCHeap::mem_allocate(size_t word_size, bool* gc_overhead_limit_w
     size_t aligned_size = byte_size + MinObjAlignmentInBytes;
     HeapWord* raw_addr = (HeapWord*)_allocator->malloc(aligned_size);
     if (TraceBridgedAlloc) {
-      tty->print_cr("[Birdged alloc: addr=" PTR_FORMAT ", size=" SIZE_FORMAT, raw_addr, byte_size);
+      tty->print_cr("[Birdged alloc: addr=" PTR_FORMAT ", size=" SIZE_FORMAT, p2i(raw_addr), byte_size);
     }
     return align_up(raw_addr, MinObjAlignmentInBytes);
   }
@@ -116,7 +116,7 @@ void BridgedCHeap::mem_deallocate(void* ptr) {
   if (ptr != NULL) {
     _allocator->free(ptr);
     if (TraceBridgedAlloc) {
-      tty->print_cr("[Birdged free: addr=" PTR_FORMAT, ptr);
+      tty->print_cr("[Birdged free: addr=" PTR_FORMAT, p2i(ptr));
     }
   }
 }

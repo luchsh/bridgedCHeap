@@ -4,7 +4,7 @@
 
 #include "gc/shared/collectedHeap.hpp"
 #include "gc/shared/gcArguments.hpp"
-#include "gc/bridged/bridgedModRefBS.hpp"
+#include "gc/bridged/bridgedCHeapBarrierSet.hpp"
 
 // Abstract interface to delegate memory requests
 // we have several back-ends
@@ -58,7 +58,6 @@ public:
   virtual bool card_mark_must_follow_store() const    { return false;                   }
   virtual void collect(GCCause::Cause cause)    { DEBUG_ONLY(Unimplemented());          }
   virtual void do_full_collection(bool clear_all_soft_refs) { DEBUG_ONLY(Unimplemented()); }
-  virtual CollectorPolicy* collector_policy() const   { return NULL;                    }
   virtual GrowableArray<GCMemoryManager*> memory_managers() {
     return GrowableArray<GCMemoryManager*>();
   }
@@ -80,15 +79,23 @@ public:
   virtual void print_tracing_info() const       { }
   virtual void verify(VerifyOption option)      { }
 
+  virtual SoftRefPolicy* soft_ref_policy() { return NULL; }
+
   // not pure virtual, but have to implement as well
   virtual size_t unsafe_max_tlab_alloc(Thread *thr) const { return 0;                   }
+
+  // since jdk13
+  virtual void register_nmethod(nmethod* nm) { }
+  virtual void unregister_nmethod(nmethod* nm) { }
+  virtual void flush_nmethod(nmethod* nm) { }
+  virtual void verify_nmethod(nmethod* nm) { }
 };
 
 // to work with JDK10's framework
 class BridgedCHeapArguments : public GCArguments {
 public:
   virtual size_t conservative_max_heap_alignment() {
-    return CollectorPolicy::compute_heap_alignment();
+    return UseLargePages ? os::large_page_size() : os::vm_page_size();
   }
   virtual CollectedHeap* create_heap() {
     return new BridgedCHeap();

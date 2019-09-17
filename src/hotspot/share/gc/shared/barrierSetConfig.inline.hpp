@@ -29,6 +29,8 @@
 
 #include "gc/shared/modRefBarrierSet.inline.hpp"
 #include "gc/shared/cardTableBarrierSet.inline.hpp"
+// TODO: configurable
+#include "gc/bridged/bridgedCHeapBarrierSet.hpp"  // bridged CHeap support
 
 #if INCLUDE_EPSILONGC
 #include "gc/epsilon/epsilonBarrierSet.hpp"
@@ -42,7 +44,5 @@
 #if INCLUDE_ZGC
 #include "gc/z/zBarrierSet.inline.hpp"
 #endif
-// TODO: configurable
-#include "gc/bridged/bridgedModRefBS.hpp"  // bridged CHeap support
 
 #endif // SHARE_GC_SHARED_BARRIERSETCONFIG_INLINE_HPP
