@@ -130,6 +130,7 @@
   template(PrintMetadata)                         \
   template(GTestExecuteAtSafepoint)               \
   template(JFROldObject)                          \
+  template(BridgedCompact)                        \
 
 class VM_Operation: public CHeapObj<mtInternal> {
  public:

@@ -46,7 +46,9 @@
 
 VM_GC_Operation::~VM_GC_Operation() {
   CollectedHeap* ch = Universe::heap();
-  ch->soft_ref_policy()->set_all_soft_refs_clear(false);
+  if (!UseBridgedCHeap) {
+    ch->soft_ref_policy()->set_all_soft_refs_clear(false);
+  }
 }
 
 // The same dtrace probe can't be inserted in two different files, so we

@@ -7,6 +7,7 @@
 #include "gc/bridged/bridgedCHeapBarrierSet.hpp"
 
 class CHeapAllocator;
+class CHeapChunk;
 
 //
 // The Bridged CHeap
@@ -17,14 +18,17 @@ class CHeapAllocator;
 // jemalloc, loaded dynamically during heap initialization.
 //
 class BridgedCHeap : public CollectedHeap {
+  friend class VM_BridgedCompact;
+  friend class CopyClosure;
 private:
-  size_t _used_bytes;  // how many bytes have been allocated
+  volatile size_t _used_bytes;  // how many bytes have been allocated
+  volatile CHeapChunk* _chunk_list;
   CHeapAllocator* _allocator;   // c-heap delegation
+  size_t _segment_size;
 
 protected:
   // select the right allocator for delegation
   CHeapAllocator* create_allocator();
-  size_t _segment_size;
 
 public:
   BridgedCHeap();
@@ -51,7 +55,7 @@ public:
   virtual bool can_elide_tlab_store_barriers() const  { return false;                   }
   virtual bool can_elide_initializing_store_barrier(oop new_obj) { return false;        }
   virtual bool card_mark_must_follow_store() const    { return false;                   }
-  virtual void collect(GCCause::Cause cause)    { Unimplemented();          }
+  virtual void collect(GCCause::Cause cause);
   virtual void do_full_collection(bool clear_all_soft_refs) { Unimplemented(); }
   virtual GrowableArray<GCMemoryManager*> memory_managers() {
     return GrowableArray<GCMemoryManager*>();
@@ -88,6 +92,22 @@ public:
   virtual void flush_nmethod(nmethod* nm) { }
   virtual void verify_nmethod(nmethod* nm) { }
   virtual bool is_oop(oop object) const { return true; }
+
+private:
+  // GC support
+  void do_collection_pause(GCCause::Cause cause);
+  CHeapChunk* gc_chunk_of(HeapWord* addr);
+  void process_roots(OopClosure* cl);
+  HeapWord* allocate_at_gc(size_t word_size);
+  void reset_gc_stat();
+  void cleanup_after_gc();
+  // list of GC chunks, will be swapped to _chunk_list;
+  CHeapChunk* _gc_chunks;
+  CHeapChunk* _gc_last_chunk;
+  // two pointer copy algorithem
+  HeapWord* _gc_end;
+  HeapWord* _gc_scan;
+  size_t _gc_used_bytes;
 };
 
 // to work with JDK10's framework

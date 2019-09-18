@@ -816,7 +816,7 @@ void frame::oops_interpreted_do(OopClosure* f, const RegisterMap* map, bool quer
   methodHandle m (thread, interpreter_frame_method());
   jint      bci = interpreter_frame_bci();
 
-  assert(!Universe::heap()->is_in(m()),
+  assert(!Universe::heap()->is_in(m()) || UseBridgedCHeap,
           "must be valid oop");
   assert(m->is_method(), "checking frame value");
   assert((m->is_native() && bci == 0)  ||
