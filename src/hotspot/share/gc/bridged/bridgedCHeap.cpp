@@ -1,5 +1,6 @@
 
 #include "gc/bridged/bridgedCHeap.hpp"
+#include "logging/log.hpp"
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -84,15 +85,17 @@ void DynLibCHeapAllocator::initialize() {
 
 #undef RESOLVE_SYMBOL
 
-  if (TraceBridgedCHeap) {
-    tty->print_cr("%s loaded successfully", _libc_path);
+  if (log_is_enabled(Info, bridged)) {
+    ResourceMark rm;
+    log_info(bridged)("%s loaded successfully", _libc_path);
   }
 }
 // ------------------------------ BridgedCHeap ------------------------
 
 BridgedCHeap::BridgedCHeap()
  : _used_bytes(0),
-   _allocator(NULL) {
+   _allocator(NULL),
+   _segment_size(BridgedCHeapSegmentSize) {
   BarrierSet::set_barrier_set(new BridgedCHeapBarrierSet());
   // pretend to have allocated the entire address space
   initialize_reserved_region((HeapWord*)0, (HeapWord*)max_jlong);
@@ -104,18 +107,19 @@ HeapWord* BridgedCHeap::mem_allocate(size_t word_size, bool* gc_overhead_limit_w
   guarantee(_allocator != NULL, "Must have been initialized");
   size_t byte_size = (word_size << LogBytesPerWord);
   Atomic::add((intptr_t)byte_size, (volatile intptr_t*)&_used_bytes);
-  if (_used_bytes > MaxHeapSize) {
-    // will throw OOM when used bytes exceeds limit
-    JavaThread* THREAD = JavaThread::current();
-    THROW_OOP_(Universe::out_of_memory_error_java_heap(), NULL);
-  } else {
+  if (_used_bytes < MaxHeapSize) {
     // Java objects have to be aligned
     size_t aligned_size = byte_size + MinObjAlignmentInBytes;
     HeapWord* raw_addr = (HeapWord*)_allocator->malloc(aligned_size);
-    if (TraceBridgedAlloc) {
-      tty->print_cr("[Birdged alloc: addr=" PTR_FORMAT ", size=" SIZE_FORMAT, p2i(raw_addr), byte_size);
+    if (log_is_enabled(Trace, bridged)) {
+      ResourceMark rm;
+      log_trace(bridged)("[Bridged alloc: addr=" PTR_FORMAT ", size=" SIZE_FORMAT, p2i(raw_addr), byte_size);
     }
     return align_up(raw_addr, MinObjAlignmentInBytes);
+  } else {
+    // will throw OOM when used bytes exceeds limit
+    JavaThread* THREAD = JavaThread::current();
+    THROW_OOP_(Universe::out_of_memory_error_java_heap(), NULL);
   }
 }
 
@@ -123,8 +127,9 @@ void BridgedCHeap::mem_deallocate(void* ptr) {
   assert(UseBridgedCHeap, "Sanity");
   if (ptr != NULL) {
     _allocator->free(ptr);
-    if (TraceBridgedAlloc) {
-      tty->print_cr("[Birdged free: addr=" PTR_FORMAT, p2i(ptr));
+    if (log_is_enabled(Trace, bridged)) {
+      ResourceMark rm;
+      log_trace(bridged)("[Bridged free: addr=" PTR_FORMAT, p2i(ptr));
     }
   }
 }
@@ -146,8 +151,9 @@ jint BridgedCHeap::initialize() {
 //
 CHeapAllocator* BridgedCHeap::create_allocator() {
   if (BridgedLibcPath != NULL && strlen(BridgedLibcPath) > 0) {
-    if (TraceBridgedCHeap) {
-      tty->print_cr("Using user-specified C library %s", BridgedLibcPath);
+    if (log_is_enabled(Info, bridged)) {
+      ResourceMark rm;
+      log_info(bridged)("Using user-specified C library %s", BridgedLibcPath);
     }
     return new DynLibCHeapAllocator(BridgedLibcPath);
   }
@@ -165,16 +171,36 @@ CHeapAllocator* BridgedCHeap::create_allocator() {
       struct stat st;
       int ret = lstat(lib_path, &st);
       if (ret == 0 && S_ISREG(st.st_mode)) {
-        if (TraceBridgedCHeap) {
-          tty->print_cr("Auto detected jemalloc library in %s", lib_path);
+        if (log_is_enabled(Info, bridged)) {
+          ResourceMark rm;
+          log_info(bridged)("Auto detected jemalloc library in %s", lib_path);
         }
         return new DynLibCHeapAllocator(lib_path);
       }
     }
   }
 
-  if (TraceBridgedCHeap) {
-    tty->print_cr("Using hybrid C heap");
+  if (log_is_enabled(Info, bridged)) {
+    ResourceMark rm;
+    log_info(bridged)("Using Bridged C heap memory management");
   }
   return new DirectCHeapAllocator();
+}
+
+HeapWord* BridgedCHeap::allocate_new_tlab(size_t min_size,
+                                          size_t requested_size,
+                                          size_t* actual_size) {
+  if (requested_size < _segment_size) {
+    requested_size = _segment_size;
+  }
+  *actual_size = requested_size;
+  HeapWord* res = mem_allocate(requested_size, NULL);
+  if (log_is_enabled(Trace, bridged)) {
+    ResourceMark rm;
+    log_trace(bridged)("Bridged TLAB alloc thread=" PTR_FORMAT " size=" SIZE_FORMAT
+                  ", addr=" PTR_FORMAT,
+                  p2i(Thread::current()),
+                  requested_size, p2i(res));
+  }
+  return res;
 }

@@ -177,6 +177,7 @@
   LOG_TAG(vtables) \
   LOG_TAG(vtablestubs) \
   LOG_TAG(workgang) \
+  LOG_TAG(bridged) \
   LOG_TAG_LIST_EXT
 
 #define PREFIX_LOG_TAG(T) (LogTag::_##T)

@@ -2448,6 +2448,8 @@ const size_t minimumSymbolTableSize = 1024;
           "Path to the bridged libc dynamic file")                          \
   product(bool, AutoDetectJemalloc, true,                                   \
           "Automatic detect and load libjemalloc library")                  \
+  product(uintx, BridgedCHeapSegmentSize, 4*M,                              \
+          "Segment size of bridged CHeap")                                  \
                                                                             \
   experimental(ccstr, AllocateOldGenAt, NULL,                               \
           "Path to the directoy where a temporary file will be "            \

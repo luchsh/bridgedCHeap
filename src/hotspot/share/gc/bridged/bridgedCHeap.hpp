@@ -24,6 +24,7 @@ private:
 protected:
   // select the right allocator for delegation
   CHeapAllocator* create_allocator();
+  size_t _segment_size;
 
 public:
   BridgedCHeap();
@@ -55,6 +56,9 @@ public:
   virtual GrowableArray<GCMemoryManager*> memory_managers() {
     return GrowableArray<GCMemoryManager*>();
   }
+  virtual HeapWord* allocate_new_tlab(size_t min_size,
+                                      size_t requested_size,
+                                      size_t* actual_size);
   virtual GrowableArray<MemoryPool*> memory_pools() {
     return GrowableArray<MemoryPool*>();
   }
@@ -76,7 +80,7 @@ public:
   virtual SoftRefPolicy* soft_ref_policy() { return NULL; }
 
   // not pure virtual, but have to implement as well
-  virtual size_t unsafe_max_tlab_alloc(Thread *thr) const { return 0;                   }
+  virtual size_t unsafe_max_tlab_alloc(Thread *thr) const { return _segment_size;  }
 
   // since jdk13
   virtual void register_nmethod(nmethod* nm) { }
