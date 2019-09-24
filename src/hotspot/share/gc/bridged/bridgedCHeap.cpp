@@ -333,9 +333,14 @@ private:
       oop dest = NULL;
       if (o->is_forwarded()) {
         dest = o->forwardee();
+        DEBUG_ONLY(if (DebugBridgedCHeap) {
+                    tty->print_cr("update ref " PTR_FORMAT "=>" PTR_FORMAT, p2i(o), p2i(dest));
+                   });
       } else {
         dest = copy_obj(o);
-        //dest->oop_iterate_backwards((OopClosure*)this);
+        DEBUG_ONLY(if (DebugBridgedCHeap) {
+                    tty->print_cr("copy object " PTR_FORMAT "=>" PTR_FORMAT, p2i(o), p2i(dest));
+                   });
       }
       RawAccess<>::oop_store(p, o->forwardee());
     }
@@ -346,12 +351,12 @@ private:
       size_t word_sz = src->size();
       markOop old_mark = src->mark();
       HeapWord* obj_ptr = ((BridgedCHeap*)Universe::heap())->allocate_at_gc(word_sz);
+      guarantee(obj_ptr != NULL, "never expects a NULL pointer");
       const oop obj = oop(obj_ptr);
-      const oop forward_ptr = src->forward_to_atomic(obj, old_mark, memory_order_relaxed);
-      if (forward_ptr == NULL) {
-        Copy::aligned_disjoint_words((HeapWord*) src, obj_ptr, word_sz);
-        obj->set_mark(old_mark);
-      }
+      Copy::aligned_disjoint_words((HeapWord*) src, obj_ptr, word_sz);
+      obj->set_mark(old_mark);
+      src->forward_to(obj);
+      return obj;
     }
     return NULL;
   }
@@ -396,7 +401,10 @@ void BridgedCHeap::do_collection_pause(GCCause::Cause cause) {
   if (log_is_enabled(Info, gc)) {
     double secs_end = os::elapsedTime();
     ResourceMark rm;
-    log_info(gc)("BridgedCHeap::collect() finsihed, time=%lf", (secs_end - secs_start));
+    log_info(gc)("BridgedCHeap::collect() finsihed, time=%lf secs, " SIZE_FORMAT "->" SIZE_FORMAT,
+                 (secs_end - secs_start),
+                 used_bytes_before,
+                 _used_bytes);
   }
 }
 
@@ -405,6 +413,10 @@ void BridgedCHeap::cleanup_after_gc() {
   for (CHeapChunk* chk = (CHeapChunk*)_chunk_list;
        chk != NULL; ) {
     CHeapChunk* next = chk->next();
+    DEBUG_ONLY(if (DebugBridgedCHeap) {
+               tty->print_cr("Freed chunk [" PTR_FORMAT "-" PTR_FORMAT "-" PTR_FORMAT ")",
+                             p2i(chk->bottom()), p2i(chk->top()), p2i(chk->end()));
+               });
     delete chk;
     chk = next;
   }
@@ -447,13 +459,13 @@ void BridgedCHeap::process_roots(OopClosure* cl) {
   CLDToOopClosure cld_cl(cl, false);
   ParallelOopsDoThreadClosure thrd_cl(cl, &cb_cl);
   ClassLoaderDataGraph::roots_cld_do(&cld_cl, &cld_cl);
-  Threads::threads_do(&thrd_cl);
+  Threads::possibly_parallel_oops_do(false,
+                                     cl, &cb_cl);
   Universe::oops_do(cl);
   JNIHandles::oops_do(cl);
   ObjectSynchronizer::oops_do(cl);
   Management::oops_do(cl);
   JvmtiExport::oops_do(cl);
-
 #if INCLUDE_AOT
   AOTLoader::oops_do(cl);
 #endif
@@ -462,11 +474,13 @@ void BridgedCHeap::process_roots(OopClosure* cl) {
   JVMCI::oops_do(cl);
 #endif
   SystemDictionary::oops_do(cl);
+  CodeCache::blobs_do(&cb_cl);
+  StringTable::oops_do(cl);
 
   double secs_end = os::elapsedTime();
   if (log_is_enabled(Info, gc)) {
     ResourceMark rm;
-    log_info(gc)("Finish scanning GC roots, time=%lf", (secs_end - secs_start));
+    log_info(gc)("Finish scanning GC roots, time=%lf secs", (secs_end - secs_start));
   }
 }
 

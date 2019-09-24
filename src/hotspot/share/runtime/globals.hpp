@@ -2438,19 +2438,6 @@ const size_t minimumSymbolTableSize = 1024;
           "Path to the directoy where a temporary file will be created "    \
           "to use as the backing store for Java Heap.")                     \
                                                                             \
-  product(bool, UseBridgedCHeap, false,                                     \
-          "Bridge Java allocation request to CHeap")                        \
-  diagnostic(bool, TraceBridgedCHeap, false,                                \
-          "Trace critical operations of BridgedCHeap")                      \
-  diagnostic(bool, TraceBridgedAlloc, false,                                \
-          "Trace allocation request in BridgedCHeap")                       \
-  product(ccstr, BridgedLibcPath, NULL,                                     \
-          "Path to the bridged libc dynamic file")                          \
-  product(bool, AutoDetectJemalloc, true,                                   \
-          "Automatic detect and load libjemalloc library")                  \
-  product(uintx, BridgedCHeapSegmentSize, 4*M,                              \
-          "Segment size of bridged CHeap")                                  \
-                                                                            \
   experimental(ccstr, AllocateOldGenAt, NULL,                               \
           "Path to the directoy where a temporary file will be "            \
           "created to use as the backing store for old generation."         \
@@ -2468,7 +2455,7 @@ const size_t minimumSymbolTableSize = 1024;
           "leverage profiling for table/lookup switch")                     \
                                                                             \
   JFR_ONLY(product(bool, FlightRecorder, false,                             \
-          "(Deprecated) Enable Flight Recorder"))                                        \
+          "(Deprecated) Enable Flight Recorder"))                           \
                                                                             \
   JFR_ONLY(product(ccstr, FlightRecorderOptions, NULL,                      \
           "Flight Recorder options"))                                       \
@@ -2477,7 +2464,22 @@ const size_t minimumSymbolTableSize = 1024;
           "Start flight recording with options"))                           \
                                                                             \
   experimental(bool, UseFastUnorderedTimeStamps, false,                     \
-          "Use platform unstable time where supported for timestamps only")
+          "Use platform unstable time where supported for timestamps only") \
+                                                                            \
+  product(bool, UseBridgedCHeap, false,                                     \
+          "Bridge Java allocation request to CHeap")                        \
+  diagnostic(bool, TraceBridgedCHeap, false,                                \
+          "Trace critical operations of BridgedCHeap")                      \
+  diagnostic(bool, TraceBridgedAlloc, false,                                \
+          "Trace allocation request in BridgedCHeap")                       \
+  product(ccstr, BridgedLibcPath, NULL,                                     \
+          "Path to the bridged libc dynamic file")                          \
+  product(bool, AutoDetectJemalloc, true,                                   \
+          "Automatic detect and load libjemalloc library")                  \
+  product(uintx, BridgedCHeapSegmentSize, 4*M,                              \
+          "Segment size of bridged CHeap")                                  \
+  develop(bool, DebugBridgedCHeap, false,                                   \
+          "Debug switch for detail bridged cheap operations")               \
 
 // Interface macros
 #define DECLARE_PRODUCT_FLAG(type, name, value, doc)      extern "C" type name;
