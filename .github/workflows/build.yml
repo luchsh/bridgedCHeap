@@ -1,0 +1,20 @@
+name: build_test
+
+on: [push]
+
+jobs:
+  build_release_jdk:
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/dragonwelljdk/build_jdk:13
+    steps:
+      - uses: actions/checkout@v2
+      - name: Compile release mode
+        run: |
+          bash configure
+          make LOG=trace images
+
+      - name: Sanity test
+        run: |
+          TEST_JDK_HOME=build/linux-x86_64-normal-server-release/images/jdk
+          ${TEST_JDK_HOME}/bin/java -version
